@@ -19,6 +19,9 @@ export const env = Object.freeze({
   port: optionalPort(process.env.PORT),
   supabaseUrl: process.env.SUPABASE_URL,
   supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+  adminSecret: process.env.ADMIN_SECRET,
+  wahaUrl: process.env.WAHA_URL,
+  credentialEncryptionKey: process.env.CREDENTIAL_ENCRYPTION_KEY,
 });
 
 export function requireSupabaseEnv(): {
@@ -38,4 +41,17 @@ export function requireSupabaseEnv(): {
     supabaseUrl: env.supabaseUrl,
     supabaseServiceRoleKey: env.supabaseServiceRoleKey,
   };
+}
+
+export function requireEnv(name: "ADMIN_SECRET" | "WAHA_URL" | "CREDENTIAL_ENCRYPTION_KEY"): string {
+  const values = {
+    ADMIN_SECRET: env.adminSecret,
+    WAHA_URL: env.wahaUrl,
+    CREDENTIAL_ENCRYPTION_KEY: env.credentialEncryptionKey,
+  };
+  const value = values[name];
+  if (!value) {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+  return value;
 }

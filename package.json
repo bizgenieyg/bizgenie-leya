@@ -8,6 +8,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
+    "test": "node --test dist/services/*.test.js",
     "start": "node dist/server.js"
   },
   "engines": {
