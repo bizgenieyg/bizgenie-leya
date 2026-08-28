@@ -25,4 +25,8 @@ If a request pushes into Booking, Payments, Email, History Scanner, CRM, Google 
 
 ## Completion rule
 
-After coding, run npm install, npm run build, npm run typecheck. If scripts are missing, create reasonable scripts in package.json.
+After coding, run npm install, npm run build, npm run typecheck. If scripts are missing, create reasonable scripts in package.json. **Затем самостоятельно `git add`, `git commit` (описательный message) и `git push`** — не оставлять незакоммиченные файлы владельцу на ручную доводку. Исключение: действия с живой инфраструктурой (`supabase login`, `supabase db push`, деплой на сервер) — это всегда делает владелец вручную, не агент.
+
+## Review rule (Claude Code в роли ревьюера)
+
+При ревью диффа от Codex выполнять проверки самостоятельно через shell (git status/diff/grep/build/typecheck) — не просить владельца выполнять и вставлять вывод в чат. Отчёт владельцу — короткий pass/fail с конкретикой, не сырой вывод.
