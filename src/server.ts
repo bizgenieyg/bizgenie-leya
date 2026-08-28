@@ -2,6 +2,7 @@ import express from "express";
 
 import { env } from "./config/env.js";
 import { adminOnboardingRouter, setupRouter } from "./routes/setup.routes.js";
+import { adminReportsRouter } from "./routes/reports.routes.js";
 import { webhookRouter } from "./routes/webhook.routes.js";
 import { HttpError } from "./utils/http-error.js";
 
@@ -24,6 +25,7 @@ app.get("/health", (_request, response) => {
 });
 
 app.use("/admin/onboarding", adminOnboardingRouter);
+app.use("/admin/reports", adminReportsRouter);
 app.use("/setup", setupRouter);
 app.use("/webhook", webhookRouter);
 

@@ -113,3 +113,18 @@ to a PM2 cron or external scheduler (e.g. once per minute).
 `src/providers/whatsapp/` and business code depends on the `WhatsAppProvider`
 interface, never on WAHA directly. `AIProvider` is a Phase 1 placeholder and is
 not wired into the pipeline.
+
+## Basic weekly reports
+
+Reports are backend-only and use the same `ADMIN_SECRET` authentication as the
+admin onboarding route.
+
+- `GET /admin/reports/weekly/:tenantId` returns the last seven days of message,
+  new-client, and escalation counts plus the most frequent unknown questions.
+  Use the optional `top_limit` query parameter (1–20, default 5).
+- `POST /admin/reports/weekly/jobs` creates a pending `scheduled_jobs` row with
+  `job_type = 'weekly_report'`. The body requires `tenant_id` and accepts an
+  optional ISO `scheduled_at`; omission schedules it for the current time.
+
+Phase 1 only prepares report data and job records. It does not execute,
+schedule, format, or deliver weekly reports.

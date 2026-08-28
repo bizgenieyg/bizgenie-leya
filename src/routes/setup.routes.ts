@@ -1,8 +1,7 @@
 import { Router } from "express";
 
-import { requireEnv } from "../config/env.js";
 import { OnboardingService } from "../services/onboarding.service.js";
-import { secretsMatch } from "../utils/crypto.js";
+import { requireAdmin } from "../utils/admin-auth.js";
 import { HttpError } from "../utils/http-error.js";
 import { objectBody, optionalString, pickDefined, requiredArray, requiredString } from "../utils/validation.js";
 
@@ -11,12 +10,7 @@ const service = new OnboardingService();
 export const adminOnboardingRouter = Router();
 export const setupRouter = Router();
 
-adminOnboardingRouter.post("/create", async (request, response) => {
-  const authorization = request.header("authorization");
-  const provided = authorization?.startsWith("Bearer ") ? authorization.slice(7) : request.header("x-admin-secret");
-  if (!provided || !secretsMatch(provided, requireEnv("ADMIN_SECRET"))) {
-    throw new HttpError(401, "Unauthorized");
-  }
+adminOnboardingRouter.post("/create", requireAdmin, async (request, response) => {
   const body = objectBody(request.body);
   const businessName = optionalString(body, "business_name");
   const result = await service.createTenant({
