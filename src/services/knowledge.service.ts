@@ -1,3 +1,5 @@
+import { normalizeText } from "../utils/normalize.js";
+
 export interface KnowledgeCandidate {
   id: string;
   question: string | null;
@@ -8,19 +10,15 @@ export type KnowledgeResult =
   | { matched: false; answer: null; escalate: true }
   | { matched: true; answer: string; escalate: false; knowledgeItemId: string };
 
-function normalizeQuestion(value: string): string {
-  return value.trim().toLocaleLowerCase().replace(/\s+/g, " ");
-}
-
 export function findExactKnowledgeAnswer(
   question: string,
   candidates: KnowledgeCandidate[],
 ): KnowledgeResult {
-  const normalizedQuestion = normalizeQuestion(question);
+  const normalizedQuestion = normalizeText(question);
   const match = candidates.find(
     (candidate) =>
       candidate.question !== null &&
-      normalizeQuestion(candidate.question) === normalizedQuestion,
+      normalizeText(candidate.question) === normalizedQuestion,
   );
 
   if (!match) {

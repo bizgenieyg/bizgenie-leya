@@ -26,6 +26,10 @@ Phase 1 Express and TypeScript backend skeleton with Supabase migrations.
 
    Generate `CREDENTIAL_ENCRYPTION_KEY` as a base64-encoded 32-byte key. `WAHA_URL` is read only from the environment; setup requests cannot override it.
 
+   `WAHA_API_KEY` is an optional shared fallback used only when a tenant's
+   `whatsapp_instances.waha_api_key_encrypted` is not set. The per-tenant
+   encrypted key always wins.
+
 3. Apply the SQL files in `supabase/migrations` in filename order using your Supabase migration workflow.
 
 4. Start the development server:
@@ -69,3 +73,43 @@ Use the returned token with:
 - `POST /setup/:token/complete`
 
 Knowledge and services patches replace the tenant's existing setup rows. The test endpoint returns exact FAQ answers after case/whitespace normalization. Unknown questions return `escalate: true` and no generated answer.
+
+## WhatsApp webhook
+
+`POST /webhook/:tenantId` receives WAHA (GOWS engine) events.
+
+Authentication runs before any processing:
+
+- Primary: `X-Hub-Signature-256` — HMAC-SHA256 of the raw request body, keyed
+  with the tenant's webhook secret (`sha256=<hex>` or bare `<hex>`).
+- Fallback: `X-Webhook-Token` — the tenant's webhook secret sent verbatim.
+
+The webhook secret is stored encrypted in `whatsapp_instances.webhook_secret_encrypted`
+(written via `PATCH /setup/:token/whatsapp`). An unknown tenant, a tenant with no
+configured secret, or a failed check all return `401` before the body is read.
+
+On success the route stores nothing synchronously beyond acknowledging with
+`200 { "received": true }`. A background worker then:
+
+1. Ignores non-message events and `status@broadcast` (Status/Stories).
+2. Resolves tenant → client → active conversation. Parses GOWS fields:
+   text `payload.body`, sender `payload.from` (may be `@lid`), name
+   `payload._data.Info.PushName`.
+3. Persists the inbound message with its raw payload in `messages.raw_payload`.
+4. Runs the Knowledge Module. Exact FAQ match → replies through the
+   `WhatsAppProvider` and logs `faq_answer_exact`. No match → creates an owner
+   escalation and logs `escalation_created`.
+5. Escalations go to `tenants.phone`. Inside `notification_settings` quiet hours
+   (only `mode = 'mute_all'`), delivery is deferred into `scheduled_jobs`
+   (`job_type = 'escalation_delivery'`) instead of sending immediately.
+6. An owner reply is relayed to the client only when `payload.replyTo.id`
+   matches the stored WAHA message id of the escalation we sent.
+
+Deferred escalations are delivered by `runDueScheduledEscalations()` in
+`src/services/escalation.service.ts`. It is not run by the web process — wire it
+to a PM2 cron or external scheduler (e.g. once per minute).
+
+`WAHA_URL` is only ever read from the environment; provider logic lives in
+`src/providers/whatsapp/` and business code depends on the `WhatsAppProvider`
+interface, never on WAHA directly. `AIProvider` is a Phase 1 placeholder and is
+not wired into the pipeline.

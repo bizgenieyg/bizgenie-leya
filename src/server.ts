@@ -2,12 +2,22 @@ import express from "express";
 
 import { env } from "./config/env.js";
 import { adminOnboardingRouter, setupRouter } from "./routes/setup.routes.js";
+import { webhookRouter } from "./routes/webhook.routes.js";
 import { HttpError } from "./utils/http-error.js";
 
 export const app = express();
 
 app.disable("x-powered-by");
-app.use(express.json());
+app.use(
+  express.json({
+    // Keep the exact bytes so webhook HMAC verification is not broken by
+    // re-serialization (Cyrillic/Hebrew payloads change under JSON.stringify).
+    verify: (request, _response, buffer) => {
+      (request as express.Request & { rawBody?: Buffer }).rawBody =
+        Buffer.from(buffer);
+    },
+  }),
+);
 
 app.get("/health", (_request, response) => {
   response.status(200).json({ status: "ok" });
@@ -15,6 +25,7 @@ app.get("/health", (_request, response) => {
 
 app.use("/admin/onboarding", adminOnboardingRouter);
 app.use("/setup", setupRouter);
+app.use("/webhook", webhookRouter);
 
 app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
   if (error instanceof HttpError) {

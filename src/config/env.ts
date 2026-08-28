@@ -21,6 +21,7 @@ export const env = Object.freeze({
   supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
   adminSecret: process.env.ADMIN_SECRET,
   wahaUrl: process.env.WAHA_URL,
+  wahaApiKey: process.env.WAHA_API_KEY,
   credentialEncryptionKey: process.env.CREDENTIAL_ENCRYPTION_KEY,
 });
 
