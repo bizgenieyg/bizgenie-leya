@@ -1,4 +1,4 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { DatabaseClient } from "../db/supabase.js";
 
 import { HttpError } from "../utils/http-error.js";
 
@@ -47,7 +47,7 @@ export function isUuid(value: string): boolean {
 
 /** Load the tenant addressed by a webhook route plus its WhatsApp instance (if any). */
 export async function getTenantRouting(
-  db: SupabaseClient,
+  db: DatabaseClient,
   tenantId: string,
 ): Promise<TenantRouting | null> {
   if (!isUuid(tenantId)) {
@@ -89,7 +89,7 @@ export function isTenantServiceable(status: string): boolean {
 
 /** Find a client by (tenant, phone) or create one. Also refreshes `last_seen_at`. */
 export async function findOrCreateClient(
-  db: SupabaseClient,
+  db: DatabaseClient,
   tenantId: string,
   phone: string,
   name: string | null,
@@ -139,7 +139,7 @@ export async function findOrCreateClient(
 
 /** Find the tenant/client's active conversation or open a new one. */
 export async function findOrCreateConversation(
-  db: SupabaseClient,
+  db: DatabaseClient,
   tenantId: string,
   clientId: string,
 ): Promise<ConversationRow> {

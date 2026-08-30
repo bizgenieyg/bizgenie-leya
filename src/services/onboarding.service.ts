@@ -1,7 +1,5 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
-
 import { requireEnv } from "../config/env.js";
-import { supabase } from "../db/supabase.js";
+import { supabase, type DatabaseClient } from "../db/supabase.js";
 import { createSetupToken, encryptCredential, hashSetupToken } from "../utils/crypto.js";
 import { HttpError } from "../utils/http-error.js";
 import { findExactKnowledgeAnswer } from "./knowledge.service.js";
@@ -15,7 +13,7 @@ function databaseError(context: string, _error: { message: string } | null): nev
 }
 
 export class OnboardingService {
-  constructor(private readonly db: SupabaseClient = supabase) {}
+  constructor(private readonly db: DatabaseClient = supabase) {}
 
   async createTenant(input: { name: string; phone: string; businessName?: string | null }) {
     const token = createSetupToken();

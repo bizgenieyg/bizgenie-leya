@@ -1,7 +1,5 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
-
 import { requireEnv } from "../config/env.js";
-import { supabase } from "../db/supabase.js";
+import { supabase, type DatabaseClient } from "../db/supabase.js";
 import {
   createWhatsAppSessionProvider,
   type WhatsAppSessionProvider,
@@ -20,7 +18,7 @@ function upstreamError(): never {
 
 export class WahaAdminService {
   constructor(
-    private readonly db: SupabaseClient = supabase,
+    private readonly db: DatabaseClient = supabase,
     private readonly provider: WhatsAppSessionProvider = createWhatsAppSessionProvider(),
     private readonly publicBaseUrl: string = requireEnv("PUBLIC_BASE_URL"),
     private readonly wahaUrl: string = requireEnv("WAHA_URL"),

@@ -1,4 +1,4 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { DatabaseClient } from "../db/supabase.js";
 
 import { createWhatsAppProvider } from "../providers/whatsapp/index.js";
 import type { WhatsAppProvider } from "../providers/whatsapp/whatsapp-provider.interface.js";
@@ -76,7 +76,7 @@ export function nextQuietHoursEnd(
 }
 
 async function loadNotificationSettings(
-  db: SupabaseClient,
+  db: DatabaseClient,
   tenantId: string,
 ): Promise<NotificationSettings | null> {
   const { data, error } = await db
@@ -115,7 +115,7 @@ export interface CreateEscalationResult {
  * `escalation_created` agent action for later reply matching.
  */
 export async function createEscalation(
-  db: SupabaseClient,
+  db: DatabaseClient,
   provider: WhatsAppProvider,
   input: CreateEscalationInput,
 ): Promise<CreateEscalationResult> {
@@ -192,7 +192,7 @@ export interface EscalationMatch {
  * answer only when it quotes the exact escalation message we sent.
  */
 export async function findEscalationByReplyId(
-  db: SupabaseClient,
+  db: DatabaseClient,
   tenantId: string,
   replyToId: string,
   fallbackSession: string,
@@ -253,7 +253,7 @@ interface ScheduledJobRow {
 }
 
 async function providerForTenant(
-  _db: SupabaseClient,
+  _db: DatabaseClient,
   _tenantId: string,
 ): Promise<WhatsAppProvider> {
   return createWhatsAppProvider();
@@ -264,7 +264,7 @@ async function providerForTenant(
  * Intended to be invoked by a scheduler (PM2 cron / external cron), not the web process.
  */
 export async function runDueScheduledEscalations(
-  db: SupabaseClient,
+  db: DatabaseClient,
   nowIso: string = new Date().toISOString(),
 ): Promise<number> {
   const { data: jobs, error } = await db

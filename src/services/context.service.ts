@@ -1,4 +1,4 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { DatabaseClient } from "../db/supabase.js";
 
 import { HttpError } from "../utils/http-error.js";
 import type { KnowledgeCandidate } from "./knowledge.service.js";
@@ -20,7 +20,7 @@ export interface TenantContext {
  * the assistant profile and every active FAQ item that has a question.
  */
 export async function loadContext(
-  db: SupabaseClient,
+  db: DatabaseClient,
   tenantId: string,
 ): Promise<TenantContext> {
   const [assistantResult, knowledgeResult] = await Promise.all([

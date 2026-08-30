@@ -12,10 +12,10 @@
     "start": "node dist/server.js"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=20"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.57.4",
+    "@supabase/postgrest-js": "2.108.2",
     "dotenv": "^17.2.2",
     "express": "^5.1.0"
   },

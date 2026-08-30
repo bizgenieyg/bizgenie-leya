@@ -1,4 +1,4 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { DatabaseClient } from "../db/supabase.js";
 
 type Json = Record<string, unknown>;
 
@@ -9,7 +9,7 @@ export type LogLevel = "debug" | "info" | "warn" | "error";
  * responsible for keeping API keys, webhook secrets and tokens out of the payload.
  */
 export async function logSystemEvent(
-  db: SupabaseClient,
+  db: DatabaseClient,
   input: { tenantId: string | null; level: LogLevel; event: string; details?: Json },
 ): Promise<void> {
   const { error } = await db.from("system_logs").insert({
@@ -25,7 +25,7 @@ export async function logSystemEvent(
 
 /** Append a structured row to `agent_actions` (the per-conversation audit trail). */
 export async function recordAgentAction(
-  db: SupabaseClient,
+  db: DatabaseClient,
   input: {
     tenantId: string;
     conversationId: string | null;

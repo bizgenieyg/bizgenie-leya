@@ -4,7 +4,7 @@ Phase 1 Express and TypeScript backend skeleton with Supabase migrations.
 
 ## Requirements
 
-- Node.js 22 or newer
+- Node.js 20 or newer
 - npm
 - A Supabase project or local Supabase development environment
 

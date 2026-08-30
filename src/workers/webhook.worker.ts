@@ -1,6 +1,4 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
-
-import { supabase } from "../db/supabase.js";
+import { supabase, type DatabaseClient } from "../db/supabase.js";
 import { createWhatsAppProvider } from "../providers/whatsapp/index.js";
 import type { WhatsAppProvider } from "../providers/whatsapp/whatsapp-provider.interface.js";
 import { extractMessageId } from "../providers/whatsapp/waha.provider.js";
@@ -61,7 +59,7 @@ function readReplyToId(message: Record<string, unknown>): string | null {
 export async function handleWebhookEvent(
   tenantId: string,
   body: Record<string, unknown>,
-  db: SupabaseClient = supabase,
+  db: DatabaseClient = supabase,
 ): Promise<void> {
   const event = readString(body, "event");
   const message = asRecord(body.payload) ?? body;
@@ -222,7 +220,7 @@ export async function handleWebhookEvent(
 }
 
 async function relayOwnerReply(
-  db: SupabaseClient,
+  db: DatabaseClient,
   provider: WhatsAppProvider,
   tenantId: string,
   session: string,

@@ -1,6 +1,4 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
-
-import { supabase } from "../db/supabase.js";
+import { supabase, type DatabaseClient } from "../db/supabase.js";
 import { HttpError } from "../utils/http-error.js";
 import {
   groupTopUnknownQuestions,
@@ -27,7 +25,7 @@ function reportError(message: string): never {
 }
 
 export class ReportsService {
-  constructor(private readonly db: SupabaseClient = supabase) {}
+  constructor(private readonly db: DatabaseClient = supabase) {}
 
   async createWeeklyReportJob(
     tenantId: string,

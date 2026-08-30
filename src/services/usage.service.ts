@@ -1,8 +1,8 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { DatabaseClient } from "../db/supabase.js";
 
 /** Append a billing/usage signal to `usage_events`. Kept intentionally minimal for Phase 1. */
 export async function recordUsageEvent(
-  db: SupabaseClient,
+  db: DatabaseClient,
   input: {
     tenantId: string;
     eventType: string;
