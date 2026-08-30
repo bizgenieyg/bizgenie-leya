@@ -25,7 +25,35 @@ export interface SessionStatus {
   connected?: boolean;
 }
 
+export interface SessionWebhookConfig {
+  url: string;
+  events: ["message", "session.status"];
+}
+
+export interface StartSessionInput {
+  name: string;
+  config: {
+    webhooks: SessionWebhookConfig[];
+    metadata: { tenant_id: string };
+  };
+}
+
+export interface QrImage {
+  data: Buffer;
+  contentType: string;
+}
+
 export interface WhatsAppProvider {
   sendMessage(input: SendMessageInput): Promise<SendMessageResult>;
   getSessionStatus(session: string): Promise<SessionStatus>;
+}
+
+/** Administrative lifecycle operations for sessions in the shared WAHA container. */
+export interface WhatsAppSessionProvider {
+  startSession(input: StartSessionInput): Promise<SessionStatus>;
+  stopSession(session: string): Promise<void>;
+  logoutSession(session: string): Promise<void>;
+  deleteSession(session: string): Promise<void>;
+  getSessionStatus(session: string): Promise<SessionStatus>;
+  getQrImage(session: string): Promise<QrImage>;
 }

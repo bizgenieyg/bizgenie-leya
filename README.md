@@ -26,9 +26,8 @@ Phase 1 Express and TypeScript backend skeleton with Supabase migrations.
 
    Generate `CREDENTIAL_ENCRYPTION_KEY` as a base64-encoded 32-byte key. `WAHA_URL` is read only from the environment; setup requests cannot override it.
 
-   `WAHA_API_KEY` is an optional shared fallback used only when a tenant's
-   `whatsapp_instances.waha_api_key_encrypted` is not set. The per-tenant
-   encrypted key always wins.
+   `WAHA_URL` and `WAHA_API_KEY` identify the single shared WAHA container.
+   `PUBLIC_BASE_URL` is the public HTTPS origin WAHA uses for tenant webhooks.
 
 3. Apply the SQL files in `supabase/migrations` in filename order using your Supabase migration workflow.
 
@@ -128,3 +127,16 @@ admin onboarding route.
 
 Phase 1 only prepares report data and job records. It does not execute,
 schedule, format, or deliver weekly reports.
+
+## WAHA session administration
+
+All routes use `ADMIN_SECRET`. One shared WAHA container holds one deterministic
+session per tenant, named `tenant-<tenantId>`:
+
+- `POST /api/admin/waha/create` with `{ "tenantId": "<uuid>" }`
+- `GET /api/admin/waha/qr?tenantId=<uuid>` returns the QR image with `no-store`
+- `GET /api/admin/waha/status?tenantId=<uuid>`
+- `POST /api/admin/waha/reconnect?tenantId=<uuid>` stops then starts without logout
+- `POST /api/admin/waha/disconnect?tenantId=<uuid>` logs out, stops, then deletes
+
+The WAHA API key stays server-side and is never returned by these endpoints.

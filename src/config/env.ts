@@ -22,6 +22,7 @@ export const env = Object.freeze({
   adminSecret: process.env.ADMIN_SECRET,
   wahaUrl: process.env.WAHA_URL,
   wahaApiKey: process.env.WAHA_API_KEY,
+  publicBaseUrl: process.env.PUBLIC_BASE_URL,
   credentialEncryptionKey: process.env.CREDENTIAL_ENCRYPTION_KEY,
 });
 
@@ -44,10 +45,11 @@ export function requireSupabaseEnv(): {
   };
 }
 
-export function requireEnv(name: "ADMIN_SECRET" | "WAHA_URL" | "CREDENTIAL_ENCRYPTION_KEY"): string {
+export function requireEnv(name: "ADMIN_SECRET" | "WAHA_URL" | "PUBLIC_BASE_URL" | "CREDENTIAL_ENCRYPTION_KEY"): string {
   const values = {
     ADMIN_SECRET: env.adminSecret,
     WAHA_URL: env.wahaUrl,
+    PUBLIC_BASE_URL: env.publicBaseUrl,
     CREDENTIAL_ENCRYPTION_KEY: env.credentialEncryptionKey,
   };
   const value = values[name];

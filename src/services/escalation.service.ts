@@ -1,9 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { requireEnv } from "../config/env.js";
 import { createWhatsAppProvider } from "../providers/whatsapp/index.js";
 import type { WhatsAppProvider } from "../providers/whatsapp/whatsapp-provider.interface.js";
-import { decryptCredential } from "../utils/crypto.js";
 import { toChatId } from "../utils/whatsapp-id.js";
 import { logSystemEvent, recordAgentAction } from "./logging.service.js";
 import type { ConversationRow, TenantRow } from "./tenant.service.js";
@@ -255,25 +253,10 @@ interface ScheduledJobRow {
 }
 
 async function providerForTenant(
-  db: SupabaseClient,
-  tenantId: string,
+  _db: SupabaseClient,
+  _tenantId: string,
 ): Promise<WhatsAppProvider> {
-  const { data } = await db
-    .from("whatsapp_instances")
-    .select("waha_api_key_encrypted")
-    .eq("tenant_id", tenantId)
-    .maybeSingle();
-  const encrypted = (data?.waha_api_key_encrypted as string | null) ?? null;
-  if (!encrypted) {
-    return createWhatsAppProvider();
-  }
-  try {
-    return createWhatsAppProvider(
-      decryptCredential(encrypted, requireEnv("CREDENTIAL_ENCRYPTION_KEY")),
-    );
-  } catch {
-    return createWhatsAppProvider();
-  }
+  return createWhatsAppProvider();
 }
 
 /**

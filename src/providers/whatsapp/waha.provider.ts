@@ -2,16 +2,17 @@ import type {
   SendMessageInput,
   SendMessageResult,
   SessionStatus,
+  StartSessionInput,
   WhatsAppProvider,
+  WhatsAppSessionProvider,
 } from "./whatsapp-provider.interface.js";
 
 /**
  * WAHA (GOWS engine) implementation of {@link WhatsAppProvider}.
  *
- * The base URL is injected (env-only, never hardcoded). The API key is optional
- * so callers can pass a per-tenant key or fall back to a shared one.
+ * The shared-container base URL and API key are injected from backend env.
  */
-export class WahaProvider implements WhatsAppProvider {
+export class WahaProvider implements WhatsAppProvider, WhatsAppSessionProvider {
   private readonly baseUrl: string;
 
   constructor(
@@ -52,12 +53,76 @@ export class WahaProvider implements WhatsAppProvider {
     return result;
   }
 
+  async startSession(input: StartSessionInput): Promise<SessionStatus> {
+    const data = await this.request("POST", "/api/sessions/start", input);
+    const record = isRecord(data) ? data : {};
+    return {
+      status: typeof record.status === "string" ? record.status : "unknown",
+    };
+  }
+
+  async stopSession(session: string): Promise<void> {
+    await this.request(
+      "POST",
+      `/api/sessions/${encodeURIComponent(session)}/stop`,
+    );
+  }
+
+  async logoutSession(session: string): Promise<void> {
+    await this.request(
+      "POST",
+      `/api/sessions/${encodeURIComponent(session)}/logout`,
+    );
+  }
+
+  async deleteSession(session: string): Promise<void> {
+    await this.request(
+      "DELETE",
+      `/api/sessions/${encodeURIComponent(session)}`,
+    );
+  }
+
+  async getQrImage(session: string): Promise<{ data: Buffer; contentType: string }> {
+    const response = await this.fetchResponse(
+      "GET",
+      `/api/${encodeURIComponent(session)}/auth/qr?format=image`,
+      undefined,
+      "image/png",
+    );
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!contentType.toLowerCase().startsWith("image/")) {
+      throw new Error("WAHA QR endpoint returned a non-image response");
+    }
+    return {
+      data: Buffer.from(await response.arrayBuffer()),
+      contentType,
+    };
+  }
+
   private async request(
-    method: "GET" | "POST",
+    method: "GET" | "POST" | "DELETE",
     path: string,
-    body?: Record<string, unknown>,
+    body?: object,
   ): Promise<unknown> {
-    const headers: Record<string, string> = { Accept: "application/json" };
+    const response = await this.fetchResponse(method, path, body, "application/json");
+    const text = await response.text();
+    if (text.trim() === "") {
+      return {};
+    }
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      return {};
+    }
+  }
+
+  private async fetchResponse(
+    method: "GET" | "POST" | "DELETE",
+    path: string,
+    body: object | undefined,
+    accept: string,
+  ): Promise<Response> {
+    const headers: Record<string, string> = { Accept: accept };
     if (this.apiKey) {
       headers["X-Api-Key"] = this.apiKey;
     }
@@ -76,15 +141,7 @@ export class WahaProvider implements WhatsAppProvider {
       throw new Error(`WAHA ${method} ${path} failed with status ${response.status}`);
     }
 
-    const text = await response.text();
-    if (text.trim() === "") {
-      return {};
-    }
-    try {
-      return JSON.parse(text) as unknown;
-    } catch {
-      return {};
-    }
+    return response;
   }
 }
 

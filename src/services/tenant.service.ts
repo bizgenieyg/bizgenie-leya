@@ -20,7 +20,6 @@ export interface WhatsappInstanceRow {
   phone: string | null;
   status: string | null;
   webhook_secret_encrypted: string | null;
-  waha_api_key_encrypted: string | null;
 }
 
 export interface TenantRouting {
@@ -70,7 +69,7 @@ export async function getTenantRouting(
   const { data: instance, error: instanceError } = await db
     .from("whatsapp_instances")
     .select(
-      "id, tenant_id, session_name, phone, status, webhook_secret_encrypted, waha_api_key_encrypted",
+      "id, tenant_id, session_name, phone, status, webhook_secret_encrypted",
     )
     .eq("tenant_id", tenantId)
     .maybeSingle();

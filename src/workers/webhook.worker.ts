@@ -1,11 +1,9 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { requireEnv } from "../config/env.js";
 import { supabase } from "../db/supabase.js";
 import { createWhatsAppProvider } from "../providers/whatsapp/index.js";
 import type { WhatsAppProvider } from "../providers/whatsapp/whatsapp-provider.interface.js";
 import { extractMessageId } from "../providers/whatsapp/waha.provider.js";
-import { decryptCredential } from "../utils/crypto.js";
 import { digitsOf, isStatusBroadcast, stripJidSuffix, toChatId } from "../utils/whatsapp-id.js";
 import { loadContext } from "../services/context.service.js";
 import {
@@ -51,21 +49,6 @@ function readReplyToId(message: Record<string, unknown>): string | null {
   }
   const id = replyTo.id;
   return typeof id === "string" && id !== "" ? id : null;
-}
-
-async function providerForInstance(
-  encryptedApiKey: string | null,
-): Promise<WhatsAppProvider> {
-  if (!encryptedApiKey) {
-    return createWhatsAppProvider();
-  }
-  try {
-    return createWhatsAppProvider(
-      decryptCredential(encryptedApiKey, requireEnv("CREDENTIAL_ENCRYPTION_KEY")),
-    );
-  } catch {
-    return createWhatsAppProvider();
-  }
 }
 
 /**
@@ -119,9 +102,7 @@ export async function handleWebhookEvent(
     (instance?.session_name && instance.session_name.trim()) ||
     readString(body, "session") ||
     "default";
-  const provider = await providerForInstance(
-    instance?.waha_api_key_encrypted ?? null,
-  );
+  const provider: WhatsAppProvider = createWhatsAppProvider();
 
   const text = readString(message, "body");
   const incomingMsgId = extractMessageId(message.id) || null;

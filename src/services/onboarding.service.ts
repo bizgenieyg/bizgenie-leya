@@ -167,9 +167,6 @@ export class OnboardingService {
       status: input.status ?? "active",
     };
     const encryptionKey = requireEnv("CREDENTIAL_ENCRYPTION_KEY");
-    if (typeof input.waha_api_key === "string" && input.waha_api_key !== "") {
-      values.waha_api_key_encrypted = encryptCredential(input.waha_api_key, encryptionKey);
-    }
     if (typeof input.webhook_secret === "string" && input.webhook_secret !== "") {
       values.webhook_secret_encrypted = encryptCredential(input.webhook_secret, encryptionKey);
     }
