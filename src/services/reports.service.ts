@@ -79,6 +79,7 @@ export class ReportsService {
         .select("*", { count: "exact", head: true })
         .eq("tenant_id", tenantId)
         .eq("action_type", "escalation_created")
+        .not("output", "is", null)
         .gte("created_at", startIso)
         .lte("created_at", endIso),
     ]);
@@ -119,9 +120,10 @@ export class ReportsService {
     for (let from = 0; ; from += PAGE_SIZE) {
       const { data, error } = await this.db
         .from("agent_actions")
-        .select("input")
+        .select("input, output")
         .eq("tenant_id", tenantId)
         .eq("action_type", "escalation_created")
+        .not("output", "is", null)
         .gte("created_at", periodStart)
         .lte("created_at", periodEnd)
         .not("input", "is", null)

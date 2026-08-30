@@ -1,5 +1,6 @@
 export interface UnknownQuestionRow {
   input: string | null;
+  output: string | null;
 }
 
 export interface UnknownQuestionCount {
@@ -13,6 +14,7 @@ export function groupTopUnknownQuestions(
 ): UnknownQuestionCount[] {
   const counts = new Map<string, number>();
   for (const row of rows) {
+    if (row.output === null) continue;
     if (typeof row.input !== "string" || row.input.trim() === "") continue;
     counts.set(row.input, (counts.get(row.input) ?? 0) + 1);
   }
