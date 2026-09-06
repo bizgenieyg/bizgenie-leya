@@ -5,6 +5,7 @@ import type { KnowledgeCandidate } from "./knowledge.service.js";
 
 export interface AssistantContext {
   assistant_name: string | null;
+  allowed_languages: string[] | null;
   tone: string | null;
   mode: string | null;
   system_rules: string | null;
@@ -26,7 +27,7 @@ export async function loadContext(
   const [assistantResult, knowledgeResult] = await Promise.all([
     db
       .from("assistant_profiles")
-      .select("assistant_name, tone, mode, system_rules")
+      .select("assistant_name, allowed_languages, tone, mode, system_rules")
       .eq("tenant_id", tenantId)
       .maybeSingle(),
     db

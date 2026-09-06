@@ -17,6 +17,8 @@ function optionalPort(value: string | undefined): number {
 
 export const env = Object.freeze({
   port: optionalPort(process.env.PORT),
+  geminiApiKey: process.env.GEMINI_API_KEY,
+  geminiModel: process.env.GEMINI_MODEL,
   supabaseUrl: process.env.SUPABASE_URL,
   supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
   adminSecret: process.env.ADMIN_SECRET,

@@ -96,8 +96,8 @@ On success the route stores nothing synchronously beyond acknowledging with
    `payload._data.Info.PushName`.
 3. Persists the inbound message with its raw payload in `messages.raw_payload`.
 4. Runs the Knowledge Module. Exact FAQ match → replies through the
-   `WhatsAppProvider` and logs `faq_answer_exact`. No match → creates an owner
-   escalation and logs `escalation_created`.
+   `WhatsAppProvider` and logs `faq_answer_exact`. No match → optional Gemini
+   knowledge-grounded reply; disabled/failed Gemini → existing owner escalation.
 5. Escalations go to `tenants.phone`. Inside `notification_settings` quiet hours
    (only `mode = 'mute_all'`), delivery is deferred into `scheduled_jobs`
    (`job_type = 'escalation_delivery'`) instead of sending immediately.
@@ -110,8 +110,7 @@ to a PM2 cron or external scheduler (e.g. once per minute).
 
 `WAHA_URL` is only ever read from the environment; provider logic lives in
 `src/providers/whatsapp/` and business code depends on the `WhatsAppProvider`
-interface, never on WAHA directly. `AIProvider` is a Phase 1 placeholder and is
-not wired into the pipeline.
+interface, never on WAHA directly. `AIProvider` supplies the optional Gemini fallback after an exact FAQ miss.
 
 ## Basic weekly reports
 
@@ -298,3 +297,36 @@ UUID is labelled `eventIdSource: generated`. Message ids/bodies and error-messag
 contents are not substituted into the log. Stack capture has no frame-count cap.
 An HTTP regression test forces a worker failure after successful authentication,
 asserts HTTP 200, and verifies event correlation plus the failing call sites.
+
+
+### Optional Gemini knowledge fallback
+
+Set server-only `GEMINI_API_KEY` to your Google AI Studio API key. Without it,
+fallback is disabled; startup and exact FAQ replies keep working. Optional
+`GEMINI_MODEL` defaults to **gemini-3.5-flash-lite**, listed as stable in Google's
+[model documentation](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite).
+The provider uses [generateContent REST](https://ai.google.dev/api/generate-content)
+with `x-goog-api-key`, a 10-second abort timeout, no retries and no added SDK.
+
+Every message loads current tenant context using explicit tenant_id filters:
+active FAQ question/answer pairs from knowledge_items, plus assistant_profiles
+assistant_name, allowed_languages and tone (migration 001). Exact FAQ lookup is
+unchanged and always runs first. Only a miss calls Gemini. Context is not shared
+or cached between tenants. Tenant settings/client text are passed as JSON data,
+with separate system instructions requiring knowledge-only answers, no invented
+prices/terms/facts, the customer's Hebrew/Russian/English language, and 2–4 short
+WhatsApp-style sentences without headings/lists. Prompt constraints are not a
+deterministic guarantee of factuality; check representative answers before use.
+
+Timeout, HTTP error, blocked/partial/empty output falls through to the existing
+escalation/silence path, with only `gemini_fallback_unavailable` logged. Successful
+replies follow the existing message persistence path and record a
+`knowledge_ai_answer` action/usage event without copying full texts into those
+logs. No changes to webhook authentication, WAHA provider, onboarding or schema.
+
+Deploy with the existing git pull/build/PM2 restart --update-env procedure after
+setting the key. Test one exact FAQ (no Gemini call), one paraphrase, and an
+unknown fact (must say the knowledge is missing and suggest contacting owner).
+Disable by removing GEMINI_API_KEY and restarting with --update-env.
+The automated tests mock Gemini; a live model call remains to be checked after
+setting the server key. No API key or customer data was sent during tests.

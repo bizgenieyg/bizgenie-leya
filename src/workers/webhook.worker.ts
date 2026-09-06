@@ -1,3 +1,5 @@
+import type { AIProvider } from "../providers/ai/ai-provider.interface.js";
+import { generateKnowledgeReply } from "../services/ai-fallback.service.js";
 import { supabase, type DatabaseClient } from "../db/supabase.js";
 import { createWhatsAppProvider } from "../providers/whatsapp/index.js";
 import type { WhatsAppProvider } from "../providers/whatsapp/whatsapp-provider.interface.js";
@@ -30,6 +32,7 @@ export async function handleWebhookEvent(
   body: Record<string, unknown>,
   db: DatabaseClient = supabase,
   whatsapp?: WhatsAppProvider,
+  ai?: AIProvider | null,
 ): Promise<void> {
   const event = webhookEventType(body);
   const normalized = normalizeWebhookMessage(body);
@@ -153,6 +156,23 @@ export async function handleWebhookEvent(
       event: "faq_answer_exact",
       details: { conversation_id: conversation.id },
     });
+    return;
+  }
+
+  const generatedReply = await generateKnowledgeReply(context, text, ai);
+  if (generatedReply) {
+    const sent = await provider.sendMessage({
+      session, chatId: from, text: generatedReply,
+      ...(incomingMsgId ? { replyTo: incomingMsgId } : {}),
+    });
+    await db.from("messages").insert({
+      conversation_id: conversation.id, tenant_id: tenantId, from_me: true,
+      body: generatedReply, msg_type: "text", waha_msg_id: sent.id || null,
+    });
+    await recordAgentAction(db, {
+      tenantId, conversationId: conversation.id, actionType: "knowledge_ai_answer",
+    });
+    await recordUsageEvent(db, { tenantId, eventType: "knowledge_ai_answer" });
     return;
   }
 
