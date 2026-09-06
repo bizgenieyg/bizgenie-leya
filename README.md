@@ -136,7 +136,64 @@ session per tenant, named `tenant-<tenantId>`:
 - `POST /api/admin/waha/create` with `{ "tenantId": "<uuid>" }`
 - `GET /api/admin/waha/qr?tenantId=<uuid>` returns the QR image with `no-store`
 - `GET /api/admin/waha/status?tenantId=<uuid>`
-- `POST /api/admin/waha/reconnect?tenantId=<uuid>` stops then starts without logout
+- `POST /api/admin/waha/reconnect?tenantId=<uuid>` updates webhook configuration and restarts; logs out and recreates if still FAILED/STOPPED
 - `POST /api/admin/waha/disconnect?tenantId=<uuid>` logs out, stops, then deletes
 
 The WAHA API key stays server-side and is never returned by these endpoints.
+
+### Webhook authentication and recovery deployment
+
+Session creation saves a random per-tenant webhook secret encrypted in
+`whatsapp_instances.webhook_secret_encrypted` **before** calling WAHA.
+Existing secrets are reused; legacy NULL secrets are initialized on reconnect.
+No new environment variable or SQL migration is required.
+
+Server environment:
+- `PUBLIC_BASE_URL=https://leya.bizgenie.site`
+- `CREDENTIAL_ENCRYPTION_KEY`: the existing base64-encoded 32-byte encryption key.
+  Keep its current value if encrypted credentials already exist. Only for an
+  installation without a key, generate one using `openssl rand -base64 32` and
+  save it privately in the server environment.
+- `WAHA_URL`, `WAHA_API_KEY`, `ADMIN_SECRET`: existing server values, unchanged.
+
+The provider sends `POST /api/sessions` with this body (placeholders below are
+replaced at runtime; the secret is never returned by the admin API):
+
+```json
+{
+  "name": "tenant-<tenantId>",
+  "start": true,
+  "config": {
+    "markOnline": false,
+    "webhooks": [{
+      "url": "https://leya.bizgenie.site/webhook/<tenantId>",
+      "events": ["message", "session.status"],
+      "customHeaders": [{ "name": "X-Webhook-Token", "value": "<per-tenant-secret>" }]
+    }],
+    "metadata": { "tenant_id": "<tenantId>" }
+  }
+}
+```
+
+The webhook validator compares that token with the decrypted tenant secret.
+Existing HMAC verification continues to use the exact raw bytes captured by
+the Express JSON parser, including Cyrillic and Hebrew payloads.
+
+Deploy in `/var/www/bizgenie-leya`:
+`git pull && npm run build && pm2 restart leia-api --update-env`.
+**Deployment alone does not update existing WAHA sessions.** Afterwards call
+`POST /api/admin/waha/reconnect?tenantId=<uuid>` with the existing
+`Authorization: Bearer <ADMIN_SECRET>` server credential for each affected tenant.
+Reconnect stops the session, applies the configuration using PUT, and starts it.
+If the session is still FAILED/STOPPED, it logs out, stops, deletes and recreates
+it; this fallback requires scanning a new QR. A missing WAHA session is recreated.
+Verify a real incoming message receives a response and webhook delivery returns
+200 after deployment.
+
+QR failures return a sanitized HTTP 409 with the current session status when
+WAHA status can be read; unreachable WAHA remains HTTP 502.
+
+Contract reference: https://waha.devlike.pro/docs/how-to/sessions/
+Regression checks: `npm run build && npm run typecheck && npm test` cover
+webhook token/HMAC verification, encrypted-secret persistence before startup,
+legacy-secret recovery, session configuration, reconnect fallback and FAQ routing.

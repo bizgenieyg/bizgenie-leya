@@ -54,11 +54,30 @@ export class WahaProvider implements WhatsAppProvider, WhatsAppSessionProvider {
   }
 
   async startSession(input: StartSessionInput): Promise<SessionStatus> {
-    const data = await this.request("POST", "/api/sessions/start", input);
+    const data = await this.request("POST", "/api/sessions", { ...input, start: true });
     const record = isRecord(data) ? data : {};
     return {
       status: typeof record.status === "string" ? record.status : "unknown",
     };
+  }
+
+  async restartSession(input: StartSessionInput): Promise<SessionStatus> {
+    const path = `/api/sessions/${encodeURIComponent(input.name)}`;
+    try {
+      await this.stopSession(input.name);
+      await this.request("PUT", path, input);
+      await this.request("POST", `${path}/start`);
+    } catch (error) {
+      if (error instanceof WahaHttpError && error.status === 404) {
+        return this.startSession(input);
+      }
+      if (error instanceof WahaHttpError && [401, 403].includes(error.status)) throw error;
+      // Only attempt destructive recovery for a confirmed failed session.
+      const current = await this.getSessionStatus(input.name);
+      if (current.status === "FAILED" || current.status === "STOPPED") return current;
+      throw error;
+    }
+    return this.getSessionStatus(input.name);
   }
 
   async stopSession(session: string): Promise<void> {
@@ -100,7 +119,7 @@ export class WahaProvider implements WhatsAppProvider, WhatsAppSessionProvider {
   }
 
   private async request(
-    method: "GET" | "POST" | "DELETE",
+    method: "GET" | "POST" | "PUT" | "DELETE",
     path: string,
     body?: object,
   ): Promise<unknown> {
@@ -117,7 +136,7 @@ export class WahaProvider implements WhatsAppProvider, WhatsAppSessionProvider {
   }
 
   private async fetchResponse(
-    method: "GET" | "POST" | "DELETE",
+    method: "GET" | "POST" | "PUT" | "DELETE",
     path: string,
     body: object | undefined,
     accept: string,
@@ -138,7 +157,7 @@ export class WahaProvider implements WhatsAppProvider, WhatsAppSessionProvider {
 
     if (!response.ok) {
       // Never surface the response body: it can echo the API key back.
-      throw new Error(`WAHA ${method} ${path} failed with status ${response.status}`);
+      throw new WahaHttpError(response.status);
     }
 
     return response;
@@ -173,4 +192,10 @@ export function extractMessageId(value: unknown): string {
     }
   }
   return "";
+}
+
+class WahaHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`WAHA request failed with status ${status}`);
+  }
 }

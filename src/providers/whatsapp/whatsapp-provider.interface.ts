@@ -28,11 +28,13 @@ export interface SessionStatus {
 export interface SessionWebhookConfig {
   url: string;
   events: ["message", "session.status"];
+  customHeaders: { name: string; value: string }[];
 }
 
 export interface StartSessionInput {
   name: string;
   config: {
+    markOnline: false;
     webhooks: SessionWebhookConfig[];
     metadata: { tenant_id: string };
   };
@@ -51,6 +53,7 @@ export interface WhatsAppProvider {
 /** Administrative lifecycle operations for sessions in the shared WAHA container. */
 export interface WhatsAppSessionProvider {
   startSession(input: StartSessionInput): Promise<SessionStatus>;
+  restartSession(input: StartSessionInput): Promise<SessionStatus>;
   stopSession(session: string): Promise<void>;
   logoutSession(session: string): Promise<void>;
   deleteSession(session: string): Promise<void>;
