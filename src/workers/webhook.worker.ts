@@ -5,7 +5,7 @@ import { supabase, type DatabaseClient } from "../db/supabase.js";
 import { createWhatsAppProvider } from "../providers/whatsapp/index.js";
 import type { WhatsAppProvider } from "../providers/whatsapp/whatsapp-provider.interface.js";
 import { normalizeWebhookMessage, webhookEventType } from "../utils/webhook-message.js";
-import { digitsOf, isStatusBroadcast, stripJidSuffix, toChatId } from "../utils/whatsapp-id.js";
+import { digitsOf, isStatusBroadcast, senderKey, toChatId } from "../utils/whatsapp-id.js";
 import { loadContext } from "../services/context.service.js";
 import {
   createEscalation,
@@ -69,7 +69,7 @@ export async function handleWebhookEvent(
   const provider: WhatsAppProvider = whatsapp ?? createWhatsAppProvider();
 
   const ownerDigits = digitsOf(tenant.phone);
-  const senderDigits = digitsOf(from);
+  const senderDigits = from.endsWith("@lid") ? "" : digitsOf(from);
   const isOwner =
     fromMe || (ownerDigits !== "" && ownerDigits === senderDigits);
 
@@ -88,7 +88,7 @@ export async function handleWebhookEvent(
     return;
   }
 
-  const clientPhone = stripJidSuffix(from);
+  const clientPhone = senderKey(from);
   const client = await findOrCreateClient(
     db,
     tenantId,

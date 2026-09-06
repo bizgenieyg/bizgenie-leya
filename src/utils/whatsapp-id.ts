@@ -36,3 +36,8 @@ export function toChatId(phoneOrJid: unknown): string {
   const digits = digitsOf(phoneOrJid);
   return digits ? `${digits}@c.us` : "";
 }
+
+/** LIDs are opaque identifiers, never phone numbers; preserve their namespace. */
+export function senderKey(jid: string): string {
+  return jid.endsWith("@lid") ? jid : stripJidSuffix(jid);
+}

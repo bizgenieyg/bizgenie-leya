@@ -10,10 +10,12 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
   const { handleWebhookEvent } = await import("../workers/webhook.worker.js");
   const writes: { table: string; data: Record<string, unknown> }[] = [];
   const sent: string[] = [];
+  const recipients: string[] = [];
+  const clientKeys: unknown[] = [];
   const db = { from(table: string) {
     let write = false;
     const query = {
-      select() { return query; }, eq() { return query; }, not() { return query; }, order() { return query; }, limit() { return query; },
+      select() { return query; }, eq(column: string, value: unknown) { if (table === "clients" && column === "phone") clientKeys.push(value); return query; }, not() { return query; }, order() { return query; }, limit() { return query; },
       update() { write = true; return query; },
       insert(data: Record<string, unknown>) { write = true; writes.push({ table, data }); return query; },
       async maybeSingle() {
@@ -35,7 +37,7 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
     return query;
   } } as unknown as DatabaseClient;
   const provider: WhatsAppProvider = {
-    async sendMessage(input) { sent.push(input.text); return { id: "reply" }; },
+    async sendMessage(input) { sent.push(input.text); recipients.push(input.chatId); return { id: "reply" }; },
     async getSessionStatus() { return { status: "WORKING" }; },
   };
   const body = { event: "message", payload: {
@@ -70,5 +72,13 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
       { ...body, payload: { ...body.payload, body: "Другой вопрос" } }, db, provider,
       { async generateReply() { throw new Error("private error"); } });
     assert.equal(sent.length, 2);
+    const lid = "261885798707406@lid";
+    await handleWebhookEvent("123e4567-e89b-42d3-a456-426614174000",
+      { ...body, payload: { ...body.payload, from: lid } }, db, provider, ai);
+    await handleWebhookEvent("123e4567-e89b-42d3-a456-426614174000",
+      { ...body, payload: { ...body.payload, from: lid, body: "Переформулированный вопрос" } }, db, provider, ai);
+    assert.deepEqual(recipients.slice(-2), [lid, lid]);
+    assert.deepEqual(clientKeys.slice(-2), [lid, lid]);
+    assert.equal(aiCalls, 2);
   } finally { console.warn = warn; console.info = info; }
 });

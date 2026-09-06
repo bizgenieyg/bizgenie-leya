@@ -15,6 +15,7 @@ export function parseAllowlist(flag?: string, list?: string): AllowlistPolicy {
 export function currentAllowlist() { return parseAllowlist(env.whatsappAllowlistEnabled, env.whatsappAllowlistNumbers); }
 export function allowedRecipient(value: unknown, policy = currentAllowlist()): boolean {
   if (typeof value !== "string") return false;
+  if (/^\d+@lid$/.test(value)) return !policy.enabled;
   const match = /^(\d{7,15})@(c\.us|s\.whatsapp\.net)$/.exec(value);
   const number = match?.[1] ?? (/^\+?[\d ()-]+$/.test(value) ? value.replace(/\D/g, "") : "");
   if (!/^\d{7,15}$/.test(number)) return false;
@@ -29,8 +30,11 @@ export function filterIncoming(body: Record<string, unknown>, policy = currentAl
   const chatType = [from, rawChat].some(chat => chat.endsWith("@g.us")) || info.IsGroup === true ? "group"
     : [from, rawChat].some(chat => chat.endsWith("@broadcast")) ? "broadcast"
     : [from, rawChat].some(chat => chat.endsWith("@newsletter")) ? "newsletter"
-    : /^\d{7,15}@(c\.us|s\.whatsapp\.net)$/.test(from) ? "private" : "unknown";
-  const reject = (reason: string) => ({ allowed: false as const, chatType, event, reason });
+    : (/^\d{7,15}@(c\.us|s\.whatsapp\.net)$/.test(from) || /^\d+@lid$/.test(from)) ? "private" : "unknown";
+  const suffix = from.includes("@") ? from.slice(from.lastIndexOf("@")) : "missing";
+  const safeSuffix = /^@[a-z0-9.-]{1,64}$/i.test(suffix) ? suffix : "missing_or_invalid";
+  const reject = (reason: string) => ({ allowed: false as const, chatType, event, reason,
+    ...(chatType === "unknown" ? { suffix: safeSuffix } : {}) });
   if (event === "other") return reject("system_event");
   if (chatType !== "private") return reject("non_private_chat");
   if (rawChat && rawChat.replace(/@s\.whatsapp\.net$/, "@c.us") !== from.replace(/@s\.whatsapp\.net$/, "@c.us")) return reject("conflicting_chat");
@@ -39,6 +43,7 @@ export function filterIncoming(body: Record<string, unknown>, policy = currentAl
   if (typeof message.body !== "string" || !message.body.trim()) return reject("missing_text");
   const raw = record(record(message._data).Message);
   if (Object.keys(raw).length && !Object.keys(raw).filter(key => raw[key] != null).every(key => ["conversation", "extendedTextMessage", "messageContextInfo"].includes(key))) return reject("non_text");
+  if (policy.enabled && from.endsWith("@lid")) return reject("allowlist_unresolved");
   if (!allowedRecipient(from, policy)) return reject("not_allowlisted");
   return { allowed: true as const, chatType, event };
 }

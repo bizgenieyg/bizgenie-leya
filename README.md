@@ -344,10 +344,10 @@ with `_data.Info.Chat` and `Info.IsGroup` as additional rejection signals.
 After unchanged webhook authentication/HTTP 200, the route gates events before
 starting the worker; the worker repeats the gate for direct calls. Only `message`
 or `message.any`, explicit `fromMe: false`, `hasMedia: false`, nonempty text and a
-numeric private chat (`@c.us` or `@s.whatsapp.net`) are accepted. Groups, outgoing,
+numeric private chat (`@c.us`, `@s.whatsapp.net` or `@lid`) are accepted. Groups, outgoing,
 status/broadcast, newsletter/channel, system events, media captions, locations,
 contacts and non-text protocol objects are ignored. Conflicting or unknown IDs,
-including unresolved `@lid`, fail closed. No group participant fallback is used.
+except numeric private `@lid` JIDs, fail closed. No group participant fallback is used.
 This cannot prove a remote human authored the text; it enforces incoming private
 text according to WAHA's event fields.
 
@@ -373,3 +373,30 @@ are intended during the demo. We do not start the stopped WAHA session.
 Before manually resuming it, deploy and set the allowlist; verify an allowed
 private message receives an answer, while group/fromMe/nonlisted messages log a
 single rejection and cause no FAQ/Gemini/send calls.
+
+
+### H-fix: opaque LID private chats
+
+Numeric `payload.from` ending in `@lid` is a private chat, like `@c.us` and
+`@s.whatsapp.net`. Group/broadcast/newsletter and fromMe protections remain.
+With allowlist disabled it reaches the existing FAQ/Gemini flow. No lookup or
+conversion from LID to a telephone number is attempted.
+
+The full LID (including `@lid`) is used in the existing clients.phone key column
+and therefore the client/conversation/escalation chain. Reply destinations retain
+the full JID. Phone-number keys remain unchanged. A LID is never compared with an
+owner phone based only on matching digits. No existing ambiguous numeric client
+records are rewritten or guessed. Context remains scoped by tenant_id.
+There is no “АУДИТ” promotion implementation in this checkout to update.
+
+When allowlist is enabled, unresolved LIDs are blocked with
+`allowlist_unresolved`, even if the LID's digits appear in the phone list.
+Rejection reasons: `system_event`, `non_private_chat`, `conflicting_chat`,
+`outgoing_or_unknown_direction`, `non_text`, `missing_text`,
+`allowlist_unresolved`, `not_allowlisted`; the worker also ignores identified
+owners with `owner_message`. An unknown chat logs its suffix only (e.g.
+`@future`), not the number. LIDs are labelled `private`, not `unknown`.
+
+Tests cover private LID FAQ and Gemini replies, complete LID client keys and
+reply addresses, groups, fromMe, and allowlist rejection. No env or migration
+changes. The stopped WAHA session is not started by this change.
