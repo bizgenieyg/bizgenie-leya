@@ -1,3 +1,4 @@
+import { SessionNotFoundError } from "../providers/whatsapp/whatsapp-provider.interface.js";
 import { randomBytes } from "node:crypto";
 import { decryptCredential, encryptCredential } from "../utils/crypto.js";
 import { requireEnv } from "../config/env.js";
@@ -27,54 +28,71 @@ export class WahaAdminService {
     private readonly wahaUrl: string = requireEnv("WAHA_URL"),
   ) {}
 
-  async create(tenantId: string): Promise<{ session: string; status: string }> {
+  async create(tenantId: string) {
     await this.requireTenant(tenantId);
+    const session = sessionNameForTenant(tenantId);
+    let existing = await this.readStatus(session);
+    if (existing.status !== "NOT_CREATED") {
+      await this.ensureWebhookSecret(tenantId);
+      await this.updateInstanceStatus(tenantId, existing.status);
+      return { session, ...existing, created: false };
+    }
     const secret = await this.ensureWebhookSecret(tenantId);
     const config = sessionConfigForTenant(tenantId, this.publicBaseUrl, secret);
     let status: SessionStatus;
     try {
       status = await this.provider.startSession(config);
     } catch {
+      // A competing create may have won after our initial lookup.
+      existing = await this.readStatus(session);
+      if (existing.status !== "NOT_CREATED") {
+        await this.updateInstanceStatus(tenantId, existing.status);
+        return { session, ...existing, created: false };
+      }
       upstreamError();
     }
-    await this.updateInstanceStatus(tenantId, status.status);
-    return { session: config.name, status: status.status };
+    const normalized = normalizeSessionStatus(status);
+    await this.updateInstanceStatus(tenantId, normalized.status);
+    return { session, ...normalized, created: true };
   }
 
   async qr(tenantId: string): Promise<QrImage> {
-    const session = await this.requireSession(tenantId);
+    await this.requireTenant(tenantId);
+    const session = sessionNameForTenant(tenantId);
+    const current = await this.readStatus(session);
+    if (!current.qrAvailable) {
+      throw new HttpError(409, "QR is unavailable in the current session state", current);
+    }
     try {
       return await this.provider.getQrImage(session);
     } catch {
-      let current: SessionStatus;
-      try {
-        current = await this.provider.getSessionStatus(session);
-      } catch {
-        upstreamError();
+      // The session may transition between status lookup and QR retrieval.
+      const latest = await this.readStatus(session);
+      if (!latest.qrAvailable) {
+        throw new HttpError(409, "QR is unavailable in the current session state", latest);
       }
-      const known = ["FAILED", "STOPPED", "STARTING", "WORKING", "SCAN_QR_CODE"];
-      const status = known.includes(current.status) ? current.status : "UNKNOWN";
-      throw new HttpError(409, `WhatsApp QR unavailable: session status ${status}. Reconnect the session if FAILED or STOPPED.`);
-    }
-  }
-
-  async status(tenantId: string): Promise<{ session: string; status: SessionStatus }> {
-    const session = await this.requireSession(tenantId);
-    let status: SessionStatus;
-    try {
-      status = await this.provider.getSessionStatus(session);
-    } catch {
       upstreamError();
     }
-    const { error } = await this.db
-      .from("whatsapp_instances")
-      .update({ status: status.status, last_health_check_at: new Date().toISOString() })
-      .eq("tenant_id", tenantId);
-    if (error) throw new HttpError(500, "Could not update WhatsApp status");
-    return { session, status };
   }
 
-  async reconnect(tenantId: string): Promise<{ session: string; status: string }> {
+  async status(tenantId: string) {
+    await this.requireTenant(tenantId);
+    const session = sessionNameForTenant(tenantId);
+    const status = await this.readStatus(session);
+    await this.updateInstanceStatus(tenantId, status.status);
+    return { session, ...status };
+  }
+
+  private async readStatus(session: string) {
+    try {
+      return normalizeSessionStatus(await this.provider.getSessionStatus(session));
+    } catch (error) {
+      if (error instanceof SessionNotFoundError) return { status: "NOT_CREATED", qrAvailable: false };
+      upstreamError();
+    }
+  }
+
+  async reconnect(tenantId: string): Promise<{ session: string; status: string; qrAvailable: boolean }> {
     const session = await this.requireSession(tenantId);
     const secret = await this.ensureWebhookSecret(tenantId);
     const config = sessionConfigForTenant(tenantId, this.publicBaseUrl, secret);
@@ -88,7 +106,7 @@ export class WahaAdminService {
       upstreamError();
     }
     await this.updateInstanceStatus(tenantId, status.status);
-    return { session, status: status.status };
+    return { session, ...normalizeSessionStatus(status) };
   }
 
   async disconnect(tenantId: string): Promise<{ session: string; disconnected: true }> {
@@ -159,4 +177,12 @@ export class WahaAdminService {
       .eq("tenant_id", tenantId);
     if (error) throw new HttpError(500, "Could not update WhatsApp session");
   }
+}
+
+export function normalizeSessionStatus(value: SessionStatus) {
+  const raw = value.status.trim();
+  const known = ["STOPPED", "STARTING", "SCAN_QR_CODE", "WORKING", "FAILED"];
+  const status = known.includes(raw.toUpperCase()) ? raw.toUpperCase() : raw || "UNKNOWN";
+  return { status, qrAvailable: status === "SCAN_QR_CODE",
+    ...(status === "FAILED" && value.reason ? { reason: value.reason } : {}) };
 }

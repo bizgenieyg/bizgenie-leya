@@ -94,3 +94,25 @@ test("restart does not delete or recreate when WAHA authorization fails", async 
     assert.equal(methods.includes("DELETE"), false);
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test("only HTTP 404 is treated as a missing session", async () => {
+  const { SessionNotFoundError } = await import("../providers/whatsapp/whatsapp-provider.interface.js");
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const status of [404, 401, 500]) {
+      globalThis.fetch = async () => new Response("", { status });
+      await assert.rejects(new WahaProvider("http://waha.internal").getSessionStatus("tenant"), (error: unknown) =>
+        status === 404 ? error instanceof SessionNotFoundError : error instanceof Error && !(error instanceof SessionNotFoundError));
+    }
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("FAILED exposes a safe explanation for WAHA engine errors without raw details", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ status: "FAILED", engine: { gows: { error: { message: "private-key-url" } } } });
+  try {
+    const result = await new WahaProvider("http://waha.internal").getSessionStatus("tenant");
+    assert.equal(result.reason, "WAHA не удалось получить состояние подключения.");
+    assert.equal(JSON.stringify(result).includes("private-key"), false);
+  } finally { globalThis.fetch = originalFetch; }
+});

@@ -190,10 +190,71 @@ it; this fallback requires scanning a new QR. A missing WAHA session is recreate
 Verify a real incoming message receives a response and webhook delivery returns
 200 after deployment.
 
-QR failures return a sanitized HTTP 409 with the current session status when
-WAHA status can be read; unreachable WAHA remains HTTP 502.
+QR checks status first and returns HTTP 409 with `status` and `qrAvailable: false`
+unless SCAN_QR_CODE. It rechecks state if fetching the QR fails during a
+transition. Unreachable WAHA remains HTTP 502.
 
 Contract reference: https://waha.devlike.pro/docs/how-to/sessions/
 Regression checks: `npm run build && npm run typecheck && npm test` cover
 webhook token/HMAC verification, encrypted-secret persistence before startup,
 legacy-secret recovery, session configuration, reconnect fallback and FAQ routing.
+
+### Versioned session status contract
+
+The project operations notes identify **WAHA Core 2026.6.2 / GOWS**.
+Verified against tag `2026.6.2`, commit
+`208f4f3d78b15f68d9b17e78f5318c0e2ceb26de`:
+- [WAHASessionStatus enum](https://github.com/devlikeapro/waha/blob/2026.6.2/src/structures/enums.dto.ts)
+- [Session response/config DTOs](https://github.com/devlikeapro/waha/blob/2026.6.2/src/structures/sessions.dto.ts)
+- [GOWS engine response](https://github.com/devlikeapro/waha/blob/2026.6.2/src/core/engines/gows/session.gows.core.ts)
+
+The complete enum for that version is STOPPED, STARTING, SCAN_QR_CODE, WORKING,
+FAILED. NOT_CREATED is our local absence marker, not a WAHA status. New unknown
+status strings are preserved. Current unversioned WAHA documentation may include
+statuses introduced after 2026.6.2; do not silently apply that enum to this version.
+
+`GET /api/admin/waha/status` returns a flat object:
+`{ session, status, qrAvailable, reason? }`. Only SCAN_QR_CODE enables QR.
+There is no documented human-readable failure-reason field in SessionInfo for
+this version; GOWS returns found/connected, or a technical engine.gows.error.
+When that error is present for FAILED, we supply a fixed safe explanation instead
+of forwarding its raw text. No reason is invented when WAHA supplies no error.
+
+Create first reads the deterministic WAHA session. Existing sessions return
+HTTP 200 with `created: false`; only WAHA HTTP 404 permits creation. A new session
+returns HTTP 201 with `created: true`. A competing create is resolved with a
+fresh status lookup. Transport/auth failures are not treated as absence.
+
+Both admin screens use this behavior:
+| Status | Display/action |
+| --- | --- |
+| NOT_CREATED (local) | Connect → create after status recheck |
+| STOPPED | Disconnected → reconnect |
+| STARTING | Connecting + spinner; poll; never create |
+| SCAN_QR_CODE | Instructions + QR, refresh every 20 seconds |
+| WORKING | Connected; Next in onboarding / Disconnect with confirmation in cabinet |
+| FAILED | Failed + safe reason when available; reconnect |
+| Any other string | Display verbatim; retry via reconnect |
+
+Status polling is every 3 seconds for at most 3 minutes, stops at a terminal
+state and on unmount. HTTP 4xx does not become “backend unavailable”.
+
+#### Correction: markOnline on GOWS 2026.6.2
+
+The outgoing POST /api/sessions body **does contain config.markOnline: false**;
+the provider contract test captures and asserts the actual fetch body.
+However, in this version `markOnline` is declared only in `NowebConfig`
+(`config.noweb.markOnline`). Neither SessionConfig nor GowsConfig declares the
+top-level field. The session controller's
+[WAHAValidationPipe](https://github.com/devlikeapro/waha/blob/2026.6.2/src/nestjs/pipes/WAHAValidationPipe.ts)
+uses `whitelist: true`, which strips it (or rejects it in strict mode).
+Its absence from GET is therefore **not evidence of a hidden supported GOWS
+setting**. The prior claim that this config controls GOWS phone notifications
+was incorrect. The requested field remains in the outgoing body, but cannot
+provide that guarantee in this version. Do not switch engines or add an
+undocumented replacement setting.
+
+Live version/config validation remains pending: SSH over the documented
+Tailscale address timed out; the LAN address refused the available SSH key.
+No live session was created or disconnected during these checks. Confirm the
+running image version and notification behavior on the installed WAHA instance.

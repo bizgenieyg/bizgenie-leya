@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { DatabaseClient } from "../db/supabase.js";
+import { SessionNotFoundError } from "../providers/whatsapp/whatsapp-provider.interface.js";
 import type { WhatsAppSessionProvider, StartSessionInput } from "../providers/whatsapp/whatsapp-provider.interface.js";
 import { decryptCredential } from "../utils/crypto.js";
 import { HttpError } from "../utils/http-error.js";
@@ -60,7 +61,7 @@ test("create persists the matching encrypted secret before WAHA starts; reconnec
     stopSession: async () => {},
     logoutSession: async () => {},
     deleteSession: async () => {},
-    getSessionStatus: async () => ({ status: "FAILED" }),
+    getSessionStatus: async () => { if (!starts) throw new SessionNotFoundError(); return { status: "FAILED" }; },
     getQrImage: async () => { throw new Error("sensitive upstream 422"); },
   };
   const service = new WahaAdminService(db, provider, "https://leia.example.com", "http://waha.internal");
@@ -72,7 +73,39 @@ test("create persists the matching encrypted secret before WAHA starts; reconnec
   await service.reconnect(tenantId);
   assert.ok(row?.webhook_secret_encrypted);
   await assert.rejects(service.qr(tenantId), (error: unknown) =>
-    error instanceof HttpError && error.status === 409 && error.message.includes("FAILED") && !error.message.includes("sensitive"));
+    error instanceof HttpError && error.status === 409 && error.details?.status === "FAILED" && !error.message.includes("sensitive"));
+  for (const status of ["STOPPED", "STARTING", "SCAN_QR_CODE", "WORKING", "FAILED", "FUTURE_STATE"]) {
+    provider.getSessionStatus = async () => ({ status });
+    const existing = await service.create(tenantId);
+    assert.equal(existing.created, false);
+    assert.equal(existing.status, status);
+    assert.equal(existing.qrAvailable, status === "SCAN_QR_CODE");
+    assert.equal(starts, 3);
+    if (status !== "SCAN_QR_CODE") await assert.rejects(service.qr(tenantId), (error: unknown) => error instanceof HttpError && error.status === 409 && error.details?.status === status);
+  }
+  provider.getSessionStatus = async () => { throw new SessionNotFoundError(); };
+  assert.deepEqual(await service.status(tenantId), {
+    session: `tenant-${tenantId}`, status: "NOT_CREATED", qrAvailable: false,
+  });
+  let statusReads = 0;
+  provider.getSessionStatus = async () => {
+    if (++statusReads === 1) throw new SessionNotFoundError();
+    return { status: "STARTING" };
+  };
+  provider.startSession = async () => { throw new Error("concurrent create conflict"); };
+  const raced = await service.create(tenantId);
+  assert.equal(raced.created, false);
+  assert.equal(raced.status, "STARTING");
+  assert.equal(statusReads, 2);
+
+  // QR may transition out of SCAN_QR_CODE while the image request is in flight.
+  statusReads = 0;
+  provider.getSessionStatus = async () => ({ status: ++statusReads === 1 ? "SCAN_QR_CODE" : "FAILED" });
+  await assert.rejects(service.qr(tenantId), (error: unknown) =>
+    error instanceof HttpError && error.status === 409 && error.details?.status === "FAILED");
+  provider.getSessionStatus = async () => ({ status: "SCAN_QR_CODE" });
+  provider.getQrImage = async () => ({ data: Buffer.from([137, 80, 78, 71]), contentType: "image/png" });
+  assert.equal((await service.qr(tenantId)).contentType, "image/png");
   failWrites = true;
   await assert.rejects(service.create(tenantId), /Could not prepare/);
   assert.equal(starts, 3);

@@ -33,7 +33,7 @@ app.use("/webhook", webhookRouter);
 
 app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
   if (error instanceof HttpError) {
-    response.status(error.status).json({ error: error.message });
+    response.status(error.status).json({ error: error.message, ...error.details });
     return;
   }
   console.error("Unhandled request error");

@@ -1,3 +1,4 @@
+import { SessionNotFoundError } from "./whatsapp-provider.interface.js";
 import type {
   SendMessageInput,
   SendMessageResult,
@@ -37,16 +38,23 @@ export class WahaProvider implements WhatsAppProvider, WhatsAppSessionProvider {
   }
 
   async getSessionStatus(session: string): Promise<SessionStatus> {
-    const data = await this.request(
-      "GET",
-      `/api/sessions/${encodeURIComponent(session)}`,
-    );
+    let data: unknown;
+    try {
+      data = await this.request("GET", `/api/sessions/${encodeURIComponent(session)}`);
+    } catch (error) {
+      if (error instanceof WahaHttpError && error.status === 404) throw new SessionNotFoundError();
+      throw error;
+    }
     const record = isRecord(data) ? data : {};
     const engine = isRecord(record.engine) ? record.engine : {};
     const gows = isRecord(engine.gows) ? engine.gows : {};
     const result: SessionStatus = {
       status: typeof record.status === "string" ? record.status : "unknown",
     };
+    if (result.status === "FAILED" && gows.error) {
+      // WAHA exposes a technical gRPC error, not a safe user-facing message.
+      result.reason = "WAHA не удалось получить состояние подключения.";
+    }
     if (typeof gows.connected === "boolean") {
       result.connected = gows.connected;
     }

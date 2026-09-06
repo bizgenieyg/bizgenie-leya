@@ -20,7 +20,10 @@ export interface SendMessageResult {
   id: string;
 }
 
+export class SessionNotFoundError extends Error {}
+
 export interface SessionStatus {
+  reason?: string;
   status: string;
   connected?: boolean;
 }

@@ -21,7 +21,8 @@ function queryTenantId(value: unknown): string {
 adminRouter.post("/waha/create", async (request, response) => {
   const tenantId = requiredString(objectBody(request.body), "tenantId");
   if (!isUuid(tenantId)) throw new HttpError(400, "tenantId must be a UUID");
-  response.status(201).json(await waha.create(tenantId));
+  const result = await waha.create(tenantId);
+  response.status(result.created ? 201 : 200).json(result);
 });
 
 adminRouter.get("/waha/qr", async (request, response) => {
