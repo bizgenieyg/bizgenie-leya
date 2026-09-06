@@ -1,3 +1,4 @@
+import { filterIncoming, logRejectedIncoming } from "../utils/incoming-policy.js";
 import { webhookFailureDetails } from "../utils/webhook-error.js";
 import { webhookAuthValid } from "../utils/webhook-auth.js";
 import { Router } from "express";
@@ -34,6 +35,9 @@ webhookRouter.post("/:tenantId", async (request, response) => {
 
   // Acknowledge fast; do the resolve/answer/escalate work off the request path.
   response.status(200).json({ received: true });
+
+  const decision = filterIncoming(body);
+  if (!decision.allowed) { logRejectedIncoming(decision); return; }
 
   setImmediate(() => {
     handleWebhookEvent(tenantId, body).catch((error) => {

@@ -76,7 +76,7 @@ test("authenticated webhook returns 200 even when worker fails and logs event id
     assert.ok(address && typeof address === "object");
     const response: Response = await originalFetch(`http://127.0.0.1:${address.port}/webhook/123e4567-e89b-42d3-a456-426614174000`, {
       method: "POST", headers: { "Content-Type": "application/json", "X-Webhook-Token": "tenant-secret" },
-      body: JSON.stringify({ id: "01arz3ndektsv4rrffq69g5fav", event: "message", payload: { from: "972500000001@c.us", body: "private contents" } }),
+      body: JSON.stringify({ id: "01arz3ndektsv4rrffq69g5fav", event: "message", payload: { from: "972500000001@c.us", fromMe: false, hasMedia: false, body: "private contents" } }),
     });
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { received: true });

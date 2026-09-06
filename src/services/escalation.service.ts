@@ -1,3 +1,4 @@
+import { allowedRecipient } from "../utils/incoming-policy.js";
 import type { DatabaseClient } from "../db/supabase.js";
 
 import { createWhatsAppProvider } from "../providers/whatsapp/index.js";
@@ -122,6 +123,10 @@ export async function createEscalation(
   const { tenant, session, conversation, clientName, clientMessage } = input;
   const text = buildEscalationText(clientName, clientMessage);
   const ownerChatId = toChatId(tenant.phone);
+  if (!allowedRecipient(ownerChatId)) {
+    console.info('whatsapp_send_blocked {"chatType":"owner","reason":"recipient_policy"}');
+    return { queued: false };
+  }
 
   const settings = await loadNotificationSettings(db, tenant.id);
   const now = new Date();
@@ -286,6 +291,10 @@ export async function runDueScheduledEscalations(
         .from("scheduled_jobs")
         .update({ status: "error", error: "malformed escalation payload" })
         .eq("id", job.id);
+      continue;
+    }
+    if (!allowedRecipient(payload.owner_chat_id)) {
+      console.info('whatsapp_send_blocked {"chatType":"owner","reason":"recipient_policy"}');
       continue;
     }
     try {

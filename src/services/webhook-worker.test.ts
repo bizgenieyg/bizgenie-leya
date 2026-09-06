@@ -39,7 +39,7 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
     async getSessionStatus() { return { status: "WORKING" }; },
   };
   const body = { event: "message", payload: {
-    from: "972500000001@c.us", body: "Часы работы?", author: null, replyTo: null,
+    from: "972500000001@c.us", fromMe: false, hasMedia: false, body: "Часы работы?", author: null, replyTo: null,
     _data: { Info: { PushName: "Тест" } },
   } };
   let aiCalls = 0;
@@ -49,8 +49,10 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
   assert.deepEqual(sent, ["С 9 до 18."]);
   assert.ok(writes.some(write => write.table === "agent_actions" && write.data.action_type === "faq_answer_exact"));
   const warn = console.warn;
+  const info = console.info;
   const warnings: unknown[] = [];
   console.warn = (...args: unknown[]) => { warnings.push(args); };
+  console.info = (...args: unknown[]) => { warnings.push(args); };
   try {
     await handleWebhookEvent("123e4567-e89b-42d3-a456-426614174000",
       { ...body, payload: { ...body.payload, body: null } }, db, provider);
@@ -68,5 +70,5 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
       { ...body, payload: { ...body.payload, body: "Другой вопрос" } }, db, provider,
       { async generateReply() { throw new Error("private error"); } });
     assert.equal(sent.length, 2);
-  } finally { console.warn = warn; }
+  } finally { console.warn = warn; console.info = info; }
 });

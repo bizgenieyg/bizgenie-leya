@@ -1,3 +1,4 @@
+import { filterIncoming, logRejectedIncoming } from "../utils/incoming-policy.js";
 import type { AIProvider } from "../providers/ai/ai-provider.interface.js";
 import { generateKnowledgeReply } from "../services/ai-fallback.service.js";
 import { supabase, type DatabaseClient } from "../db/supabase.js";
@@ -8,7 +9,6 @@ import { digitsOf, isStatusBroadcast, stripJidSuffix, toChatId } from "../utils/
 import { loadContext } from "../services/context.service.js";
 import {
   createEscalation,
-  findEscalationByReplyId,
 } from "../services/escalation.service.js";
 import { findExactKnowledgeAnswer } from "../services/knowledge.service.js";
 import { logSystemEvent, recordAgentAction } from "../services/logging.service.js";
@@ -25,7 +25,7 @@ import { recordUsageEvent } from "../services/usage.service.js";
  *
  * Resolves tenant/client/conversation, persists the inbound message with its raw
  * payload, then either answers with an exact FAQ match or escalates to the owner.
- * Owner replies that quote an escalation are relayed back to the client.
+ * Only inbound private customer text passes the early recipient policy.
  */
 export async function handleWebhookEvent(
   tenantId: string,
@@ -34,6 +34,8 @@ export async function handleWebhookEvent(
   whatsapp?: WhatsAppProvider,
   ai?: AIProvider | null,
 ): Promise<void> {
+  const decision = filterIncoming(body);
+  if (!decision.allowed) { logRejectedIncoming(decision); return; }
   const event = webhookEventType(body);
   const normalized = normalizeWebhookMessage(body);
   if (normalized.kind !== "message") {
@@ -46,7 +48,7 @@ export async function handleWebhookEvent(
     });
     return;
   }
-  const { from, text, incomingMsgId, replyToId, fromMe, pushName } = normalized;
+  const { from, text, incomingMsgId, fromMe, pushName } = normalized;
   if (isStatusBroadcast(from)) return;
 
   const routing = await getTenantRouting(db, tenantId);
@@ -71,12 +73,8 @@ export async function handleWebhookEvent(
   const isOwner =
     fromMe || (ownerDigits !== "" && ownerDigits === senderDigits);
 
-  // Owner messages are never treated as client questions. The one meaningful
-  // case is an owner reply quoting an escalation we sent.
   if (isOwner) {
-    if (replyToId && text.trim() !== "") {
-      await relayOwnerReply(db, provider, tenantId, session, replyToId, text);
-    }
+    logRejectedIncoming({ allowed: false, chatType: "private", event, reason: "owner_message" });
     return;
   }
 
@@ -189,51 +187,4 @@ export async function handleWebhookEvent(
     clientMessage: text,
   });
   await recordUsageEvent(db, { tenantId, eventType: "escalation_created" });
-}
-
-async function relayOwnerReply(
-  db: DatabaseClient,
-  provider: WhatsAppProvider,
-  tenantId: string,
-  session: string,
-  replyToId: string,
-  ownerText: string,
-): Promise<void> {
-  const match = await findEscalationByReplyId(db, tenantId, replyToId, session);
-  if (!match) {
-    await logSystemEvent(db, {
-      tenantId,
-      level: "info",
-      event: "owner_reply_unmatched",
-      details: {},
-    });
-    return;
-  }
-
-  const sent = await provider.sendMessage({
-    session,
-    chatId: toChatId(match.clientPhone),
-    text: ownerText,
-  });
-  await db.from("messages").insert({
-    conversation_id: match.conversationId,
-    tenant_id: tenantId,
-    from_me: true,
-    body: ownerText,
-    msg_type: "text",
-    waha_msg_id: sent.id || null,
-  });
-  await recordAgentAction(db, {
-    tenantId,
-    conversationId: match.conversationId,
-    actionType: "escalation_reply_relayed",
-    input: replyToId,
-    output: ownerText,
-  });
-  await logSystemEvent(db, {
-    tenantId,
-    level: "info",
-    event: "escalation_reply_relayed",
-    details: { conversation_id: match.conversationId },
-  });
 }

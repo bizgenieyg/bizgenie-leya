@@ -101,8 +101,8 @@ On success the route stores nothing synchronously beyond acknowledging with
 5. Escalations go to `tenants.phone`. Inside `notification_settings` quiet hours
    (only `mode = 'mute_all'`), delivery is deferred into `scheduled_jobs`
    (`job_type = 'escalation_delivery'`) instead of sending immediately.
-6. An owner reply is relayed to the client only when `payload.replyTo.id`
-   matches the stored WAHA message id of the escalation we sent.
+6. Outgoing/fromMe and owner messages are discarded; quoted owner replies no
+   longer bypass the inbound-only policy.
 
 Deferred escalations are delivered by `runDueScheduledEscalations()` in
 `src/services/escalation.service.ts`. It is not run by the web process — wire it
@@ -330,3 +330,46 @@ unknown fact (must say the knowledge is missing and suggest contacting owner).
 Disable by removing GEMINI_API_KEY and restarting with --update-env.
 The automated tests mock Gemini; a live model call remains to be checked after
 setting the server key. No API key or customer data was sent during tests.
+
+
+### Private-text gate and presentation allowlist
+
+Verified against WAHA Core 2026.6.2 GOWS source:
+[src/core/engines/gows/session.gows.core.ts](https://github.com/devlikeapro/waha/blob/2026.6.2/src/core/engines/gows/session.gows.core.ts).
+`getFromToParticipant` reads `Info.Chat` into the chat `from`; WAHA publishes it
+as `payload.from`. `payload.participant`/`Info.Sender` is the group participant,
+not the chat. Group detection therefore uses `payload.from` ending in `@g.us`,
+with `_data.Info.Chat` and `Info.IsGroup` as additional rejection signals.
+
+After unchanged webhook authentication/HTTP 200, the route gates events before
+starting the worker; the worker repeats the gate for direct calls. Only `message`
+or `message.any`, explicit `fromMe: false`, `hasMedia: false`, nonempty text and a
+numeric private chat (`@c.us` or `@s.whatsapp.net`) are accepted. Groups, outgoing,
+status/broadcast, newsletter/channel, system events, media captions, locations,
+contacts and non-text protocol objects are ignored. Conflicting or unknown IDs,
+including unresolved `@lid`, fail closed. No group participant fallback is used.
+This cannot prove a remote human authored the text; it enforces incoming private
+text according to WAHA's event fields.
+
+Each rejection logs exactly one `webhook_ignored` line with chat type/event/reason,
+without message text or phone number. Outgoing owner-reply relay is disabled.
+The gate precedes FAQ, Gemini and any keyword handling.
+
+Server configuration (disabled by default):
+```
+WHATSAPP_ALLOWLIST_ENABLED=true
+WHATSAPP_ALLOWLIST_NUMBERS=972501234567,972509876543
+```
+Use your demo numbers in international format with country code. A leading `+`
+and spaces/dashes are normalized; numbers without country codes are not expanded.
+Enabled plus empty/invalid list blocks everyone. A nonempty unrecognized flag
+also fails closed. Set `false` to disable. Restart PM2 with `--update-env` after
+changing server env. No SQL migration is needed.
+
+In allowlist mode owner escalation recipients and already-queued escalation
+recipients are checked too. Blocked queued jobs stay pending and can be delivered
+later if the policy permits them. Include the owner only if owner notifications
+are intended during the demo. We do not start the stopped WAHA session.
+Before manually resuming it, deploy and set the allowlist; verify an allowed
+private message receives an answer, while group/fromMe/nonlisted messages log a
+single rejection and cause no FAQ/Gemini/send calls.

@@ -17,6 +17,8 @@ function optionalPort(value: string | undefined): number {
 
 export const env = Object.freeze({
   port: optionalPort(process.env.PORT),
+  whatsappAllowlistEnabled: process.env.WHATSAPP_ALLOWLIST_ENABLED,
+  whatsappAllowlistNumbers: process.env.WHATSAPP_ALLOWLIST_NUMBERS,
   geminiApiKey: process.env.GEMINI_API_KEY,
   geminiModel: process.env.GEMINI_MODEL,
   supabaseUrl: process.env.SUPABASE_URL,
