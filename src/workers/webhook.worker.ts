@@ -1,11 +1,11 @@
-import { filterIncoming, logRejectedIncoming } from "../utils/incoming-policy.js";
+import { filterIncoming, logRejectedIncoming, ownerIdentityField, readSessionIdentity } from "../utils/incoming-policy.js";
 import type { AIProvider } from "../providers/ai/ai-provider.interface.js";
 import { generateKnowledgeReply } from "../services/ai-fallback.service.js";
 import { supabase, type DatabaseClient } from "../db/supabase.js";
 import { createWhatsAppProvider } from "../providers/whatsapp/index.js";
 import type { WhatsAppProvider } from "../providers/whatsapp/whatsapp-provider.interface.js";
 import { normalizeWebhookMessage, webhookEventType } from "../utils/webhook-message.js";
-import { digitsOf, isStatusBroadcast, senderKey, toChatId } from "../utils/whatsapp-id.js";
+import { isStatusBroadcast, senderKey, toChatId } from "../utils/whatsapp-id.js";
 import { loadContext } from "../services/context.service.js";
 import {
   createEscalation,
@@ -48,7 +48,7 @@ export async function handleWebhookEvent(
     });
     return;
   }
-  const { from, text, incomingMsgId, fromMe, pushName } = normalized;
+  const { from, text, incomingMsgId, pushName } = normalized;
   if (isStatusBroadcast(from)) return;
 
   const routing = await getTenantRouting(db, tenantId);
@@ -68,13 +68,19 @@ export async function handleWebhookEvent(
     "default";
   const provider: WhatsAppProvider = whatsapp ?? createWhatsAppProvider();
 
-  const ownerDigits = digitsOf(tenant.phone);
-  const senderDigits = from.endsWith("@lid") ? "" : digitsOf(from);
-  const isOwner =
-    fromMe || (ownerDigits !== "" && ownerDigits === senderDigits);
-
-  if (isOwner) {
-    logRejectedIncoming({ allowed: false, chatType: "private", event, reason: "owner_message" });
+  // Prefer current session identity; an authenticated webhook also carries me.
+  // Failure to fetch it never turns an incoming message into an outgoing one.
+  let me = readSessionIdentity(body.me);
+  try {
+    const current = readSessionIdentity((await provider.getSessionStatus(session)).me);
+    me = { ...me, ...current };
+  } catch {
+    console.warn("webhook_session_identity_lookup_failed");
+  }
+  const ownerField = ownerIdentityField(from, me);
+  if (ownerField) {
+    logRejectedIncoming({ allowed: false, chatType: "private", event,
+      reason: "owner_message", field: ownerField, value: "matched" });
     return;
   }
 

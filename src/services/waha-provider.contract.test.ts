@@ -116,3 +116,16 @@ test("FAILED exposes a safe explanation for WAHA engine errors without raw detai
     assert.equal(JSON.stringify(result).includes("private-key"), false);
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test("session status reads both me.id and me.lid without returning other credentials", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, init) => {
+    assert.ok(init?.signal);
+    return Response.json({ status: "WORKING", me: { id: "972500000001@c.us", lid: "261885798707406@lid", pushName: "private" }, config: { secret: "private" } });
+  };
+  try {
+    const result = await new WahaProvider("http://waha.internal").getSessionStatus("tenant");
+    assert.deepEqual(result.me, { id: "972500000001@c.us", lid: "261885798707406@lid" });
+    assert.doesNotMatch(JSON.stringify(result), /private/);
+  } finally { globalThis.fetch = originalFetch; }
+});

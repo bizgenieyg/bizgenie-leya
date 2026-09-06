@@ -1,0 +1,121 @@
+{
+  "id": "redacted",
+  "me": {
+    "id": "972500000001@c.us",
+    "jid": "redacted",
+    "lid": "972500000002@lid",
+    "pushName": "redacted",
+    "reachoutTimelock": null
+  },
+  "event": "message",
+  "payload": {
+    "id": "redacted",
+    "to": "972500000003@lid",
+    "ack": 2,
+    "body": "Часы работы?",
+    "from": "972500000004@g.us",
+    "_data": {
+      "Info": {
+        "ID": "redacted",
+        "Chat": "972500000004@g.us",
+        "Edit": "redacted",
+        "Type": "redacted",
+        "Sender": "972500000003@lid",
+        "IsGroup": true,
+        "Category": "redacted",
+        "IsFromMe": false,
+        "PushName": "redacted",
+        "ServerID": 0,
+        "MediaType": "redacted",
+        "Multicast": false,
+        "SenderAlt": "972500000005@s.whatsapp.net",
+        "Timestamp": "redacted",
+        "MsgBotInfo": {
+          "EditType": "redacted",
+          "EditTargetID": "redacted",
+          "EditSenderTimestampMS": "redacted"
+        },
+        "MsgMetaInfo": {
+          "TargetID": "redacted",
+          "TargetChat": "redacted",
+          "TargetSender": "redacted",
+          "ThreadMessageID": "redacted",
+          "DeprecatedLIDSession": null,
+          "ThreadMessageSenderJID": "redacted"
+        },
+        "RecipientAlt": "redacted",
+        "VerifiedName": {
+          "Details": {
+            "issuer": "redacted",
+            "serial": 15418868794681728,
+            "verifiedName": "redacted"
+          },
+          "Version": 1,
+          "Certificate": {
+            "details": "redacted",
+            "signature": "redacted"
+          },
+          "HostStorage": 0,
+          "ActualActors": 0,
+          "PrivacyModeTS": "redacted",
+          "VerifiedLevel": "redacted"
+        },
+        "AddressingMode": "redacted",
+        "DeviceSentMeta": null,
+        "BroadcastListOwner": "redacted",
+        "IsNewsletterStatus": false,
+        "BroadcastRecipients": null
+      },
+      "IsEdit": false,
+      "Status": 3,
+      "Message": {
+        "conversation": "Часы работы?",
+        "messageContextInfo": {
+          "messageSecret": "redacted"
+        }
+      },
+      "IsViewOnce": false,
+      "RawMessage": {
+        "conversation": "Часы работы?",
+        "messageContextInfo": {
+          "messageSecret": "redacted"
+        }
+      },
+      "RetryCount": 0,
+      "IsBotInvoke": false,
+      "IsEphemeral": false,
+      "IsViewOnceV2": false,
+      "SourceWebMsg": null,
+      "NewsletterMeta": null,
+      "IsLottieSticker": false,
+      "UnavailableRequestID": "redacted",
+      "IsDocumentWithCaption": false,
+      "IsViewOnceV2Extension": false
+    },
+    "media": null,
+    "fromMe": false,
+    "source": "app",
+    "vCards": null,
+    "ackName": "DEVICE",
+    "replyTo": null,
+    "hasMedia": false,
+    "location": null,
+    "timestamp": 1788712320,
+    "participant": "972500000003@lid"
+  },
+  "session": "redacted",
+  "metadata": {
+    "tenant_id": "redacted"
+  },
+  "timestamp": 1788712322152,
+  "environment": {
+    "tier": "CORE",
+    "engine": "GOWS",
+    "worker": {
+      "id": null
+    },
+    "browser": null,
+    "version": "2026.7.2",
+    "platform": "redacted"
+  }
+}

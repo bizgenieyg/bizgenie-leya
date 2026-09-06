@@ -40,7 +40,7 @@ export class WahaProvider implements WhatsAppProvider, WhatsAppSessionProvider {
   async getSessionStatus(session: string): Promise<SessionStatus> {
     let data: unknown;
     try {
-      data = await this.request("GET", `/api/sessions/${encodeURIComponent(session)}`);
+      data = await this.request("GET", `/api/sessions/${encodeURIComponent(session)}`, undefined, AbortSignal.timeout(10000));
     } catch (error) {
       if (error instanceof WahaHttpError && error.status === 404) throw new SessionNotFoundError();
       throw error;
@@ -50,6 +50,11 @@ export class WahaProvider implements WhatsAppProvider, WhatsAppSessionProvider {
     const gows = isRecord(engine.gows) ? engine.gows : {};
     const result: SessionStatus = {
       status: typeof record.status === "string" ? record.status : "unknown",
+    };
+    const me = isRecord(record.me) ? record.me : {};
+    result.me = {
+      ...(typeof me.id === "string" ? { id: me.id } : {}),
+      ...(typeof me.lid === "string" ? { lid: me.lid } : {}),
     };
     if (result.status === "FAILED" && gows.error) {
       // WAHA exposes a technical gRPC error, not a safe user-facing message.
@@ -130,8 +135,9 @@ export class WahaProvider implements WhatsAppProvider, WhatsAppSessionProvider {
     method: "GET" | "POST" | "PUT" | "DELETE",
     path: string,
     body?: object,
+    signal?: AbortSignal,
   ): Promise<unknown> {
-    const response = await this.fetchResponse(method, path, body, "application/json");
+    const response = await this.fetchResponse(method, path, body, "application/json", signal);
     const text = await response.text();
     if (text.trim() === "") {
       return {};
@@ -148,6 +154,7 @@ export class WahaProvider implements WhatsAppProvider, WhatsAppSessionProvider {
     path: string,
     body: object | undefined,
     accept: string,
+    signal?: AbortSignal,
   ): Promise<Response> {
     const headers: Record<string, string> = { Accept: accept };
     if (this.apiKey) {
@@ -160,6 +167,7 @@ export class WahaProvider implements WhatsAppProvider, WhatsAppSessionProvider {
     const response = await fetch(`${this.baseUrl}${path}`, {
       method,
       headers,
+      ...(signal ? { signal } : {}),
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
 

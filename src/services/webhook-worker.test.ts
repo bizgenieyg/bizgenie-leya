@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { DatabaseClient } from "../db/supabase.js";
@@ -80,5 +81,22 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
     assert.deepEqual(recipients.slice(-2), [lid, lid]);
     assert.deepEqual(clientKeys.slice(-2), [lid, lid]);
     assert.equal(aiCalls, 2);
+    const realPayload = JSON.parse(readFileSync("src/services/fixtures/gows-incoming-lid.json", "utf8"));
+    await handleWebhookEvent("123e4567-e89b-42d3-a456-426614174000", realPayload, db, provider, ai);
+    assert.equal(recipients.at(-1), realPayload.payload.from);
+    assert.equal(sent.at(-1), "С 9 до 18.");
+    assert.equal(clientKeys.at(-1), realPayload.payload.from);
+    for (const field of ["id", "lid"]) {
+      const count: number = sent.length;
+      const queries: number = clientKeys.length;
+      const ownerPayload = structuredClone(realPayload);
+      ownerPayload.payload.from = ownerPayload.me[field];
+      ownerPayload.payload._data.Info.Chat = ownerPayload.me[field];
+      await handleWebhookEvent("123e4567-e89b-42d3-a456-426614174000", ownerPayload, db, provider, ai);
+      assert.equal(sent.length, count);
+      assert.equal(clientKeys.length, queries);
+    }
+    assert.match(JSON.stringify(warnings), /owner_message/);
+    assert.match(JSON.stringify(warnings), /session.me.lid/);
   } finally { console.warn = warn; console.info = info; }
 });

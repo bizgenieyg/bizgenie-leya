@@ -343,7 +343,7 @@ with `_data.Info.Chat` and `Info.IsGroup` as additional rejection signals.
 
 After unchanged webhook authentication/HTTP 200, the route gates events before
 starting the worker; the worker repeats the gate for direct calls. Only `message`
-or `message.any`, explicit `fromMe: false`, `hasMedia: false`, nonempty text and a
+or `message.any`, no explicitly true outgoing flag, `hasMedia: false`, nonempty text and a
 numeric private chat (`@c.us`, `@s.whatsapp.net` or `@lid`) are accepted. Groups, outgoing,
 status/broadcast, newsletter/channel, system events, media captions, locations,
 contacts and non-text protocol objects are ignored. Conflicting or unknown IDs,
@@ -392,7 +392,7 @@ There is no “АУДИТ” promotion implementation in this checkout to update
 When allowlist is enabled, unresolved LIDs are blocked with
 `allowlist_unresolved`, even if the LID's digits appear in the phone list.
 Rejection reasons: `system_event`, `non_private_chat`, `conflicting_chat`,
-`outgoing_or_unknown_direction`, `non_text`, `missing_text`,
+`outgoing_message`, `non_text`, `missing_text`,
 `allowlist_unresolved`, `not_allowlisted`; the worker also ignores identified
 owners with `owner_message`. An unknown chat logs its suffix only (e.g.
 `@future`), not the number. LIDs are labelled `private`, not `unknown`.
@@ -400,3 +400,42 @@ owners with `owner_message`. An unknown chat logs its suffix only (e.g.
 Tests cover private LID FAQ and Gemini replies, complete LID client keys and
 reply addresses, groups, fromMe, and allowlist rejection. No env or migration
 changes. The stopped WAHA session is not started by this change.
+
+
+### H-fix-2: direction is explicit, ownership is separate
+
+The full real incoming LID payload in messages.raw_payload identified WAHA
+**2026.7.2 / GOWS**, with `payload.fromMe=false`,
+`payload._data.Info.IsFromMe=false`, and **`payload.source="app"`**. The old
+source check incorrectly discarded this incoming message. This was not caused
+by comparing LID digits with the owner. The fix removes source and missing-flag
+inference entirely. Both field names were also checked against the
+[2026.7.2 GOWS source](https://github.com/devlikeapro/waha/blob/2026.7.2/src/core/engines/gows/session.gows.core.ts).
+
+Only boolean true in `payload.fromMe` or `_data.Info.IsFromMe` means outgoing.
+False, absent or null direction flags pass this check. Source and identifier
+comparisons do not determine direction. Media/group/allowlist checks still apply.
+
+Ownership is checked separately against both current session `me.id` and `me.lid`
+from GET /api/sessions/{session}, through the existing provider abstraction.
+The lookup has a 10-second timeout. The authenticated webhook's me is used as a
+fallback when the lookup fails/omits identity. Matching phone JIDs normalize
+@s.whatsapp.net to @c.us; LIDs stay opaque and are never resolved to numbers.
+A match gives `owner_message`. Missing identity never changes direction to
+outgoing. Session identity is not returned through the normalized admin status API.
+
+All policy rejection logs now include `field` and a safe `value`: a boolean,
+suffix, or fixed marker such as `matched`, `mismatch`, `missing_or_empty`.
+No sender number, message text or full payload is logged.
+Full reason list: `system_event`, `non_private_chat`, `conflicting_chat`,
+`outgoing_message`, `non_text`, `missing_text`, `allowlist_unresolved`,
+`not_allowlisted`, `owner_message`.
+
+Complete real private/group payload structures are saved as redacted fixtures
+under src/services/fixtures. They preserve flags, source, nulls and nested keys;
+identifiers and text are replaced. Tests exercise the entire private payload
+through every filter, normalization and worker FAQ reply, plus owner id/lid,
+missing direction flags and all group/fromMe/allowlist protections.
+No webhook authentication, onboarding or database schema changes. Deploy with
+existing git pull/build/PM2 --update-env procedure; no new env variables.
+Allowlist still intentionally rejects unresolved LIDs when enabled.

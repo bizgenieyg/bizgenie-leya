@@ -23,6 +23,7 @@ export interface SendMessageResult {
 export class SessionNotFoundError extends Error {}
 
 export interface SessionStatus {
+  me?: { id?: string; lid?: string };
   reason?: string;
   status: string;
   connected?: boolean;
