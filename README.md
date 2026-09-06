@@ -288,3 +288,13 @@ send an exact existing FAQ question from another WhatsApp number: it should
 receive the stored answer with no replace exception. A missing-text event should
 produce `webhook_message_skipped`; an unknown question without an owner phone
 should produce `webhook_escalation_skipped`. No SQL migration is required.
+
+Worker failure diagnostics keep the immediate WAHA HTTP 200 acknowledgement:
+processing failures do not request retries. Look for `webhook worker failed:`
+in `pm2 logs leia-api --err`. Each error includes `level: error`, `tenantId`,
+`eventId` (the WAHA envelope ULID), `event`, `errorType`, and all captured stack
+frames with file/line locations. If WAHA omits a valid envelope id, a generated
+UUID is labelled `eventIdSource: generated`. Message ids/bodies and error-message
+contents are not substituted into the log. Stack capture has no frame-count cap.
+An HTTP regression test forces a worker failure after successful authentication,
+asserts HTTP 200, and verifies event correlation plus the failing call sites.

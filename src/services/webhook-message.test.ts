@@ -57,3 +57,21 @@ private second line`);
   assert.match(details.stack, /webhook-message.test/);
   assert.doesNotMatch(JSON.stringify(details), /private|secret/);
 });
+
+test("failure log preserves WAHA event id and every captured stack frame", () => {
+  const error = new Error("private contents");
+  const frames = Array.from({ length: 40 }, (_, i) => `    at worker${i} (/app/dist/worker.js:${i + 1}:1)`);
+  error.stack = ["Error: private contents", ...frames].join("\n");
+  const result = webhookFailureDetails(error, { id: "01arz3ndektsv4rrffq69g5fav", event: "message.any" });
+  assert.equal(result.eventId, "01arz3ndektsv4rrffq69g5fav");
+  assert.equal(result.eventIdSource, "waha");
+  assert.equal(result.event, "message.any");
+  assert.equal(result.level, "error");
+  assert.equal(result.stack.split("\n").length, 41);
+});
+test("missing envelope id gets a correlation id without using message id", () => {
+  const result = webhookFailureDetails(new Error("private"), { event: "message", payload: { id: "private message id" } });
+  assert.equal(result.eventIdSource, "generated");
+  assert.match(result.eventId, /^[a-f0-9-]{36}$/);
+  assert.doesNotMatch(JSON.stringify(result), /private/);
+});

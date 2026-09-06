@@ -39,7 +39,7 @@ webhookRouter.post("/:tenantId", async (request, response) => {
     handleWebhookEvent(tenantId, body).catch((error) => {
       console.error(
         "webhook worker failed:",
-        webhookFailureDetails(error, body),
+        { tenantId, ...webhookFailureDetails(error, body) },
       );
     });
   });

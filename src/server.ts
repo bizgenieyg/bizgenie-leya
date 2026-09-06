@@ -7,6 +7,9 @@ import { adminReportsRouter } from "./routes/reports.routes.js";
 import { webhookRouter } from "./routes/webhook.routes.js";
 import { HttpError } from "./utils/http-error.js";
 
+// Keep all available call sites for asynchronous worker failure diagnostics.
+Error.stackTraceLimit = Infinity;
+
 export const app = express();
 
 app.disable("x-powered-by");
