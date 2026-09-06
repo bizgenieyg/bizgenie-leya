@@ -427,6 +427,11 @@ outgoing. Session identity is not returned through the normalized admin status A
 All policy rejection logs now include `field` and a safe `value`: a boolean,
 suffix, or fixed marker such as `matched`, `mismatch`, `missing_or_empty`.
 No sender number, message text or full payload is logged.
+Each `webhook_ignored` also includes `diagnostics` keyed by payload field path:
+direction booleans/nulls, field presence and type, source (`app`/`api` only),
+sender/chat and webhook/session owner identity suffixes. Unexpected flag values
+are redacted; absent fields remain distinguishable from null. This evidence is
+included even when an earlier group or allowlist check rejects the message.
 Full reason list: `system_event`, `non_private_chat`, `conflicting_chat`,
 `outgoing_message`, `non_text`, `missing_text`, `allowlist_unresolved`,
 `not_allowlisted`, `owner_message`.

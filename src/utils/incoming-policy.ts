@@ -13,6 +13,36 @@ export function parseAllowlist(flag?: string, list?: string): AllowlistPolicy {
   return { enabled, numbers };
 }
 export function currentAllowlist() { return parseAllowlist(env.whatsappAllowlistEnabled, env.whatsappAllowlistNumbers); }
+// Keep diagnostic evidence useful without copying arbitrary payload strings or JIDs.
+export function incomingDiagnostics(body: Record<string, unknown>, sessionMe?: SessionIdentity) {
+  const message = record(body.payload);
+  const info = record(record(message._data).Info);
+  const presence = (object: Record<string, unknown>, key: string) => ({
+    present: Object.prototype.hasOwnProperty.call(object, key),
+    type: object[key] === null ? "null" : typeof object[key],
+  });
+  const flag = (object: Record<string, unknown>, key: string) => ({
+    ...presence(object, key),
+    value: typeof object[key] === "boolean" || object[key] === null ? object[key] : "absent_or_invalid",
+  });
+  const jid = (object: Record<string, unknown>, key: string) => {
+    const value = object[key];
+    const suffix = typeof value === "string" ? value.slice(value.lastIndexOf("@")) : "";
+    return { ...presence(object, key), suffix: /^@[a-z.-]{1,64}$/i.test(suffix) ? suffix : "missing_or_invalid" };
+  };
+  return {
+    "payload.fromMe": flag(message, "fromMe"),
+    "payload._data.Info.IsFromMe": flag(info, "IsFromMe"),
+    "payload.source": { ...presence(message, "source"), value: ["app", "api"].includes(String(message.source)) ? message.source : "absent_or_other" },
+    "payload.from": jid(message, "from"),
+    "payload._data.Info.Chat": jid(info, "Chat"),
+    "payload._data.Info.Sender": jid(info, "Sender"),
+    "payload._data.Info.IsGroup": flag(info, "IsGroup"),
+    "me.id": jid(record(body.me), "id"),
+    "me.lid": jid(record(body.me), "lid"),
+    ...(sessionMe ? { "session.me.id": jid(sessionMe, "id"), "session.me.lid": jid(sessionMe, "lid") } : {}),
+  };
+}
 export function allowedRecipient(value: unknown, policy = currentAllowlist()): boolean {
   if (typeof value !== "string") return false;
   if (/^\d+@lid$/.test(value)) return !policy.enabled;
@@ -33,7 +63,7 @@ export function filterIncoming(body: Record<string, unknown>, policy = currentAl
     : (/^\d{7,15}@(c\.us|s\.whatsapp\.net)$/.test(from) || /^\d+@lid$/.test(from)) ? "private" : "unknown";
   const suffix = from.includes("@") ? from.slice(from.lastIndexOf("@")) : "missing";
   const safeSuffix = /^@[a-z0-9.-]{1,64}$/i.test(suffix) ? suffix : "missing_or_invalid";
-  const reject = (reason: string, field: string, value: string | boolean) => ({ allowed: false as const, chatType, event, reason, field, value,
+  const reject = (reason: string, field: string, value: string | boolean) => ({ allowed: false as const, chatType, event, reason, field, value, diagnostics: incomingDiagnostics(body),
     ...(chatType === "unknown" ? { suffix: safeSuffix } : {}) });
   if (event === "other") return reject("system_event", "event", event);
   if (chatType !== "private") {

@@ -1,4 +1,4 @@
-import { filterIncoming, logRejectedIncoming, ownerIdentityField, readSessionIdentity } from "../utils/incoming-policy.js";
+import { filterIncoming, incomingDiagnostics, logRejectedIncoming, ownerIdentityField, readSessionIdentity } from "../utils/incoming-policy.js";
 import type { AIProvider } from "../providers/ai/ai-provider.interface.js";
 import { generateKnowledgeReply } from "../services/ai-fallback.service.js";
 import { supabase, type DatabaseClient } from "../db/supabase.js";
@@ -80,7 +80,7 @@ export async function handleWebhookEvent(
   const ownerField = ownerIdentityField(from, me);
   if (ownerField) {
     logRejectedIncoming({ allowed: false, chatType: "private", event,
-      reason: "owner_message", field: ownerField, value: "matched" });
+      reason: "owner_message", field: ownerField, value: "matched", diagnostics: incomingDiagnostics(body, me) });
     return;
   }
 
