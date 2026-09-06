@@ -258,3 +258,33 @@ Live version/config validation remains pending: SSH over the documented
 Tailscale address timed out; the LAN address refused the available SSH key.
 No live session was created or disconnected during these checks. Confirm the
 running image version and notification behavior on the installed WAHA instance.
+
+### GOWS worker null-field regression
+
+The `Cannot read properties of null (reading 'replace')` failure is reproduced
+by `digitsOf(tenant.phone)` when `tenants.phone` is NULL. Migration 004 makes
+that column nullable, but TenantRow previously declared a required string.
+A read-only aggregate confirmed a NULL phone in the deployed database. This
+is a database field, not GOWS PushName; the nested PushName reader was already
+null-safe. The other replace calls are URL cleanup (guarded server env) and FAQ
+normalization (which first calls normalize on a validated string).
+
+The worker now normalizes GOWS payloads before business processing. Null or
+missing `from`/`body` is skipped with a warning containing only event type and
+`missing_sender`/`missing_text`. Null optional `_data`, `Info`, `PushName`, `id`
+and `replyTo` are accepted. Exact FAQ text normalization/search is unchanged.
+A missing owner phone no longer blocks FAQ replies; unknown questions remain
+stored, with `escalation_missing_owner_phone` instead of sending to an empty
+address. Configure the owner's phone to enable escalation delivery.
+
+Unhandled worker errors log event type, error type and stack frames. Error
+messages and webhook bodies are excluded because they may contain secrets or
+message text. Regression fixtures use a redacted GOWS-shaped payload, not
+production contact/message contents. Tests also exercise the complete worker
+with a NULL tenant phone and a deterministic FAQ answer.
+
+After deploying (`git pull && npm run build && pm2 restart leia-api --update-env`),
+send an exact existing FAQ question from another WhatsApp number: it should
+receive the stored answer with no replace exception. A missing-text event should
+produce `webhook_message_skipped`; an unknown question without an owner phone
+should produce `webhook_escalation_skipped`. No SQL migration is required.

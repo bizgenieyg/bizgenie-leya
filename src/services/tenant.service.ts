@@ -8,7 +8,7 @@ const UUID_RE =
 export interface TenantRow {
   id: string;
   name: string;
-  phone: string;
+  phone: string | null;
   status: string;
   language: string | null;
 }

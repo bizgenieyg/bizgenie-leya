@@ -1,3 +1,4 @@
+import { webhookFailureDetails } from "../utils/webhook-error.js";
 import { webhookAuthValid } from "../utils/webhook-auth.js";
 import { Router } from "express";
 
@@ -38,7 +39,7 @@ webhookRouter.post("/:tenantId", async (request, response) => {
     handleWebhookEvent(tenantId, body).catch((error) => {
       console.error(
         "webhook worker failed:",
-        error instanceof Error ? error.message : "unknown error",
+        webhookFailureDetails(error, body),
       );
     });
   });
