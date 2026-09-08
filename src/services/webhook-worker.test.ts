@@ -13,7 +13,8 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
   const sent: string[] = [];
   const recipients: string[] = [];
   const clientKeys: unknown[] = [];
-  const db = { from(table: string) {
+  let quotaAllowed = true;
+  const db = { async rpc() { return {data:{allowed:quotaAllowed,duplicate:false},error:null}; }, from(table: string) {
     let write = false;
     const query = {
       select() { return query; }, eq(column: string, value: unknown) { if (table === "clients" && column === "phone") clientKeys.push(value); return query; }, not() { return query; }, order() { return query; }, limit() { return query; },
@@ -96,6 +97,14 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
       assert.equal(sent.length, count);
       assert.equal(clientKeys.length, queries);
     }
+    quotaAllowed = false;
+    const callsBefore = aiCalls;
+    for (const question of ["Часы работы?", "Неизвестный вопрос"]) {
+      await handleWebhookEvent("123e4567-e89b-42d3-a456-426614174000",
+        {...body,payload:{...body.payload,body:question}},db,provider,ai);
+      assert.match(sent.at(-1)!, /автоматические ответы недоступны/);
+    }
+    assert.equal(aiCalls,callsBefore);
     assert.match(JSON.stringify(warnings), /owner_message/);
     assert.match(JSON.stringify(warnings), /session.me.lid/);
   } finally { console.warn = warn; console.info = info; }

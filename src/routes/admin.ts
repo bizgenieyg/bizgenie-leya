@@ -1,3 +1,4 @@
+import { usageSummary } from "../services/usage.service.js";
 import { supabase } from '../db/supabase.js';
 import { loadOwnerSettings, saveOwnerSettings } from '../services/owner-settings.service.js';
 import { getTenantRouting } from '../services/tenant.service.js';
@@ -63,4 +64,19 @@ adminRouter.post('/owner-settings', async (request,response) => {
   if(status.status!=='WORKING') throw new HttpError(409,'Сначала подключите бизнес-номер WhatsApp.');
   response.setHeader('Cache-Control','no-store');
   response.json(await saveOwnerSettings(supabase,tenantId,objectBody(request.body),readSessionIdentity(status.me)));
+});
+
+
+adminRouter.get('/usage',async(request,response)=>{
+  const tenantId=queryTenantId(request.query.tenantId);
+  response.setHeader('Cache-Control','no-store');
+  response.json(await usageSummary(supabase,tenantId));
+});
+adminRouter.patch('/usage-limits',async(request,response)=>{
+  const tenantId=queryTenantId(request.query.tenantId),body=objectBody(request.body);
+  const messages=body.messagesPerMonth,voice=body.voiceMinutesPerMonth;
+  if(!Number.isSafeInteger(messages)||Number(messages)<0||Number(messages)>2147483647||!Number.isSafeInteger(voice)||Number(voice)<0||Number(voice)>2147483647)throw new HttpError(400,'Limits must be non-negative integers');
+  const {error}=await supabase.from('tenant_usage_limits').upsert({tenant_id:tenantId,messages_per_month:messages,voice_minutes_per_month:voice,updated_at:new Date().toISOString()},{onConflict:'tenant_id'});
+  if(error)throw new HttpError(500,'Could not save usage limits');
+  response.json({updated:true});
 });

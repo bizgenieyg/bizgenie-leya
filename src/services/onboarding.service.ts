@@ -124,6 +124,7 @@ export class OnboardingService {
     limits?: JsonObject;
     modules: JsonObject[];
   }) {
+    if (input.limits) throw new HttpError(403, "Usage limits are managed through the admin API");
     const session = await this.requireSession(token);
     const tenantId = session.tenant_id as string;
     const existing = await this.db.from("subscriptions").select("id").eq("tenant_id", tenantId).maybeSingle();
@@ -139,12 +140,6 @@ export class OnboardingService {
       tenantId,
       input.addons.map((addon) => ({ ...addon, tenant_id: tenantId })),
     );
-    if (input.limits) {
-      const { error } = await this.db
-        .from("tenant_usage_limits")
-        .upsert({ tenant_id: tenantId, ...input.limits }, { onConflict: "tenant_id" });
-      if (error) databaseError("Could not update usage limits", error);
-    }
     for (const moduleSettings of input.modules) {
       const { error } = await this.db
         .from("module_settings")

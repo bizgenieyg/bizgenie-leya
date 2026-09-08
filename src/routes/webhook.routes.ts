@@ -1,3 +1,5 @@
+import { handleVoiceUsage,voiceUsage } from "../services/voice-usage.service.js";
+import { createWhatsAppProvider } from "../providers/whatsapp/index.js";
 import { filterIncoming, logRejectedIncoming } from "../utils/incoming-policy.js";
 import { webhookFailureDetails } from "../utils/webhook-error.js";
 import { webhookAuthValid } from "../utils/webhook-auth.js";
@@ -37,7 +39,11 @@ webhookRouter.post("/:tenantId", async (request, response) => {
   response.status(200).json({ received: true });
 
   const decision = filterIncoming(body);
-  if (!decision.allowed) { logRejectedIncoming(decision); return; }
+  if (!decision.allowed) {
+    logRejectedIncoming(decision);
+    if(voiceUsage(body)) setImmediate(()=>{handleVoiceUsage(supabase,routing,body,createWhatsAppProvider()).catch(()=>console.error('voice_usage_handler_failed'));});
+    return;
+  }
 
   setImmediate(() => {
     handleWebhookEvent(tenantId, body).catch((error) => {

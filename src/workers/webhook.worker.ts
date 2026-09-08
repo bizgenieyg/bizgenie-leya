@@ -1,3 +1,7 @@
+import { randomUUID } from 'node:crypto';
+import { createAIProvider } from '../providers/ai/index.js';
+import { meterAI, meterWhatsApp } from '../services/metered-providers.js';
+import { deliverUsageNotices,limitClientText } from '../services/usage-notifications.service.js';
 import { filterIncoming, incomingDiagnostics, logRejectedIncoming, ownerIdentityField, readSessionIdentity } from "../utils/incoming-policy.js";
 import type { AIProvider } from "../providers/ai/ai-provider.interface.js";
 import { generateKnowledgeReply } from "../services/ai-fallback.service.js";
@@ -23,7 +27,7 @@ import {
   getTenantRouting,
   isTenantServiceable,
 } from "../services/tenant.service.js";
-import { recordUsageEvent } from "../services/usage.service.js";
+import { admitUsage, recordUsageEvent } from "../services/usage.service.js";
 
 /**
  * Process one already-authenticated webhook body for `tenantId`.
@@ -71,7 +75,8 @@ export async function handleWebhookEvent(
     (typeof instance?.session_name === "string" && instance.session_name.trim()) ||
     (typeof body.session === "string" && body.session.trim()) ||
     "default";
-  const provider: WhatsAppProvider = whatsapp ?? createWhatsAppProvider();
+  const provider = meterWhatsApp(db,tenantId,whatsapp ?? createWhatsAppProvider());
+  const model = meterAI(db,tenantId,ai === undefined ? createAIProvider() : ai);
 
   // Prefer current session identity; an authenticated webhook also carries me.
   // Failure to fetch it never turns an incoming message into an outgoing one.
@@ -100,7 +105,9 @@ export async function handleWebhookEvent(
   }
 
   const settings = await loadOwnerSettings(db, tenantId);
-  if (await handleOwnerMessage(db, provider, tenantId, session, from, text, normalized.replyToId, settings, ai)) return;
+  const usageKey=incomingMsgId || randomUUID();
+  await recordUsageEvent(db,{tenantId,eventType:'message_received',eventKey:usageKey});
+  if (await handleOwnerMessage(db, provider, tenantId, session, from, text, normalized.replyToId, settings, model)) return;
 
   const clientPhone = senderKey(from);
   const client = await findOrCreateClient(
@@ -129,9 +136,16 @@ export async function handleWebhookEvent(
     });
     return;
   }
-  await recordUsageEvent(db, { tenantId, eventType: "message_received" });
 
   if (settings.auto_replies_paused || await conversationPaused(db, tenantId, conversation.id)) return;
+
+  const admission=await admitUsage(db,tenantId,usageKey);
+  if(admission.duplicate)return;
+  await deliverUsageNotices(db,tenantId,session,provider);
+  if(!admission.allowed){
+    await provider.sendMessage({session,chatId:from,text:limitClientText(text)});
+    return;
+  }
 
   const clientZone = clientTimeZoneCommand(text);
   if (clientZone) {
@@ -184,7 +198,7 @@ export async function handleWebhookEvent(
     return;
   }
 
-  const generatedReply = await generateKnowledgeReply(context, text, ai);
+  const generatedReply = await generateKnowledgeReply(context, text, model);
   if (generatedReply) {
     const sent = await provider.sendMessage({
       session, chatId: from, text: generatedReply,

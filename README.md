@@ -450,3 +450,7 @@ Allowlist still intentionally rejects unresolved LIDs when enabled.
 Реализован полный цикл вопрос → реплей владельца → отправка клиенту → подтверждение сохранения в FAQ. Настройка отдельного номера владельца и тихих часов: `/onboarding/owner` после подключения WhatsApp. Команды: «Пауза всё», «Продолжить всё», «Диалоги»; реплеем на вопрос — «Беру на себя», «Пауза», «Продолжить».
 
 Подробное сравнение с chef-bot, схема, команды, ограничения доставки и порядок проверки: [docs/owner-escalation-port.md](docs/owner-escalation-port.md). Перед деплоем применить миграцию [024](supabase/migrations/20260908114713_024_owner_escalation_workflow.sql). Новых переменных окружения нет. Очередь работает внутри бэкенда раз в минуту, время — часовой пояс владельца из настроек.
+
+### Tenant usage and monthly limits
+
+See [usage accounting, limits API, SQL and rollout](docs/tenant-usage.md). Monthly quotas count incoming customer messages; outgoing messages and Gemini token usage are tracked separately. No new environment variables are needed.

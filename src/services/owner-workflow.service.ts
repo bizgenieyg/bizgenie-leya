@@ -1,3 +1,4 @@
+import { meterWhatsApp } from "./metered-providers.js";
 import type { AIProvider } from "../providers/ai/ai-provider.interface.js";
 import { translateOwnerAnswer } from "./ai-fallback.service.js";
 import type { DatabaseClient } from '../db/supabase.js';
@@ -29,6 +30,7 @@ export async function conversationPaused(db:DatabaseClient,tenantId:string,conve
   const {data,error}=await db.from('conversations').select('bot_paused').eq('tenant_id',tenantId).eq('id',conversationId).maybeSingle();check(error);return data?.bot_paused===true;
 }
 export async function notifyOwner(db:DatabaseClient,provider:WhatsAppProvider,e:Escalation,settings:OwnerSettings):Promise<boolean> {
+  provider=meterWhatsApp(db,e.tenant_id,provider);
   const destination=ownerDestination(settings);
   if(!destination||!allowedRecipient(destination)) return false;
   // A business-line change must never turn notifications into self-chat.
@@ -48,6 +50,7 @@ export async function notifyOwner(db:DatabaseClient,provider:WhatsAppProvider,e:
   }
 }
 export async function createEscalation(db:DatabaseClient,provider:WhatsAppProvider,input:Omit<Escalation,'id'|'status'|'owner_message_ids'|'answer'|'learning_state'|'learning_message_ids'>,settings:OwnerSettings,clientZone?:string|null) {
+  provider=meterWhatsApp(db,input.tenant_id,provider);
   if(!ownerDestination(settings)) {console.warn('webhook_escalation_skipped',{reason:'missing_owner_phone'});return;}
   if(!allowedRecipient(ownerDestination(settings))) return;
   const {data,error}=await db.from('escalations').insert(input).select('*').single();
@@ -67,6 +70,7 @@ async function requestLearning(db:DatabaseClient,provider:WhatsAppProvider,e:Esc
   await patch(db,e,{learning_state:'awaiting',learning_message_ids:[replyId(id)]});
 }
 export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProvider,tenantId:string,session:string,from:string,text:string,quoted:string|null,settings:OwnerSettings,ai?:AIProvider|null):Promise<boolean> {
+  provider=meterWhatsApp(db,tenantId,provider);
   if(await pairOwner(db,tenantId,from,text,settings)) return true;
   if(!isBusinessOwner(from,settings)) return false;
   const command=text.trim().toLowerCase().replace(/[.!]+$/,'');

@@ -4,7 +4,13 @@ export interface AIReplyInput {
   userMessage: string;
 }
 
+export interface AIUsage { model?: string; input_tokens?: number; output_tokens?: number; total_tokens?: number; thinking_tokens?: number; cached_input_tokens?: number; }
+export class AIProviderError extends Error {
+  readonly usage: AIUsage | undefined;
+  constructor(message:string,usage?:AIUsage){super(message);this.usage=usage;}
+}
 export interface AIReplyResult {
+  usage?: AIUsage;
   text: string;
 }
 
