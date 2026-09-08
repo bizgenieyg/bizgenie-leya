@@ -28,6 +28,7 @@ export interface TenantRouting {
 }
 
 export interface ClientRow {
+  time_zone?: string | null;
   id: string;
   tenant_id: string;
   phone: string;
@@ -98,7 +99,7 @@ export async function findOrCreateClient(
 
   const { data: existing, error: findError } = await db
     .from("clients")
-    .select("id, tenant_id, phone, name")
+    .select("id, tenant_id, phone, name, time_zone")
     .eq("tenant_id", tenantId)
     .eq("phone", phone)
     .maybeSingle();
@@ -116,6 +117,7 @@ export async function findOrCreateClient(
       id: existing.id as string,
       tenant_id: existing.tenant_id as string,
       phone: existing.phone as string,
+      time_zone: existing.time_zone as string | null,
       name: (name && !existing.name ? name : (existing.name as string | null)) ?? null,
     };
   }
@@ -129,7 +131,7 @@ export async function findOrCreateClient(
       first_seen_at: nowIso,
       last_seen_at: nowIso,
     })
-    .select("id, tenant_id, phone, name")
+    .select("id, tenant_id, phone, name, time_zone")
     .single();
   if (createError || !created) {
     throw new HttpError(500, "Could not create client");

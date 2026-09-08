@@ -27,17 +27,16 @@ test("rejected messages never reach DB, FAQ, Gemini or WhatsApp", async () => {
 });
 
 test("allowlist also blocks owner escalations before provider or database calls", async () => {
-  const { createEscalation } = await import("./escalation.service.js");
+  const { createEscalation } = await import("./owner-workflow.service.js");
   const db = { from() { throw new Error("must not access database"); } } as unknown as DatabaseClient;
   let sends = 0;
   const provider = { async sendMessage() { sends++; return { id: "" }; }, async getSessionStatus() { return { status: "WORKING" }; } };
   const info = console.info; console.info = () => {};
   try {
     await createEscalation(db, provider, {
-      tenant: { id: "tenant", name: "test", phone: "+972500000003", status: "active", language: "ru" },
-      session: "session", conversation: { id: "conversation", tenant_id: "tenant", client_id: "client", status: "active" },
-      clientName: "test", clientMessage: "private",
-    });
+      tenant_id: "tenant", session: "session", conversation_id: "conversation", client_chat_id: "972500000001@c.us",
+      client_name: "test", question: "private", inbound_id: null,
+    }, {owner_phone:"972500000003", owner_chat_id:null, quiet_hours_start:null,quiet_hours_end:null,mode:"mute_all",auto_replies_paused:false});
     assert.equal(sends, 0);
   } finally { console.info = info; }
 });

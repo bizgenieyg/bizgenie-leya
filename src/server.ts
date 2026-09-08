@@ -1,3 +1,4 @@
+import { startEscalationScheduler } from "./workers/escalation-scheduler.js";
 import express from "express";
 
 import { env } from "./config/env.js";
@@ -44,6 +45,7 @@ app.use((error: unknown, _request: express.Request, response: express.Response, 
 });
 
 if (require.main === module) {
+  startEscalationScheduler();
   app.listen(env.port, () => {
     console.log(`Leia backend listening on port ${env.port}`);
   });

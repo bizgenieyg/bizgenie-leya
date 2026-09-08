@@ -5,11 +5,16 @@ import { supabase, type DatabaseClient } from "../db/supabase.js";
 import { createWhatsAppProvider } from "../providers/whatsapp/index.js";
 import type { WhatsAppProvider } from "../providers/whatsapp/whatsapp-provider.interface.js";
 import { normalizeWebhookMessage, webhookEventType } from "../utils/webhook-message.js";
-import { isStatusBroadcast, senderKey, toChatId } from "../utils/whatsapp-id.js";
+import { isStatusBroadcast, senderKey } from "../utils/whatsapp-id.js";
 import { loadContext } from "../services/context.service.js";
 import {
-  createEscalation,
-} from "../services/escalation.service.js";
+  createEscalation, handleOwnerMessage, conversationPaused,
+} from "../services/owner-workflow.service.js";
+import { loadOwnerSettings } from "../services/owner-settings.service.js";
+import { clientTimeZoneCommand } from "../utils/time-zone.js";
+import { isWithinQuietHours, nextQuietHoursEnd } from "../services/escalation.service.js";
+import { waitingText } from "../utils/assistant-text.js";
+import { clientText } from "../utils/assistant-text.js";
 import { findExactKnowledgeAnswer } from "../services/knowledge.service.js";
 import { logSystemEvent, recordAgentAction } from "../services/logging.service.js";
 import {
@@ -94,6 +99,9 @@ export async function handleWebhookEvent(
     return;
   }
 
+  const settings = await loadOwnerSettings(db, tenantId);
+  if (await handleOwnerMessage(db, provider, tenantId, session, from, text, normalized.replyToId, settings, ai)) return;
+
   const clientPhone = senderKey(from);
   const client = await findOrCreateClient(
     db,
@@ -123,6 +131,19 @@ export async function handleWebhookEvent(
   }
   await recordUsageEvent(db, { tenantId, eventType: "message_received" });
 
+  if (settings.auto_replies_paused || await conversationPaused(db, tenantId, conversation.id)) return;
+
+  const clientZone = clientTimeZoneCommand(text);
+  if (clientZone) {
+    const { error } = await db.from("clients").update({ time_zone: clientZone }).eq("tenant_id", tenantId).eq("id", client.id);
+    if (error) throw new Error("Client timezone update failed");
+    const confirmation = /[א-ת]/.test(text) ? `אזור הזמן נשמר: ${clientZone}.` : /[а-яё]/i.test(text) ? `Часовой пояс сохранён: ${clientZone}.` : `Time zone saved: ${clientZone}.`;
+    const now = new Date();
+    const quiet = isWithinQuietHours(settings, now);
+    await provider.sendMessage({ session, chatId: from, text: confirmation + (quiet ? ' ' + waitingText(text, { at: nextQuietHoursEnd(settings, now), ownerZone: settings.time_zone ?? 'UTC', clientZone }) : '') });
+    return;
+  }
+
   const context = await loadContext(db, tenantId);
   const result = findExactKnowledgeAnswer(text, context.knowledge);
   const clientName = client.name && client.name.trim() !== "" ? client.name : clientPhone;
@@ -131,7 +152,7 @@ export async function handleWebhookEvent(
     const sent = await provider.sendMessage({
       session,
       chatId: from,
-      text: result.answer,
+      text: clientText(result.answer),
       ...(incomingMsgId ? { replyTo: incomingMsgId } : {}),
     });
     await db.from("messages").insert({
@@ -180,17 +201,10 @@ export async function handleWebhookEvent(
     return;
   }
 
-  if (!toChatId(tenant.phone)) {
-    console.warn("webhook_escalation_skipped", { event, reason: "missing_owner_phone" });
-    await logSystemEvent(db, { tenantId, level: "warn", event: "escalation_missing_owner_phone", details: { event } });
-    return;
-  }
   await createEscalation(db, provider, {
-    tenant,
-    session,
-    conversation,
-    clientName,
-    clientMessage: text,
-  });
+    tenant_id: tenantId, session, conversation_id: conversation.id,
+    client_chat_id: from, client_name: pushName || clientName,
+    question: text, inbound_id: incomingMsgId,
+  }, settings, client.time_zone);
   await recordUsageEvent(db, { tenantId, eventType: "escalation_created" });
 }

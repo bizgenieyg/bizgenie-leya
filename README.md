@@ -98,15 +98,15 @@ On success the route stores nothing synchronously beyond acknowledging with
 4. Runs the Knowledge Module. Exact FAQ match → replies through the
    `WhatsAppProvider` and logs `faq_answer_exact`. No match → optional Gemini
    knowledge-grounded reply; disabled/failed Gemini → existing owner escalation.
-5. Escalations go to `tenants.phone`. Inside `notification_settings` quiet hours
-   (only `mode = 'mute_all'`), delivery is deferred into `scheduled_jobs`
-   (`job_type = 'escalation_delivery'`) instead of sending immediately.
-6. Outgoing/fromMe and owner messages are discarded; quoted owner replies no
-   longer bypass the inbound-only policy.
+5. Escalations go only to the separately configured owner in `notification_settings`.
+   Quiet hours use the owner's configured IANA time zone; `scheduled_jobs`
+   (`job_type = 'owner_escalation'`) persists deferred questions.
+6. Outgoing/session-self messages remain discarded. Incoming messages from the
+   separately verified business owner enter quoted-reply/learning/pause handling.
 
 Deferred escalations are delivered by `runDueScheduledEscalations()` in
-`src/services/escalation.service.ts`. It is not run by the web process — wire it
-to a PM2 cron or external scheduler (e.g. once per minute).
+`src/services/owner-workflow.service.ts`. The backend checks the queue every
+minute via `src/workers/escalation-scheduler.ts`; no external cron is required.
 
 `WAHA_URL` is only ever read from the environment; provider logic lives in
 `src/providers/whatsapp/` and business code depends on the `WhatsAppProvider`
@@ -444,3 +444,9 @@ missing direction flags and all group/fromMe/allowlist protections.
 No webhook authentication, onboarding or database schema changes. Deploy with
 existing git pull/build/PM2 --update-env procedure; no new env variables.
 Allowlist still intentionally rejects unresolved LIDs when enabled.
+
+## Эскалации, обучение и участие владельца
+
+Реализован полный цикл вопрос → реплей владельца → отправка клиенту → подтверждение сохранения в FAQ. Настройка отдельного номера владельца и тихих часов: `/onboarding/owner` после подключения WhatsApp. Команды: «Пауза всё», «Продолжить всё», «Диалоги»; реплеем на вопрос — «Беру на себя», «Пауза», «Продолжить».
+
+Подробное сравнение с chef-bot, схема, команды, ограничения доставки и порядок проверки: [docs/owner-escalation-port.md](docs/owner-escalation-port.md). Перед деплоем применить миграцию [024](supabase/migrations/20260908075451_024_owner_escalation_workflow.sql). Новых переменных окружения нет. Очередь работает внутри бэкенда раз в минуту, время — часовой пояс владельца из настроек.

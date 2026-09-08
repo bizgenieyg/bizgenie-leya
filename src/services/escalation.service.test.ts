@@ -9,12 +9,13 @@ import {
 
 const muteAll = (start: string | null, end: string | null) => ({
   mode: "mute_all",
+  time_zone: "Asia/Jerusalem",
   quiet_hours_start: start,
   quiet_hours_end: end,
 });
 
 const at = (hours: number, minutes = 0) => {
-  const date = new Date(2026, 7, 28, hours, minutes, 0, 0);
+  const date = new Date(Date.UTC(2026, 7, 28, hours - 3, minutes, 0, 0));
   return date;
 };
 
@@ -44,15 +45,15 @@ test("quiet hours: no window configured means never muted", () => {
 test("nextQuietHoursEnd rolls to tomorrow when end already passed today", () => {
   const night = muteAll("22:00", "08:00");
   const deferred = nextQuietHoursEnd(night, at(23));
-  assert.equal(deferred.getHours(), 8);
-  assert.equal(deferred.getDate(), 29);
+  assert.equal(deferred.getUTCHours(), 5);
+  assert.equal(deferred.getUTCDate(), 29);
 });
 
 test("nextQuietHoursEnd stays today when end is still ahead", () => {
   const night = muteAll("22:00", "08:00");
   const deferred = nextQuietHoursEnd(night, at(3));
-  assert.equal(deferred.getHours(), 8);
-  assert.equal(deferred.getDate(), 28);
+  assert.equal(deferred.getUTCHours(), 5);
+  assert.equal(deferred.getUTCDate(), 28);
 });
 
 test("escalation text keeps the owner template", () => {
