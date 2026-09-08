@@ -16,6 +16,7 @@ const customer='261885798707406@lid';
 const defaults:OwnerSettings={owner_phone:'972500000002',owner_chat_id:owner,mode:'mute_all',time_zone:'Asia/Jerusalem',quiet_hours_start:null,quiet_hours_end:null,auto_replies_paused:false};
 // Fluent in-memory PostgREST double, including conditional claims and tenant predicates.
 function harness() {
+ let quotaAllowed=true;let admitted=0;
   type Row=Record<string,any>;
   const tables:Record<string,Row[]>={notification_settings:[{tenant_id:tenant,...defaults}],conversations:[{id:'conversation',tenant_id:tenant,client_id:'client',status:'active',bot_paused:false}],escalations:[],scheduled_jobs:[],knowledge_items:[],
     tenants:[{id:tenant,name:'Business',phone:null,status:'active',language:'ru'}],whatsapp_instances:[{tenant_id:tenant,session_name:'session'}],clients:[{id:'client',tenant_id:tenant,phone:customer,name:'Клиент'}],assistant_profiles:[]};
@@ -31,12 +32,12 @@ function harness() {
         return Promise.resolve(result).then(resolve,reject);
       }catch(e){return Promise.reject(e).then(resolve,reject);}}
     };return q;
-  },async rpc(_name:string,args:Row){const e=tables.escalations!.find(r=>r.tenant_id===args.p_tenant_id&&r.id===args.p_escalation_id)!;if(e.status!=='delivered')return {error:{}};
+  },async rpc(_name:string,args:Row){if(_name==='admit_tenant_usage'){if(quotaAllowed)admitted++;return {data:{allowed:quotaAllowed,duplicate:false},error:null};}const e=tables.escalations!.find(r=>r.tenant_id===args.p_tenant_id&&r.id===args.p_escalation_id)!;if(e.status!=='delivered')return {error:{}};
     if(!e.knowledge_item_id){tables.knowledge_items!.push({tenant_id:tenant,question:e.question,answer:e.answer});e.knowledge_item_id='knowledge';e.learning_state='saved';}return {data:'knowledge',error:null};}} as unknown as DatabaseClient;
   const sent:{chatId:string;text:string;id:string}[]=[];
   let failClient=false;
   const provider:WhatsAppProvider={async getSessionStatus(){return{status:'WORKING',me:{id:'972500000009@c.us',lid:'99999999@lid'}};},async sendMessage(input){if(failClient&&input.chatId===customer)throw new Error('network');const id=`true_${input.chatId}_MSG${sent.length}`;sent.push({...input,id});return{id};}};
-  return {db,tables,sent,provider,fail:()=>{failClient=true;}};
+  return {db,tables,sent,provider,admissions:()=>admitted,deny:()=>{quotaAllowed=false;},fail:()=>{failClient=true;}};
 }
 const input={tenant_id:tenant,conversation_id:'conversation',client_chat_id:customer,client_name:'Тестовый клиент',question:'Можно завтра?',session:'session',inbound_id:'incoming'};
 
@@ -148,4 +149,45 @@ test('owner answer translation preserves original for learning and falls back sa
   assert.equal(await translateOwnerAnswer('When is delivery?','Доставка завтра',ai),'Delivery is tomorrow.');
   assert.equal(await translateOwnerAnswer('Когда доставка?','Доставка завтра',ai),'Доставка завтра');assert.equal(calls,1);
   assert.equal(await translateOwnerAnswer('When?','Доставка завтра',null),'Доставка завтра');
+});
+
+test('owner translation is opt-in: disabled makes zero model calls',async()=>{
+ for(const enabled of [false,true]){
+  const h=harness();const settings={...defaults,translate_owner_answer:enabled};await createEscalation(h.db,h.provider,input,settings);const e=h.tables.escalations![0]!;let calls=0;
+  await handleOwnerMessage(h.db,h.provider,tenant,'session',owner,'Yes, available',e.owner_message_ids[0],settings,{async generateReply(){calls++;return{text:'Да, доступно'};}});
+  assert.equal(calls,enabled?1:0);assert.match(h.sent.at(-2)!.text,enabled?/Да, доступно/:/Yes, available/);
+ }
+});
+test('timeout reminder is once, quoted reply matches it, quiet hours do not count, closure follows delivery',async()=>{
+ const {runEscalationTimeouts}=await import('./owner-workflow.service.js');
+ const h=harness();const settings={...defaults,quiet_hours_start:'20:00',quiet_hours_end:'09:00',behavior:{escalation_remind_minutes:60,escalation_close_minutes:120}};
+ h.tables.notification_settings![0]={tenant_id:tenant,...settings};
+ h.tables.escalations!.push({id:'e',...input,status:'pending',owner_message_ids:['initial'],pending_since:'2026-09-08T16:30:00Z',learning_state:'none'});
+ await runEscalationTimeouts(h.db,()=>h.provider,new Date('2026-09-09T06:29:00Z'));assert.equal(h.sent.length,0);
+ await runEscalationTimeouts(h.db,()=>h.provider,new Date('2026-09-09T06:30:00Z'));assert.equal(h.sent.length,1);assert.equal(h.tables.escalations![0]!.owner_message_ids.length,2);
+ await runEscalationTimeouts(h.db,()=>h.provider,new Date('2026-09-09T06:40:00Z'));assert.equal(h.sent.length,1);
+ await runEscalationTimeouts(h.db,()=>h.provider,new Date('2026-09-09T07:30:00Z'));assert.equal(h.sent.length,2);assert.equal(h.tables.escalations![0]!.status,'closed_unanswered');assert.match(h.sent[1]!.text,/свяжется/);
+});
+
+function wav(){const bytes=Buffer.alloc(44+32000);bytes.write('RIFF');bytes.writeUInt32LE(bytes.length-8,4);bytes.write('WAVEfmt ',8);bytes.writeUInt32LE(16,16);bytes.writeUInt16LE(1,20);bytes.writeUInt16LE(1,22);bytes.writeUInt32LE(16000,24);bytes.writeUInt32LE(32000,28);bytes.writeUInt16LE(2,32);bytes.writeUInt16LE(16,34);bytes.write('data',36);bytes.writeUInt32LE(32000,40);return bytes;}
+test('voice runs full GOWS identity, quota, transcription, agent, FAQ pipeline and wipes buffer',async()=>{
+ const {handleVoiceUsage}=await import('./voice-usage.service.js');
+ const h=harness();h.tables.knowledge_items!.push({id:'faq',tenant_id:tenant,type:'faq',question:'Какая цена?',answer:'Цена 100',active:true});
+ const body=JSON.parse(readFileSync('src/services/fixtures/gows-incoming-lid.json','utf8'));body.payload.from=customer;body.payload._data.Info.Chat=customer;body.payload.body=null;body.payload.hasMedia=true;body.payload.media={mimetype:'audio/wav',url:'http://internal/api/files/session/id.wav'};
+ const bytes=wav();let calls=0;
+ await handleVoiceUsage(h.db,{tenant:h.tables.tenants![0],instance:h.tables.whatsapp_instances![0]} as any,body,h.provider,{async transcribe(){calls++;return{text:'Какая цена?',confidence:0.99,ambiguous:false,language:'ru'};}},{async download(){return bytes;}});
+ assert.equal(calls,1);assert.equal(h.admissions(),1);assert.equal(h.sent.at(-1)?.text,'Цена 100');assert.ok(bytes.every(b=>b===0));
+ for(const type of ['message_received','message_sent','stt_call','voice_received']){const rows=h.tables.usage_events!.filter(r=>r.event_type===type);assert.ok(rows.length);assert.ok(rows.every(r=>r.agent==='SALE'));}
+ assert.equal(h.tables.messages![0]!.body,'Какая цена?');assert.equal(h.tables.messages![0]!.raw_payload.payload.media,null);
+});
+test('voice pause and quota stop STT; uncertainty asks for clarification without FAQ',async()=>{
+ const {handleVoiceUsage}=await import('./voice-usage.service.js');
+ for(const mode of ['paused','denied','uncertain','disabled']){
+  const h=harness();if(mode==='paused')h.tables.conversations![0]!.bot_paused=true;if(mode==='denied')h.deny();let calls=0,downloads=0;
+  const body=JSON.parse(readFileSync('src/services/fixtures/gows-incoming-lid.json','utf8'));body.payload.from=customer;body.payload._data.Info.Chat=customer;body.payload.body=null;body.payload.hasMedia=true;body.payload.media={mimetype:'audio/wav',url:'http://internal/api/files/session/id.wav'};
+  await handleVoiceUsage(h.db,{tenant:h.tables.tenants![0],instance:h.tables.whatsapp_instances![0]} as any,body,h.provider,mode==='disabled'?null:{async transcribe(){calls++;return{text:'Неясно завтра',confidence:0.4,ambiguous:true,language:'ru'};}},{async download(){downloads++;return wav();}});
+  assert.equal(calls,mode==='uncertain'?1:0);
+  if(mode==='paused'){assert.equal(downloads,0);assert.equal(h.admissions(),0);assert.equal(h.sent.length,0);assert.equal(h.tables.usage_events![0]!.event_type,'message_observed');}
+  else assert.match(h.sent.at(-1)!.text,mode==='uncertain'?/уточните/:mode==='denied'?/недоступны/:/не удалось распознать/);
+ }
 });

@@ -1,3 +1,5 @@
+import { readRuntimeSettings,saveRuntimeSettings } from '../services/runtime-settings.service.js';
+import { registry } from '../agents/index.js';
 import { usageSummary } from "../services/usage.service.js";
 import { supabase } from '../db/supabase.js';
 import { loadOwnerSettings, saveOwnerSettings } from '../services/owner-settings.service.js';
@@ -79,4 +81,13 @@ adminRouter.patch('/usage-limits',async(request,response)=>{
   const {error}=await supabase.from('tenant_usage_limits').upsert({tenant_id:tenantId,messages_per_month:messages,voice_minutes_per_month:voice,updated_at:new Date().toISOString()},{onConflict:'tenant_id'});
   if(error)throw new HttpError(500,'Could not save usage limits');
   response.json({updated:true});
+});
+
+adminRouter.get('/tenant-settings',async(request,response)=>{
+ response.setHeader('Cache-Control','no-store');response.json(await readRuntimeSettings(supabase,queryTenantId(request.query.tenantId)));
+});
+adminRouter.patch('/tenant-settings',async(request,response)=>{
+ const input=objectBody(request.body);
+ if(Array.isArray(input.enabled_agents)&&input.enabled_agents.some(name=>!registry.list().some(a=>a.name===name)))throw new HttpError(400,'Unknown agent');
+ response.json(await saveRuntimeSettings(supabase,queryTenantId(request.query.tenantId),input));
 });

@@ -1,3 +1,6 @@
+import { BEHAVIOR_DEFAULTS } from '../config/behavior.js';
+import { renderText } from './templates.service.js';
+import type { OwnerSettings } from './owner-settings.service.js';
 export interface NotificationSettings {mode:string;quiet_hours_start:string|null;quiet_hours_end:string|null;time_zone?:string;}
 function minutes(time:string):number { const m=/^([01]\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?$/.exec(time); return m ? Number(m[1])*60+Number(m[2]) : -1; }
 function localMinutes(now:Date,timeZone:string):number {
@@ -20,6 +23,16 @@ export function nextQuietHoursEnd(settings:NotificationSettings,now:Date):Date {
   }
   throw new Error('Quiet hours end unavailable');
 }
-export function buildEscalationText(clientName:string,clientMessage:string):string {
-  return `❓ Новый вопрос от ${clientName}:\n\n${clientMessage}\n\nЛея не нашла ответ в базе знаний.\nОтветьте реплеем на это сообщение. Для паузы диалога ответьте «Беру на себя», для возобновления — «Продолжить».`;
+export function buildEscalationText(clientName:string,clientMessage:string,settings?:OwnerSettings):string {
+ return renderText(settings,'owner.escalation',String(settings?.behavior?.owner_language??BEHAVIOR_DEFAULTS.owner_language),{name:clientName,question:clientMessage});
+}
+/** Count real UTC elapsed time outside quiet intervals, including DST transitions. */
+export function activeElapsedMs(settings:NotificationSettings,from:Date,to:Date):number {
+ let elapsed=0;
+ for(let t=from.getTime();t<to.getTime();){
+  const end=Math.min(to.getTime(),Math.floor(t/60000)*60000+60000);
+  if(!isWithinQuietHours(settings,new Date(t)))elapsed+=end-t;
+  t=end;
+ }
+ return elapsed;
 }

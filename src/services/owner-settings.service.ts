@@ -1,3 +1,4 @@
+import { BEHAVIOR_DEFAULTS } from "../config/behavior.js";
 import { validTimeZone } from "../utils/time-zone.js";
 import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseClient } from "../db/supabase.js";
@@ -7,13 +8,14 @@ import { HttpError } from "../utils/http-error.js";
 import { toChatId } from "../utils/whatsapp-id.js";
 
 export interface OwnerSettings {
+  translate_owner_answer?: boolean; behavior?: Record<string,unknown>; templates?: Record<string,Record<string,string>>;
   owner_phone: string | null; owner_chat_id: string | null;
   owner_pairing_hash?: string | null; owner_pairing_expires_at?: string | null;
   quiet_hours_start: string | null; quiet_hours_end: string | null;
   mode: string; time_zone?: string; auto_replies_paused: boolean;
 }
 export async function loadOwnerSettings(db: DatabaseClient, tenantId: string): Promise<OwnerSettings> {
-  const { data, error } = await db.from("notification_settings").select("owner_phone,owner_chat_id,owner_pairing_hash,owner_pairing_expires_at,quiet_hours_start,quiet_hours_end,mode,time_zone,auto_replies_paused").eq("tenant_id",tenantId).maybeSingle();
+  const { data, error } = await db.from("notification_settings").select("owner_phone,owner_chat_id,owner_pairing_hash,owner_pairing_expires_at,quiet_hours_start,quiet_hours_end,mode,time_zone,auto_replies_paused,translate_owner_answer,behavior,templates").eq("tenant_id",tenantId).maybeSingle();
   if (error) throw new Error("Owner settings lookup failed");
   return data as unknown as OwnerSettings ?? { owner_phone:null,owner_chat_id:null,quiet_hours_start:null,quiet_hours_end:null,mode:"mute_all",time_zone:"UTC",auto_replies_paused:false };
 }
@@ -33,9 +35,10 @@ export async function saveOwnerSettings(db: DatabaseClient, tenantId: string, in
   if ((start || end) && (!validTime(start) || !validTime(end) || start === end)) throw new HttpError(400,"Укажите начало и окончание тихих часов.");
   const timeZone=typeof input.timeZone==='string'?input.timeZone:'';
   if(!validTimeZone(timeZone)) throw new HttpError(400,"Выберите часовой пояс владельца.");
+  const settings = await loadOwnerSettings(db,tenantId);
   const code = randomBytes(12).toString("hex");
   const { error } = await db.from("notification_settings").upsert({tenant_id:tenantId,owner_phone:phone,owner_chat_id:null,
-    time_zone:timeZone,owner_pairing_hash:hash(code),owner_pairing_expires_at:new Date(Date.now()+30*60*1000).toISOString(),quiet_hours_start:start,quiet_hours_end:end,mode:"mute_all"},{onConflict:"tenant_id"});
+    time_zone:timeZone,owner_pairing_hash:hash(code),owner_pairing_expires_at:new Date(Date.now()+Number(settings.behavior?.pairing_ttl_minutes ?? BEHAVIOR_DEFAULTS.pairing_ttl_minutes)*60*1000).toISOString(),quiet_hours_start:start,quiet_hours_end:end,mode:"mute_all"},{onConflict:"tenant_id"});
   if(error) throw new Error("Owner settings save failed");
   return { pairingCommand:`ПОДТВЕРДИТЬ ${code}` };
 }

@@ -454,3 +454,7 @@ Allowlist still intentionally rejects unresolved LIDs when enabled.
 ### Tenant usage and monthly limits
 
 See [usage accounting, limits API, SQL and rollout](docs/tenant-usage.md). Monthly quotas count incoming customer messages; outgoing messages and Gemini token usage are tracked separately. No new environment variables are needed.
+
+### Runtime settings, agents and voice (review fixes)
+
+See [review report, defaults, STT choice, SQL and rollout](docs/review-runtime-settings.md). Configure tenant behavior in `/admin/settings`; templates and advanced runtime settings are also available through the backend API. Speech recognition requires server `STT_API_KEY`; `STT_MODEL` is optional.

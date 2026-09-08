@@ -1,3 +1,7 @@
+import { renderText,languageOf } from '../services/templates.service.js';
+import { registry,agentContext } from '../agents/index.js';
+import { behavior } from '../services/runtime-settings.service.js';
+import { notifyUsageFailure } from '../services/usage-notifications.service.js';
 import { randomUUID } from 'node:crypto';
 import { createAIProvider } from '../providers/ai/index.js';
 import { meterAI, meterWhatsApp } from '../services/metered-providers.js';
@@ -42,6 +46,7 @@ export async function handleWebhookEvent(
   db: DatabaseClient = supabase,
   whatsapp?: WhatsAppProvider,
   ai?: AIProvider | null,
+  voiceAdmission?: {key:string;seconds:number;unavailable?:boolean|undefined;sttKey:string;sttMetadata:Record<string,unknown>},
 ): Promise<void> {
   const decision = filterIncoming(body);
   if (!decision.allowed) { logRejectedIncoming(decision); return; }
@@ -106,8 +111,8 @@ export async function handleWebhookEvent(
 
   const settings = await loadOwnerSettings(db, tenantId);
   const usageKey=incomingMsgId || randomUUID();
-  await recordUsageEvent(db,{tenantId,eventType:'message_received',eventKey:usageKey});
-  if (await handleOwnerMessage(db, provider, tenantId, session, from, text, normalized.replyToId, settings, model)) return;
+
+  if (await handleOwnerMessage(db, provider, tenantId, session, from, text, normalized.replyToId, settings, model)) {await recordUsageEvent(db,{tenantId,eventType:'message_observed',eventKey:usageKey,metadata:{reason:'owner_control',billable:false}});return;}
 
   const clientPhone = senderKey(from);
   const client = await findOrCreateClient(
@@ -137,27 +142,39 @@ export async function handleWebhookEvent(
     return;
   }
 
-  if (settings.auto_replies_paused || await conversationPaused(db, tenantId, conversation.id)) return;
+  if (settings.auto_replies_paused || await conversationPaused(db, tenantId, conversation.id)) {await recordUsageEvent(db,{tenantId,eventType:'message_observed',eventKey:usageKey,metadata:{reason:'paused',billable:false}});return;}
 
-  const admission=await admitUsage(db,tenantId,usageKey);
+  const admission=voiceAdmission ? {allowed:true,duplicate:false,unavailable:voiceAdmission.unavailable} : await admitUsage(db,tenantId,usageKey);
   if(admission.duplicate)return;
+  if(admission.unavailable)await notifyUsageFailure(db,tenantId,session,provider,settings);
   await deliverUsageNotices(db,tenantId,session,provider);
   if(!admission.allowed){
-    await provider.sendMessage({session,chatId:from,text:limitClientText(text)});
+    await provider.sendMessage({session,chatId:from,text:limitClientText(text,settings)});
     return;
   }
 
+  const classification:Record<string,unknown>[]=[];
+  const agent=await registry.route(text,settings,ai===undefined?createAIProvider():ai,usage=>classification.push(usage));
+  if(!agent)return;
+  return agentContext.run({agent:agent.name},async()=>{
+  for(const metadata of classification)await recordUsageEvent(db,{tenantId,eventType:'model_call',eventKey:randomUUID(),metadata:{...metadata,purpose:'intent'}});
+  await recordUsageEvent(db,{tenantId,eventType:'message_received',eventKey:usageKey});
+  if(voiceAdmission){
+    // STT is metered immediately, then attributed to the agent selected from its transcript.
+    try{for(const [type,key]of [['stt_call',voiceAdmission.sttKey],['voice_received',usageKey]]){const r=await db.from('usage_events').update({agent:agent.name}).eq('tenant_id',tenantId).eq('event_type',type).eq('event_key',key);if(r.error)console.error('usage_agent_attribution_failed');}}catch{console.error('usage_agent_attribution_failed');}
+  }
   const clientZone = clientTimeZoneCommand(text);
   if (clientZone) {
     const { error } = await db.from("clients").update({ time_zone: clientZone }).eq("tenant_id", tenantId).eq("id", client.id);
     if (error) throw new Error("Client timezone update failed");
-    const confirmation = /[א-ת]/.test(text) ? `אזור הזמן נשמר: ${clientZone}.` : /[а-яё]/i.test(text) ? `Часовой пояс сохранён: ${clientZone}.` : `Time zone saved: ${clientZone}.`;
+    const confirmation = renderText(settings,'client.timezone_saved',languageOf(text),{zone:clientZone});
     const now = new Date();
     const quiet = isWithinQuietHours(settings, now);
-    await provider.sendMessage({ session, chatId: from, text: confirmation + (quiet ? ' ' + waitingText(text, { at: nextQuietHoursEnd(settings, now), ownerZone: settings.time_zone ?? 'UTC', clientZone }) : '') });
+    await provider.sendMessage({ session, chatId: from, text: confirmation + (quiet ? ' ' + waitingText(text, { at: nextQuietHoursEnd(settings, now), ownerZone: settings.time_zone ?? 'UTC', clientZone },settings) : '') });
     return;
   }
 
+  return agent.execute({answerFromKnowledge:async()=>{
   const context = await loadContext(db, tenantId);
   const result = findExactKnowledgeAnswer(text, context.knowledge);
   const clientName = client.name && client.name.trim() !== "" ? client.name : clientPhone;
@@ -198,7 +215,7 @@ export async function handleWebhookEvent(
     return;
   }
 
-  const generatedReply = await generateKnowledgeReply(context, text, model);
+  const generatedReply = await generateKnowledgeReply(context, text, model,agent.systemPrompt);
   if (generatedReply) {
     const sent = await provider.sendMessage({
       session, chatId: from, text: generatedReply,
@@ -221,4 +238,6 @@ export async function handleWebhookEvent(
     question: text, inbound_id: incomingMsgId,
   }, settings, client.time_zone);
   await recordUsageEvent(db, { tenantId, eventType: "escalation_created" });
+  }});
+  });
 }

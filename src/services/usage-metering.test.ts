@@ -26,7 +26,7 @@ test('Gemini success, failure and owner translation are metered, disabled provid
 });
 test('voice seconds are read without admitting groups, outgoing or unknown duration as zero-known',()=>{
   const body=JSON.parse(readFileSync('src/services/fixtures/gows-incoming-lid.json','utf8'));
-  body.payload.body=null;body.payload.hasMedia=true;body.payload._data.Message={audioMessage:{seconds:23,ptt:true}};
+  body.payload.media={mimetype:'audio/ogg',url:'http://localhost/api/files/session/voice.ogg'};body.payload.body=null;body.payload.hasMedia=true;body.payload._data.Message={audioMessage:{seconds:23,ptt:true}};
   assert.equal(voiceUsage(body)?.seconds,23);
   body.payload._data.Message.audioMessage.seconds=null;assert.equal(voiceUsage(body)?.seconds,null);
   body.payload.fromMe=true;assert.equal(voiceUsage(body),null);
