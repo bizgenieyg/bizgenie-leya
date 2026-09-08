@@ -43,6 +43,17 @@
 
 Allowlist сохраняется без исключений: нужны разрешённые клиент и владелец; неразрешимый @lid при включённом allowlist по-прежнему блокируется существующим ранним фильтром.
 
-SQL: supabase/migrations/20260908075451_024_owner_escalation_workflow.sql. Новых env нет. Миграция применяется через Supabase MCP apply_migration к dorcxwsifrjghdtzkfqv; результат и проверка схемы фиксируются в отчёте задачи. Уже существующим тенантам надо пройти /onboarding/owner: телефон не выводится автоматически из бизнес-номера.
+SQL: supabase/migrations/20260908114713_024_owner_escalation_workflow.sql. Новых env нет. Миграция применена 8 сентября 2026 через Supabase MCP apply_migration к dorcxwsifrjghdtzkfqv, версия 20260908114713. После применения проверены RLS, наличие колонок и права функции: anon/authenticated execute=false, service_role=true; authenticated не читает owner_pairing_hash. Новых замечаний security advisors по этим объектам нет. Уже существующим тенантам надо пройти /onboarding/owner: телефон не выводится автоматически из бизнес-номера.
 
 Проверки: npm install, npm run build, npm run typecheck, npm test. Тесты включают полный GOWS webhook до ответа владельца, short-ID, паузы, очередь/DST/конкуренцию, ошибку доставки, подтверждение без дублей и реальное исполнение SQL/RLS в PGlite. Админка: build, lint, typecheck и существующие node tests.
+
+
+Итог проверки: backend build/typecheck и 80 тестов; admin build/lint/typecheck и 125 тестов прошли. На VPS код не развёртывался, WhatsApp-сессии не запускались и тестовые сообщения в реальные чаты не отправлялись. После обновления репозитория на VPS выполнить npm ci, npm run build и pm2 restart leia-api --update-env; затем владелец заполняет свои настройки в кабинете.
+
+Существующие до изменения замечания Supabase оставлены вне этой задачи: публичная исполнимость rls_auto_enable и настройка leaked-password protection. Описание проверки прав функций: https://supabase.com/docs/guides/database/database-linter?lint=0028_anon_security_definer_function_executable . Изменение текущей авторизации/настроек Auth не выполнялось.
+
+## Изменённые файлы
+
+Бэкенд: `src/services/owner-workflow.service.ts`, `owner-settings.service.ts`, `escalation.service.ts`, `ai-fallback.service.ts`, `tenant.service.ts`; `src/utils/assistant-text.ts`, `time-zone.ts`; `src/workers/webhook.worker.ts`, `escalation-scheduler.ts`; `src/routes/admin.ts`, `src/server.ts`. Тесты: `owner-workflow.test.ts`, `owner-migration.test.ts`, `escalation.service.test.ts`, `incoming-worker-guard.test.ts` в src/services. Также SQL 024, package.json/package-lock.json (PGlite только для тестов), README и этот отчёт.
+
+Админка: `app/onboarding/owner/page.tsx`, `app/api/owner-settings/route.ts`, `components/tenant/whatsapp-connection.tsx` (переход на новый шаг и ссылка настроек), `tests/owner-settings.test.cjs`. Step-1/2/4, middleware, auth-маршруты и существующие WAHA-прокси не менялись.

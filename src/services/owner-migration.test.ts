@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { PGlite } from '@electric-sql/pglite';
-const migration=readFileSync('supabase/migrations/20260908075451_024_owner_escalation_workflow.sql','utf8');
+const migration=readFileSync('supabase/migrations/20260908114713_024_owner_escalation_workflow.sql','utf8');
 
 test('024 real PostgreSQL: idempotent migration, tenant RLS, private pairing credentials and atomic learning',async()=>{
   const db=new PGlite();
