@@ -93,16 +93,15 @@ adminRouter.delete('/schedule-exceptions',async(request,response)=>{await delete
 adminRouter.get('/tenant-settings',async(request,response)=>{
  response.setHeader('Cache-Control','no-store');response.json(await readRuntimeSettings(supabase,queryTenantId(request.query.tenantId)));
 });
-// Fields a tenant owner/admin may change from the cabinet. Everything else validated by
-// saveRuntimeSettings is operator-only and requires ?scope=operator, so the backend — not
-// just the Next.js proxy — enforces the split, matching the billing endpoints.
-const OWNER_EDITABLE_SETTINGS=new Set(['time_zone','weekly_schedule','auto_replies_paused','enabled_agents']);
+// This endpoint is reachable only with ADMIN_SECRET (requireAdmin). There is no separate
+// operator credential, so a `?scope=operator` flag would be security theatre — anyone
+// holding ADMIN_SECRET could add it. The real tenant-facing boundary is the Next.js proxy,
+// which only forwards the owner-editable field set; operator-only fields (templates,
+// escalation timings, retention, routing, …) can be changed solely by a caller that holds
+// ADMIN_SECRET directly, exactly like PATCH /usage-limits. validateRuntimePatch still
+// rejects billing/system fields here unconditionally.
 adminRouter.patch('/tenant-settings',async(request,response)=>{
  const input=objectBody(request.body);
- if(request.query.scope!=='operator'){
-  const forbidden=Object.keys(input).find(key=>!OWNER_EDITABLE_SETTINGS.has(key));
-  if(forbidden)throw new HttpError(403,`Setting is operator-only: ${forbidden}`);
- }
  if(Array.isArray(input.enabled_agents)&&input.enabled_agents.some(name=>!registry.list().some(a=>a.name===name)))throw new HttpError(400,'Unknown agent');
  response.json(await saveRuntimeSettings(supabase,queryTenantId(request.query.tenantId),input));
 });

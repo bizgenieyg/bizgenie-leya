@@ -34,6 +34,11 @@ export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
     "he": "אני העוזרת של בעל העסק. לא הצלחתי להבין בביטחון את פרטי ההודעה. נא לאשר בכתב שמות, תאריכים וכמויות.",
     "en": "I'm the owner's assistant. I couldn't reliably understand the details. Please confirm names, dates and quantities in writing."
   },
+  "client.waiting_no_schedule": {
+    "ru": "Я ассистент владельца. Передал ваш вопрос владельцу — он свяжется с вами.",
+    "he": "אני העוזרת של בעל העסק. העברתי את השאלה לבעל העסק — הוא ייצור איתך קשר.",
+    "en": "I'm the owner's assistant. I've passed your question to the owner — they'll get back to you."
+  },
   "client.owner_timeout": {
     "ru": "Я ассистент владельца. Пока не получил ответ на ваш вопрос. Владелец свяжется с вами отдельно.",
     "he": "אני העוזרת של בעל העסק. עדיין לא התקבלה תשובה לשאלה שלך. בעל העסק ייצור איתך קשר בנפרד.",

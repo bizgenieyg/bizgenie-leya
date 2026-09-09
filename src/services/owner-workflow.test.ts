@@ -70,6 +70,18 @@ test('failed client delivery leaves escalation open and never offers learning',a
   await handleOwnerMessage(h.db,h.provider,tenant,'session',owner,'Ответ',e.owner_message_ids[0],defaults);
   assert.equal(e.status,'delivery_uncertain');assert.equal(e.learning_state,'none');assert.equal(h.tables.knowledge_items!.length,0);
 });
+test('createEscalation with an all-day-off schedule promises a callback and escalates now',async()=>{
+  const h=harness();
+  const closed={...defaults,behavior:{weekly_schedule:Object.fromEntries(Array.from({length:7},(_,i)=>[String(i),{mode:'day_off'}]))}};
+  const before=Date.now();
+  await createEscalation(h.db,h.provider,input,closed);
+  assert.equal(h.sent.length,2);
+  assert.match(h.sent[0]!.text,/свяжется с вами/);
+  assert.doesNotMatch(h.sent[0]!.text,/\d{1,2}:\d{2}/);
+  assert.equal(h.sent[1]!.chatId,owner);
+  const job=h.tables.scheduled_jobs![0]!;
+  assert.ok(new Date(job.scheduled_at).getTime()-before<5*60*1000);
+});
 test('takeover, tenant pause and explicit resume remain separate',async()=>{
   const h=harness();await createEscalation(h.db,h.provider,input,defaults);const e=h.tables.escalations![0]!;
   await handleOwnerMessage(h.db,h.provider,tenant,'session',owner,'Беру на себя',e.owner_message_ids[0],defaults);
@@ -97,8 +109,8 @@ test('automatic resume is disabled by default and enabled after configured inact
 test('quiet queue uses Jerusalem time, delivers each once across concurrent schedulers',async()=>{
   const h=harness();const night={...defaults,quiet_hours_start:'20:00',quiet_hours_end:'09:00'};
   assert.equal(isWithinQuietHours(night,new Date('2026-09-08T18:00:00Z')),true);
-  assert.equal(nextQuietHoursEnd(night,new Date('2026-09-08T18:00:00Z')).toISOString(),'2026-09-09T06:00:00.000Z');
-  assert.equal(nextQuietHoursEnd(night,new Date('2026-10-24T18:00:00Z')).toISOString(),'2026-10-25T07:00:00.000Z');
+  assert.equal(nextQuietHoursEnd(night,new Date('2026-09-08T18:00:00Z'))!.toISOString(),'2026-09-09T06:00:00.000Z');
+  assert.equal(nextQuietHoursEnd(night,new Date('2026-10-24T18:00:00Z'))!.toISOString(),'2026-10-25T07:00:00.000Z');
   h.tables.notification_settings![0]={tenant_id:tenant,...night};
   h.tables.escalations!.push({id:'e',...input,status:'queued',owner_message_ids:[],learning_state:'none'});
   h.tables.scheduled_jobs!.push({id:'j',tenant_id:tenant,job_type:'owner_escalation',payload:{escalation_id:'e'},status:'pending',scheduled_at:'2026-09-08T00:00:00Z'});
@@ -185,6 +197,7 @@ test('owner timezone changes quiet hours and client time converts across calenda
   const now=new Date('2026-09-09T02:00:00Z');
   assert.equal(isWithinQuietHours(settings,now),true);
   const end=nextQuietHoursEnd(settings,now);
+  assert.ok(end);
   assert.equal(end.toISOString(),'2026-09-09T13:00:00.000Z');
   const message=waitingText('Вопрос',{at:end,ownerZone:settings.time_zone,clientZone:'Asia/Tokyo'});
   assert.match(message,/22:00/);assert.match(message,/ваше местное время/);

@@ -35,18 +35,24 @@ export function isWithinQuietHours(settings:RuntimeSettings,now:Date):boolean {
   if(start<0||end<0||start===end) return false;
   return start<end ? legacyCurrent>=start&&legacyCurrent<end : legacyCurrent>=start||legacyCurrent<end;
 }
-export function nextQuietHoursEnd(settings:RuntimeSettings,now:Date):Date {
+/**
+ * Next UTC instant quiet hours end, or `null` when the schedule has no working window at
+ * all (e.g. every weekday set to day_off). Callers must not invent a wait date then — they
+ * tell the client the owner will get back to them and escalate immediately.
+ */
+export function nextQuietHoursEnd(settings:RuntimeSettings,now:Date):Date|null {
   const inside=isWithinQuietHours(settings,now);
   const base=Math.floor(now.getTime()/60000)*60000;
+  // A weekly schedule repeats every 7 days, so 8 days (period + a day of slack for DST and
+  // dated exceptions) is enough to prove it never reopens — without spinning the full
+  // ~370-day horizon. The legacy daily quiet window always ends within a day.
+  const horizon=settings.behavior?.weekly_schedule?8*24*60:MAX_SCHEDULE_LOOKAHEAD_MINUTES;
   // Advance UTC instants to handle owner-local DST transitions, independent of VPS TZ.
-  const flips=(minute:number)=>{const candidate=new Date(base+minute*60000);return inside?!isWithinQuietHours(settings,candidate):isWithinQuietHours(settings,candidate);};
-  // Coarse hourly probe first: a schedule that never opens (e.g. every weekday day_off)
-  // otherwise spins the full minute loop and throws, silently dropping the reply.
-  let coarse=0;
-  for(let minute=60;minute<=MAX_SCHEDULE_LOOKAHEAD_MINUTES;minute+=60){ if(flips(minute)){coarse=minute;break;} }
-  if(coarse===0) return new Date(base+MAX_SCHEDULE_LOOKAHEAD_MINUTES*60000);
-  for(let minute=Math.max(1,coarse-59);minute<=coarse;minute++){ if(flips(minute)) return new Date(base+minute*60000); }
-  return new Date(base+coarse*60000);
+  for(let minute=1;minute<=horizon;minute++){
+    const candidate=new Date(base+minute*60000);
+    if(inside?!isWithinQuietHours(settings,candidate):isWithinQuietHours(settings,candidate)) return candidate;
+  }
+  return null;
 }
 export function buildEscalationText(clientName:string,clientMessage:string,settings?:OwnerSettings):string {
  return renderText(settings,'owner.escalation',String(settings?.behavior?.owner_language??BEHAVIOR_DEFAULTS.owner_language),{name:clientName,question:clientMessage});

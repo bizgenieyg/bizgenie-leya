@@ -45,6 +45,7 @@ test("quiet hours: no window configured means never muted", () => {
 test("nextQuietHoursEnd rolls to tomorrow when end already passed today", () => {
   const night = muteAll("22:00", "08:00");
   const deferred = nextQuietHoursEnd(night, at(23));
+  assert.ok(deferred);
   assert.equal(deferred.getUTCHours(), 5);
   assert.equal(deferred.getUTCDate(), 29);
 });
@@ -52,20 +53,19 @@ test("nextQuietHoursEnd rolls to tomorrow when end already passed today", () => 
 test("nextQuietHoursEnd stays today when end is still ahead", () => {
   const night = muteAll("22:00", "08:00");
   const deferred = nextQuietHoursEnd(night, at(3));
+  assert.ok(deferred);
   assert.equal(deferred.getUTCHours(), 5);
   assert.equal(deferred.getUTCDate(), 28);
 });
 
-test("nextQuietHoursEnd caps instead of spinning when the schedule never opens", () => {
+test("nextQuietHoursEnd returns null when the schedule never opens", () => {
   const alwaysClosed = {
     mode: "mute_all", time_zone: "Asia/Jerusalem",
     quiet_hours_start: null, quiet_hours_end: null,
     behavior: { weekly_schedule: Object.fromEntries(Array.from({ length: 7 }, (_, i) => [String(i), { mode: "day_off" }])) },
   };
-  const now = at(12);
-  const capped = nextQuietHoursEnd(alwaysClosed, now);
-  // No throw, and the result is pushed far out rather than returned as "now".
-  assert.ok(capped.getTime() - now.getTime() > 300 * 24 * 60 * 60 * 1000);
+  // No throw, no far-future date — callers must promise a callback instead of naming a time.
+  assert.equal(nextQuietHoursEnd(alwaysClosed, at(12)), null);
 });
 
 test("nextQuietHoursEnd still finds a real transition on a schedule that opens later", () => {
@@ -79,6 +79,7 @@ test("nextQuietHoursEnd still finds a real transition on a schedule that opens l
   };
   // at() builds 2026-08-28, a Friday. Next open is Wednesday 09:00 Jerusalem = 06:00Z.
   const end = nextQuietHoursEnd(opensWednesday, at(12));
+  assert.ok(end);
   assert.equal(end.getUTCDay(), 3);
   assert.equal(end.getUTCHours(), 6);
 });
