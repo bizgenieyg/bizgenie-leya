@@ -58,14 +58,17 @@ test("nextQuietHoursEnd stays today when end is still ahead", () => {
   assert.equal(deferred.getUTCDate(), 28);
 });
 
-test("nextQuietHoursEnd returns null when the schedule never opens", () => {
+test("nextQuietHoursEnd returns null quickly when the schedule never opens", () => {
   const alwaysClosed = {
     mode: "mute_all", time_zone: "Asia/Jerusalem",
     quiet_hours_start: null, quiet_hours_end: null,
     behavior: { weekly_schedule: Object.fromEntries(Array.from({ length: 7 }, (_, i) => [String(i), { mode: "day_off" }])) },
   };
   // No throw, no far-future date — callers must promise a callback instead of naming a time.
+  // And it is boundary-evaluated, not a minute loop: this used to take ~3.5s.
+  const started = performance.now();
   assert.equal(nextQuietHoursEnd(alwaysClosed, at(12)), null);
+  assert.ok(performance.now() - started < 150, "must not block the event loop");
 });
 
 test("nextQuietHoursEnd still finds a real transition on a schedule that opens later", () => {

@@ -1,6 +1,5 @@
 import { BEHAVIOR_DEFAULTS } from '../config/behavior.js';
 import { DEFAULT_TIME_ZONE,intlTimeZone } from '../config/time-zones.js';
-import { MAX_SCHEDULE_LOOKAHEAD_MINUTES } from '../config/behavior.js';
 import { renderText } from './templates.service.js';
 import type { OwnerSettings } from './owner-settings.service.js';
 export interface NotificationSettings {mode:string;quiet_hours_start:string|null;quiet_hours_end:string|null;time_zone?:string;}
@@ -35,22 +34,51 @@ export function isWithinQuietHours(settings:RuntimeSettings,now:Date):boolean {
   if(start<0||end<0||start===end) return false;
   return start<end ? legacyCurrent>=start&&legacyCurrent<end : legacyCurrent>=start||legacyCurrent<end;
 }
+// Wall-clock time in `timeZone` -> the UTC instant, resolving DST with a second pass.
+function tzOffsetMs(timeZone:string,at:Date):number {
+  const p=Object.fromEntries(new Intl.DateTimeFormat('en-US',{timeZone:intlTimeZone(timeZone),hourCycle:'h23',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}).formatToParts(at).map(x=>[x.type,x.value]));
+  return Date.UTC(Number(p.year),Number(p.month)-1,Number(p.day),Number(p.hour),Number(p.minute),Number(p.second))-Math.floor(at.getTime()/1000)*1000;
+}
+function wallToInstant(y:number,mo:number,d:number,minsOfDay:number,timeZone:string):number {
+  const guess=Date.UTC(y,mo-1,d,Math.floor(minsOfDay/60),minsOfDay%60);
+  return guess-tzOffsetMs(timeZone,new Date(guess-tzOffsetMs(timeZone,new Date(guess))));
+}
 /**
- * Next UTC instant quiet hours end, or `null` when the schedule has no working window at
- * all (e.g. every weekday set to day_off). Callers must not invent a wait date then — they
- * tell the client the owner will get back to them and escalate immediately.
+ * Next UTC instant quiet hours end (or start, if `now` is outside quiet hours), or `null`
+ * when the schedule has no working window at all (e.g. every weekday set to day_off).
+ * Callers must not invent a wait date then — they tell the client the owner will get back
+ * to them and escalate immediately.
+ *
+ * Evaluated only at the instants where the schedule can change state — local midnight, an
+ * hourly grid (DST / edge backstop), and each day's working-hours and exception bounds —
+ * so it stays off the message hot path instead of spinning a minute-by-minute loop.
  */
 export function nextQuietHoursEnd(settings:RuntimeSettings,now:Date):Date|null {
   const inside=isWithinQuietHours(settings,now);
+  const zone=settings.time_zone??DEFAULT_TIME_ZONE;
   const base=Math.floor(now.getTime()/60000)*60000;
-  // A weekly schedule repeats every 7 days, so 8 days (period + a day of slack for DST and
-  // dated exceptions) is enough to prove it never reopens — without spinning the full
-  // ~370-day horizon. The legacy daily quiet window always ends within a day.
-  const horizon=settings.behavior?.weekly_schedule?8*24*60:MAX_SCHEDULE_LOOKAHEAD_MINUTES;
-  // Advance UTC instants to handle owner-local DST transitions, independent of VPS TZ.
-  for(let minute=1;minute<=horizon;minute++){
-    const candidate=new Date(base+minute*60000);
-    if(inside?!isWithinQuietHours(settings,candidate):isWithinQuietHours(settings,candidate)) return candidate;
+  const weekly=settings.behavior?.weekly_schedule as Record<string,{mode:string;start?:string;end?:string}>|undefined;
+  // A weekly schedule repeats every 7 days; a legacy daily window resets every day.
+  const horizonDays=weekly?8:2;
+  const [Y,M,D]=localDate(now,zone).iso.split('-').map(Number) as [number,number,number];
+  const marks=new Set<number>();
+  for(let d=0;d<=horizonDays;d++){
+    const wall=new Date(Date.UTC(Y,M-1,D+d));
+    const y=wall.getUTCFullYear(),mo=wall.getUTCMonth()+1,day=wall.getUTCDate();
+    const iso=`${y}-${String(mo).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+    const push=(mins:number)=>{if(mins>=0&&mins<=1440)marks.add(wallToInstant(y,mo,day,mins,zone));};
+    for(let h=0;h<=24;h++)push(h*60);
+    const wk=weekly?.[String(wall.getUTCDay())];
+    if(wk?.mode==='working_hours'){push(minutes(wk.start??''));push(minutes(wk.end??''));}
+    for(const e of settings.exceptions??[]){
+      if(e.kind==='special_hours'&&inDateRange(iso,e.start_date,e.end_date,e.recurs_annually)){push(minutes(e.work_start??''));push(minutes(e.work_end??''));}
+    }
+    if(!weekly){push(minutes(settings.quiet_hours_start??''));push(minutes(settings.quiet_hours_end??''));}
+  }
+  for(const t of [...marks].sort((a,b)=>a-b)){
+    if(t<=base)continue;
+    const at=new Date(t);
+    if(inside?!isWithinQuietHours(settings,at):isWithinQuietHours(settings,at)) return at;
   }
   return null;
 }
