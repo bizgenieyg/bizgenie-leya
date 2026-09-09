@@ -16,8 +16,11 @@ export const BEHAVIOR_DEFAULTS = {
   owner_language: 'ru',
   weekly_schedule: null as WeeklySchedule | null,
   agent_overrides: {} as Record<string,{priority?:number;keywords?:string[];systemPrompt?:string}>,
-  default_agent: 'SUPPORT',
   enabled_agents: ['SALE','SUPPORT'],
+  campaign_routes: [] as Array<{keyword:string;agent:string}>,
+  source_routes: [] as Array<{source:string;agent:string}>,
+  intent_confidence_threshold: 0.75,
+  route_stickiness_hours: 24,
 };
 export const SCHEDULER_POLL_MS = 1000;
 export const STT_DEFAULT_MODEL = 'gemini-2.5-flash-lite';

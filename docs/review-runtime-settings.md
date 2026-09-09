@@ -29,7 +29,10 @@ All newly introduced behavioral defaults are in `src/config/behavior.ts`, `usage
 | Download maximum bytes | behavior.media_max_bytes | 10485760 | API |
 | Owner notification language | behavior.owner_language | ru (he/en supported) | API |
 | Enabled agents | behavior.enabled_agents | SALE, SUPPORT | Yes |
-| Default agent | behavior.default_agent | SUPPORT | Yes |
+| Intent confidence threshold | behavior.intent_confidence_threshold | 0.75 | Yes |
+| Route stickiness | behavior.route_stickiness_hours | 24 hours | Yes |
+| Campaign routes | behavior.campaign_routes | empty | Yes |
+| First-message source routes | behavior.source_routes | empty | Yes |
 | Agent priority, keywords and prompt overrides | behavior.agent_overrides | no overrides | API |
 | Client and owner templates | notification_settings.templates | he/ru/en config catalog | API, intentionally not UI |
 | Owner phone | notification_settings.owner_phone | unset; owner supplies it | Yes, existing pairing API |

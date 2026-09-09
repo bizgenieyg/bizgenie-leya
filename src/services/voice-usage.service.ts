@@ -38,7 +38,7 @@ export async function handleVoiceUsage(db:DatabaseClient,routing:TenantRouting,b
  let paused=settings.auto_replies_paused,conversationId:string|undefined,introduced=false;
  if(client.data){const c=await db.from('conversations').select('id,bot_paused,assistant_introduced_at').eq('tenant_id',tenantId).eq('client_id',client.data.id).eq('status','active').order('created_at',{ascending:false}).limit(1).maybeSingle();if(c.error)return;conversationId=c.data?.id;introduced=!!c.data?.assistant_introduced_at;if(conversationId)paused=paused||await conversationPaused(db,tenantId,conversationId,settings);}
  if(paused){await recordUsageEvent(db,{tenantId,eventType:'message_observed',eventKey:key,metadata:{reason:'paused',billable:false,media:'voice'}});return;}
- return agentContext.run({agent:config.default_agent},async()=>{
+ return agentContext.run({agent:'RECEPTION'},async()=>{
   const transport=meterWhatsApp(db,tenantId,provider),language=routing.tenant.language??'ru';
   const explain=async(template:string)=>{await transport.sendMessage({session,chatId:voice.from,text:withoutRepeatedIntroduction(renderText(settings,template,language),introduced)});if(conversationId&&!introduced){await db.from('conversations').update({assistant_introduced_at:new Date().toISOString()}).eq('tenant_id',tenantId).eq('id',conversationId).is('assistant_introduced_at',null);introduced=true;}};
   if(!stt){console.warn('stt_disabled_missing_key');await explain('client.voice_unavailable');return;}

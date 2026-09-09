@@ -1,4 +1,9 @@
 export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
+  "client.reception_question": {
+    "ru": "Я ассистент владельца. Подскажите, пожалуйста, вас интересует {agents}?",
+    "he": "אני העוזרת של בעל העסק. אפשר להבהיר אם מעניין אותך {agents}?",
+    "en": "I'm the owner's assistant. Could you clarify whether you need {agents}?"
+  },
   "client.waiting": {
     "ru": "Я ассистент владельца. Уточню у владельца и напишу, когда получу ответ.",
     "he": "אני העוזרת של בעל העסק. אברר עם בעל העסק ואעדכן כשאקבל תשובה.",

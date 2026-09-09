@@ -40,6 +40,7 @@ export interface ConversationRow {
   tenant_id: string;
   client_id: string;
   status: string;
+  last_message_at?:string|null;source_label?:string|null;routed_agent?:string|null;route_selected_at?:string|null;reception_question_asked?:boolean;
 }
 
 export function isUuid(value: string): boolean {
@@ -149,7 +150,7 @@ export async function findOrCreateConversation(
 
   const { data: existing, error: findError } = await db
     .from("conversations")
-    .select("id, tenant_id, client_id, status")
+    .select("id, tenant_id, client_id, status,last_message_at,source_label,routed_agent,route_selected_at,reception_question_asked")
     .eq("tenant_id", tenantId)
     .eq("client_id", clientId)
     .eq("status", "active")
@@ -176,7 +177,7 @@ export async function findOrCreateConversation(
       status: "active",
       last_message_at: nowIso,
     })
-    .select("id, tenant_id, client_id, status")
+    .select("id, tenant_id, client_id, status,last_message_at,source_label,routed_agent,route_selected_at,reception_question_asked")
     .single();
   if (createError || !created) {
     throw new HttpError(500, "Could not create conversation");

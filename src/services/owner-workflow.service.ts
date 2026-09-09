@@ -53,6 +53,7 @@ async function obsolete(db:DatabaseClient,e:Escalation,settings:OwnerSettings,no
 }
 async function closeObsolete(db:DatabaseClient,e:Escalation,reason:'owner'|'expired',now:Date){
   await patch(db,e,{status:reason==='owner'?'resolved_by_owner':'expired',closed_at:now.toISOString()});
+  const route=await db.from('conversations').update({routed_agent:null,route_selected_at:null,reception_question_asked:false}).eq('tenant_id',e.tenant_id).eq('id',e.conversation_id);check(route.error);
   const jobs=await db.from('scheduled_jobs').update({status:'cancelled',executed_at:now.toISOString(),error:reason}).eq('tenant_id',e.tenant_id).eq('job_type',JOB).contains('payload',{escalation_id:e.id}).eq('status','pending');check(jobs.error);
 }
 export async function notifyOwner(db:DatabaseClient,provider:WhatsAppProvider,e:Escalation,settings:OwnerSettings):Promise<boolean> {
@@ -154,6 +155,7 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
   try {
     const id=await sendClient(db,provider,e,ownerAnswerText(e.question,(settings.translate_owner_answer ?? BEHAVIOR_DEFAULTS.translate_owner_answer) ? await translateOwnerAnswer(e.question,answer,ai) : answer,settings));
     await patch(db,e,{status:'delivered',client_message_id:id,delivered_at:new Date().toISOString()});
+    const route=await db.from('conversations').update({routed_agent:null,route_selected_at:null,reception_question_asked:false}).eq('tenant_id',tenantId).eq('id',e.conversation_id);check(route.error);
   } catch {
     await patch(db,e,{status:'delivery_uncertain'});
     console.error('escalation_client_delivery_uncertain',{tenantId,escalationId:e.id});
@@ -196,6 +198,7 @@ export async function runEscalationTimeouts(db:DatabaseClient,providerFor:()=>Wh
     if(!await claim(db,e,'pending','closing'))continue;
     try{const id=await sendClient(db,provider,e,renderText(settings,'client.owner_timeout',/[א-ת]/.test(e.question)?'he':/[а-яё]/i.test(e.question)?'ru':'en'));
      await patch(db,e,{status:'closed_unanswered',closed_at:now.toISOString(),client_message_id:id});
+     const route=await db.from('conversations').update({routed_agent:null,route_selected_at:null,reception_question_asked:false}).eq('tenant_id',e.tenant_id).eq('id',e.conversation_id);check(route.error);
     }catch{await patch(db,e,{status:'delivery_uncertain'});console.error('escalation_timeout_delivery_uncertain',{tenantId:e.tenant_id,escalationId:e.id});}
    }else if(!e.reminded_at&&elapsed>=config.escalation_remind_minutes*60000){
     const to=ownerDestination(settings),me=readSessionIdentity((await provider.getSessionStatus(e.session)).me);

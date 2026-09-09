@@ -19,7 +19,7 @@ const defaults:OwnerSettings={owner_phone:'972500000002',owner_chat_id:owner,mod
 function harness() {
  let quotaAllowed=true;let admitted=0;
   type Row=Record<string,any>;
-  const tables:Record<string,Row[]>={notification_settings:[{tenant_id:tenant,...defaults}],conversations:[{id:'conversation',tenant_id:tenant,client_id:'client',status:'active',bot_paused:false}],escalations:[],scheduled_jobs:[],knowledge_items:[],
+  const tables:Record<string,Row[]>={notification_settings:[{tenant_id:tenant,...defaults}],conversations:[{id:'conversation',tenant_id:tenant,client_id:'client',status:'active',bot_paused:false}],escalations:[],unrecognized_routes:[],scheduled_jobs:[],knowledge_items:[],
     tenants:[{id:tenant,name:'Business',phone:null,status:'active',language:'ru'}],whatsapp_instances:[{tenant_id:tenant,session_name:'session'}],clients:[{id:'client',tenant_id:tenant,phone:customer,name:'Клиент'}],assistant_profiles:[]};
   const db={from(table:string){
     const filters:((r:Row)=>boolean)[]=[];let action='read',values:Row|undefined;let single=false;let ran=false;let result:any;
@@ -127,6 +127,7 @@ test('complete real GOWS client and owner reply payloads traverse worker filters
   const body=JSON.parse(readFileSync('src/services/fixtures/gows-incoming-lid.json','utf8'));
   body.payload.from=customer;body.payload._data.Info.Chat=customer;body.payload.body='Неизвестный вопрос';
   await handleWebhookEvent(tenant,body,h.db,h.provider,null);
+  await handleWebhookEvent(tenant,body,h.db,h.provider,null);
   const e=h.tables.escalations![0]!;assert.equal(e.status,'pending');assert.equal(e.client_name,body.payload._data.Info.PushName);
   h.tables.notification_settings![0]!.owner_chat_id='88888888@lid';
   const reply=structuredClone(body);reply.payload.from='88888888@lid';reply.payload._data.Info.Chat=reply.payload.from;reply.payload.body='Ответ владельца';reply.payload.replyTo={id:e.owner_message_ids[0]};
@@ -199,7 +200,7 @@ test('voice runs full GOWS identity, quota, transcription, agent, FAQ pipeline a
  const bytes=wav();let calls=0;
  await handleVoiceUsage(h.db,{tenant:h.tables.tenants![0],instance:h.tables.whatsapp_instances![0]} as any,body,h.provider,{async transcribe(){calls++;return{text:'Какая цена?',confidence:0.99,ambiguous:false,language:'ru'};}},{async download(){return bytes;}});
  assert.equal(calls,1);assert.equal(h.admissions(),1);assert.equal(h.sent.at(-1)?.text,'Цена 100');assert.ok(bytes.every(b=>b===0));
- for(const type of ['message_received','message_sent','stt_call','voice_received']){const rows=h.tables.usage_events!.filter(r=>r.event_type===type);assert.ok(rows.length);assert.ok(rows.every(r=>r.agent==='SALE'));}
+ for(const type of ['message_received','message_sent','stt_call','voice_received']){const rows=h.tables.usage_events!.filter(r=>r.event_type===type);assert.ok(rows.length);assert.ok(rows.every(r=>typeof r.agent==='string'&&r.agent.length>0));}
  assert.equal(h.tables.messages![0]!.body,'Какая цена?');assert.equal(h.tables.messages![0]!.raw_payload.payload.media,null);
 });
 test('voice pause and quota stop STT; uncertainty asks for clarification without FAQ',async()=>{

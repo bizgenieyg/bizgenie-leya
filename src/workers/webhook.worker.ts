@@ -33,6 +33,7 @@ import {
   isTenantServiceable,
 } from "../services/tenant.service.js";
 import { admitUsage, recordUsageEvent } from "../services/usage.service.js";
+import { enabledAgentNames, routeConversation } from '../services/conversation-routing.service.js';
 
 /**
  * Process one already-authenticated webhook body for `tenantId`.
@@ -157,11 +158,33 @@ export async function handleWebhookEvent(
     return;
   }
 
+  const context = await loadContext(db, tenantId);
+  const exact = findExactKnowledgeAnswer(text, context.knowledge);
+  if(exact.matched){
+    return agentContext.run({agent:conversation.routed_agent??'CORE'},async()=>{
+      await recordUsageEvent(db,{tenantId,eventType:'message_received',eventKey:usageKey});
+      const sent=await provider.sendMessage({session,chatId:from,text:clientReply(clientText(exact.answer))});
+      await db.from('messages').insert({conversation_id:conversation.id,tenant_id:tenantId,from_me:true,body:exact.answer,msg_type:'text',waha_msg_id:sent.id||null});await markIntroduced();
+      await recordAgentAction(db,{tenantId,conversationId:conversation.id,actionType:'faq_answer_exact',input:text,output:exact.answer});
+      await recordUsageEvent(db,{tenantId,eventType:'faq_answer_exact',metadata:{knowledge_item_id:exact.knowledgeItemId}});
+    });
+  }
   const classification:Record<string,unknown>[]=[];
-  const agent=await registry.route(text,settings,ai===undefined?createAIProvider():ai,usage=>classification.push(usage));
-  if(!agent)return;
+  const outcome=await routeConversation(db,tenantId,conversation,text,settings,ai===undefined?createAIProvider():ai,usage=>classification.push(usage),memory.messages.length===1);
+  for(const metadata of classification)await agentContext.run({agent:'RECEPTION'},()=>recordUsageEvent(db,{tenantId,eventType:'model_call',eventKey:randomUUID(),metadata:{...metadata,purpose:'intent_classification'}}));
+  if(outcome.kind==='reception')return agentContext.run({agent:'RECEPTION'},async()=>{
+    await recordUsageEvent(db,{tenantId,eventType:'message_received',eventKey:usageKey});
+    const question=renderText(settings,'client.reception_question',languageOf(text),{agents:enabledAgentNames(settings)});
+    const sent=await provider.sendMessage({session,chatId:from,text:clientReply(question)});
+    await db.from('messages').insert({conversation_id:conversation.id,tenant_id:tenantId,from_me:true,body:question,msg_type:'text',waha_msg_id:sent.id||null});await markIntroduced();
+  });
+  if(outcome.kind==='escalate')return agentContext.run({agent:'RECEPTION'},async()=>{
+    await recordUsageEvent(db,{tenantId,eventType:'message_received',eventKey:usageKey});
+    await createEscalation(db,provider,{tenant_id:tenantId,session,conversation_id:conversation.id,client_chat_id:from,client_name:pushName||client.name||clientPhone,question:text,inbound_id:incomingMsgId},settings,client.time_zone);
+    await recordUsageEvent(db,{tenantId,eventType:'escalation_created'});
+  });
+  const agent=outcome.agent;
   return agentContext.run({agent:agent.name},async()=>{
-  for(const metadata of classification)await recordUsageEvent(db,{tenantId,eventType:'model_call',eventKey:randomUUID(),metadata:{...metadata,purpose:'intent'}});
   await recordUsageEvent(db,{tenantId,eventType:'message_received',eventKey:usageKey});
   if(voiceAdmission){
     // STT is metered immediately, then attributed to the agent selected from its transcript.
@@ -179,46 +202,7 @@ export async function handleWebhookEvent(
   }
 
   return agent.execute({answerFromKnowledge:async()=>{
-  const context = await loadContext(db, tenantId);
-  const result = findExactKnowledgeAnswer(text, context.knowledge);
   const clientName = client.name && client.name.trim() !== "" ? client.name : clientPhone;
-
-  if (result.matched) {
-    const sent = await provider.sendMessage({
-      session,
-      chatId: from,
-      text: clientReply(clientText(result.answer)),
-    });
-    await db.from("messages").insert({
-      conversation_id: conversation.id,
-      tenant_id: tenantId,
-      from_me: true,
-      body: result.answer,
-      msg_type: "text",
-      waha_msg_id: sent.id || null,
-    });
-    await markIntroduced();
-    await recordAgentAction(db, {
-      tenantId,
-      conversationId: conversation.id,
-      actionType: "faq_answer_exact",
-      input: text,
-      output: result.answer,
-    });
-    await recordUsageEvent(db, {
-      tenantId,
-      eventType: "faq_answer_exact",
-      metadata: { knowledge_item_id: result.knowledgeItemId },
-    });
-    await logSystemEvent(db, {
-      tenantId,
-      level: "info",
-      event: "faq_answer_exact",
-      details: { conversation_id: conversation.id },
-    });
-    return;
-  }
-
   const generatedReply = await generateKnowledgeReply(context, text, model,agent.systemPrompt,memory.messages,memory.introduced);
   if (generatedReply) {
     const sent = await provider.sendMessage({

@@ -48,9 +48,14 @@ export function validateRuntimePatch(input:Record<string,unknown>) {
   if(['translate_owner_answer','auto_replies_paused'].includes(key)){if(typeof value!=='boolean')throw new HttpError(400,'Expected boolean');notification[key]=value;}
   else if(key==='auto_resume_hours')behaviorPatch[key]=integer(key,value,0,8760);
   else if(['escalation_remind_minutes','escalation_close_minutes','usage_failure_alert_minutes','pairing_ttl_minutes','scheduler_interval_seconds','stt_timeout_seconds','media_max_bytes','deferred_max_age_hours','context_message_count','context_retention_hours'].includes(key))behaviorPatch[key]=integer(key,value,1,2147483647);
-  else if(key==='stt_confidence_threshold'){if(typeof value!=='number'||value<0||value>1)throw new HttpError(400,'Invalid confidence');behaviorPatch[key]=value;}
+  else if(['stt_confidence_threshold','intent_confidence_threshold'].includes(key)){if(typeof value!=='number'||value<0||value>1)throw new HttpError(400,'Invalid confidence');behaviorPatch[key]=value;}
+  else if(key==='route_stickiness_hours')behaviorPatch[key]=integer(key,value,1,8760);
   else if(key==='enabled_agents'){if(!Array.isArray(value)||!value.length||value.some(v=>typeof v!=='string'||!/^[A-Z][A-Z0-9_]*$/.test(v)))throw new HttpError(400,'Invalid agents');behaviorPatch[key]=[...new Set(value)];}
-  else if(key==='default_agent'){if(typeof value!=='string'||!/^[A-Z][A-Z0-9_]*$/.test(value))throw new HttpError(400,'Invalid agent');behaviorPatch[key]=value;}
+  else if(['campaign_routes','source_routes'].includes(key)){
+   const selector=key==='campaign_routes'?'keyword':'source';
+   if(!Array.isArray(value)||value.some(row=>!row||typeof row!=='object'||Array.isArray(row)||Object.keys(row).some(k=>![selector,'agent'].includes(k))||typeof (row as Record<string,unknown>)[selector]!=='string'||!(row as Record<string,unknown>)[selector]||typeof (row as Record<string,unknown>).agent!=='string'||!/^[A-Z][A-Z0-9_]*$/.test(String((row as Record<string,unknown>).agent))))throw new HttpError(400,`Invalid setting: ${key}`);
+   behaviorPatch[key]=value;
+  }
   else if(key==='agent_overrides'){
    if(!value||typeof value!=='object'||Array.isArray(value))throw new HttpError(400,'Invalid agent overrides');
    for(const [name,raw]of Object.entries(value)){
@@ -76,7 +81,7 @@ export async function saveRuntimeSettings(db:DatabaseClient,tenantId:string,inpu
  const patch=validateRuntimePatch(input),existing=await loadOwnerSettings(db,tenantId);
  const merged={...behavior(existing),...patch.behaviorPatch};
  if(Number(merged.escalation_close_minutes)<=Number(merged.escalation_remind_minutes))throw new HttpError(400,'Close timeout must exceed reminder timeout');
- if(!merged.enabled_agents.includes(merged.default_agent))throw new HttpError(400,'Default agent must be enabled');
+ for(const route of [...merged.campaign_routes,...merged.source_routes])if(!merged.enabled_agents.includes(route.agent))throw new HttpError(400,'Route agent must be enabled');
  const result=await db.rpc('update_tenant_runtime_settings',{p_tenant_id:tenantId,p_notification:patch.notification,p_behavior:patch.behaviorPatch,p_default_time_zone:DEFAULT_TIME_ZONE});
  if(result.error)throw new Error('Settings save failed');
  return readRuntimeSettings(db,tenantId);

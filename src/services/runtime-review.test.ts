@@ -11,16 +11,16 @@ import { activeElapsedMs,isWithinQuietHours } from './escalation.service.js';
 import { reserveFailureAlert } from './alert-throttle.js';
 import type { OwnerSettings } from './owner-settings.service.js';
 const settings:OwnerSettings={owner_phone:null,owner_chat_id:null,mode:'mute_all',quiet_hours_start:null,quiet_hours_end:null,auto_replies_paused:false};
-test('cheap intent routing, ambiguous model only, disabled agents and runtime overrides',async()=>{
- let calls=0;const ai={async generateReply(){calls++;return{text:'SALE'};}};
- assert.equal((await registry.route('Какая цена?',settings,ai))?.name,'SALE');assert.equal(calls,0);
- assert.equal((await registry.route('Есть проблема',settings,ai))?.name,'SUPPORT');assert.equal(calls,0);
- assert.equal((await registry.route('Привет',settings,ai))?.name,'SUPPORT');assert.equal(calls,0);
- assert.equal((await registry.route('Проблема с ценой',settings,ai))?.name,'SALE');assert.equal(calls,1);
- assert.equal((await registry.route('Какая цена?',{...settings,behavior:{enabled_agents:['SUPPORT']}},ai))?.name,'SUPPORT');
- assert.equal((await registry.route('специальное слово',{...settings,behavior:{agent_overrides:{SALE:{keywords:['специальное'],systemPrompt:'custom'}}}},ai))?.systemPrompt,'custom');
+test('cheap intent classification, model confidence, disabled agents and runtime overrides',async()=>{
+ let calls=0;const ai={async generateReply(){calls++;return{text:'{"agent":"SALE","confidence":0.82}'};}};
+ assert.equal((await registry.classify('Какая цена?',settings,ai)).agent?.name,'SALE');assert.equal(calls,0);
+ assert.equal((await registry.classify('Есть проблема',settings,ai)).agent?.name,'SUPPORT');assert.equal(calls,0);
+ assert.equal((await registry.classify('Привет',settings,ai)).agent?.name,'SALE');assert.equal(calls,1);
+ assert.equal((await registry.classify('Проблема с ценой',settings,ai)).agent?.name,'SALE');assert.equal(calls,2);
+ assert.equal((await registry.classify('Какая цена?',{...settings,behavior:{enabled_agents:['SUPPORT']}},ai)).agent,null);
+ assert.equal((await registry.classify('специальное слово',{...settings,behavior:{agent_overrides:{SALE:{keywords:['специальное'],systemPrompt:'custom'}}}},ai)).agent?.systemPrompt,'custom');
  const isolated=new AgentRegistry().register({name:'TEST',priority:1,signals:[/test/],systemPrompt:'test',actions:['answerFromKnowledge'],enabledByDefault:true,execute:core=>core.answerFromKnowledge()});
- const a=await isolated.route('test',{...settings,behavior:{enabled_agents:['TEST'],default_agent:'TEST'}},null);let executed=false;await a?.execute({async answerFromKnowledge(){executed=true;}});assert.equal(executed,true);
+ const a=(await isolated.classify('test',{...settings,behavior:{enabled_agents:['TEST']}},null)).agent;let executed=false;await a?.execute({async answerFromKnowledge(){executed=true;}});assert.equal(executed,true);
 });
 test('templates reject unknown placeholders, runtime rendering removes unsafe markup',()=>{
  assert.throws(()=>validateRuntimePatch({templates:{'client.waiting':{ru:'{unknown}'}}}));
@@ -33,9 +33,10 @@ test('templates reject unknown placeholders, runtime rendering removes unsafe ma
  assert.doesNotMatch(text,/[<>{}]/);assert.match(text,/Ассистент/);
 });
 test('conversation behavior settings validate tenant overrides',()=>{
- const patch=validateRuntimePatch({auto_resume_hours:0,deferred_max_age_hours:12,context_message_count:10,context_retention_hours:48});
- assert.deepEqual(patch.behaviorPatch,{auto_resume_hours:0,deferred_max_age_hours:12,context_message_count:10,context_retention_hours:48});
+ const patch=validateRuntimePatch({auto_resume_hours:0,deferred_max_age_hours:12,context_message_count:10,context_retention_hours:48,intent_confidence_threshold:.8,route_stickiness_hours:24,campaign_routes:[{keyword:'AUDIT',agent:'SALE'}],source_routes:[{source:'catalog',agent:'SALE'}]});
+ assert.equal(patch.behaviorPatch.intent_confidence_threshold,.8);assert.equal(patch.behaviorPatch.route_stickiness_hours,24);
  assert.throws(()=>validateRuntimePatch({auto_resume_hours:-1}));assert.throws(()=>validateRuntimePatch({context_message_count:0}));
+ assert.throws(()=>validateRuntimePatch({default_agent:'SUPPORT'}));
 });
 test('weekly schedule and exceptions override legacy quiet hours in owner timezone',()=>{
  const base={mode:'mute_all',quiet_hours_start:'20:00',quiet_hours_end:'09:00',time_zone:'Asia/Jerusalem',behavior:{weekly_schedule:{

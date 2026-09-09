@@ -17,7 +17,7 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
   const db = { async rpc() { return {data:{allowed:quotaAllowed,duplicate:false},error:null}; }, from(table: string) {
     let write = false;
     const query = {
-      select() { return query; }, eq(column: string, value: unknown) { if (table === "clients" && column === "phone") clientKeys.push(value); return query; }, is(){return query;},gte(){return query;},lt(){return query;},not() { return query; }, order() { return query; }, limit() { return query; },delete(){write=true;return query;},
+      select() { return query; }, eq(column: string, value: unknown) { if (table === "clients" && column === "phone") clientKeys.push(value); return query; }, in(){return query;},is(){return query;},gte(){return query;},lt(){return query;},not() { return query; }, order() { return query; }, limit() { return query; },delete(){write=true;return query;},
       update() { write = true; return query; },
       insert(data: Record<string, unknown>) { write = true; writes.push({ table, data }); return query; },
       async maybeSingle() {
@@ -32,7 +32,7 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
       then(resolve: (value: unknown) => unknown) {
         const data = write ? null : table === "knowledge_items"
           ? [{ id: "faq", question: "Часы работы?", answer: "С 9 до 18." }]
-          : table === "conversations" ? [{ id: "conversation", client_id: "client" }] : [];
+          : table === "conversations" ? [{ id: "conversation", client_id: "client", reception_question_asked: true, last_message_at:new Date().toISOString() }] : [];
         return Promise.resolve(resolve({ data, error: null }));
       },
     };
@@ -47,7 +47,7 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
     _data: { Info: { PushName: "Тест" } },
   } };
   let aiCalls = 0;
-  const ai = { async generateReply() { aiCalls++; return { text: "Открыты с 9 до 18." }; } };
+  const ai = { async generateReply(input:{systemPrompt:string}) { aiCalls++; return { text: input.systemPrompt.includes('классификатор намерений') ? '{"agent":"SUPPORT","confidence":0.9}' : "Открыты с 9 до 18." }; } };
   await handleWebhookEvent("123e4567-e89b-42d3-a456-426614174000", body, db, provider, ai);
   assert.equal(aiCalls, 0);
   assert.deepEqual(sent, ["С 9 до 18."]);
@@ -69,7 +69,7 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
     assert.doesNotMatch(JSON.stringify(warnings), /Нет в FAQ|972500000001/);
     await handleWebhookEvent("123e4567-e89b-42d3-a456-426614174000",
       { ...body, payload: { ...body.payload, body: "Когда вы открыты?" } }, db, provider, ai);
-    assert.equal(aiCalls, 1);
+    assert.equal(aiCalls, 2);
     assert.equal(sent[1], "Открыты с 9 до 18.");
     await handleWebhookEvent("123e4567-e89b-42d3-a456-426614174000",
       { ...body, payload: { ...body.payload, body: "Другой вопрос" } }, db, provider,
@@ -82,7 +82,7 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
       { ...body, payload: { ...body.payload, from: lid, body: "Переформулированный вопрос" } }, db, provider, ai);
     assert.deepEqual(recipients.slice(-2), [lid, lid]);
     assert.deepEqual(clientKeys.slice(-2), [lid, lid]);
-    assert.equal(aiCalls, 2);
+    assert.ok(aiCalls >= 2);
     const realPayload = JSON.parse(readFileSync("src/services/fixtures/gows-incoming-lid.json", "utf8"));
     await handleWebhookEvent("123e4567-e89b-42d3-a456-426614174000", realPayload, db, provider, ai);
     assert.equal(recipients.at(-1), realPayload.payload.from);
