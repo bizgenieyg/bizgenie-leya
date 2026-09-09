@@ -10,14 +10,14 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = "test-only";
 test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is null", async () => {
   const { handleWebhookEvent } = await import("../workers/webhook.worker.js");
   const writes: { table: string; data: Record<string, unknown> }[] = [];
-  const sent: string[] = [];
+  const sent: string[] = [];const replyTargets:(string|undefined)[]=[];
   const recipients: string[] = [];
   const clientKeys: unknown[] = [];
   let quotaAllowed = true;
   const db = { async rpc() { return {data:{allowed:quotaAllowed,duplicate:false},error:null}; }, from(table: string) {
     let write = false;
     const query = {
-      select() { return query; }, eq(column: string, value: unknown) { if (table === "clients" && column === "phone") clientKeys.push(value); return query; }, not() { return query; }, order() { return query; }, limit() { return query; },
+      select() { return query; }, eq(column: string, value: unknown) { if (table === "clients" && column === "phone") clientKeys.push(value); return query; }, is(){return query;},gte(){return query;},lt(){return query;},not() { return query; }, order() { return query; }, limit() { return query; },delete(){write=true;return query;},
       update() { write = true; return query; },
       insert(data: Record<string, unknown>) { write = true; writes.push({ table, data }); return query; },
       async maybeSingle() {
@@ -39,7 +39,7 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
     return query;
   } } as unknown as DatabaseClient;
   const provider: WhatsAppProvider = {
-    async sendMessage(input) { sent.push(input.text); recipients.push(input.chatId); return { id: "reply" }; },
+    async sendMessage(input) { sent.push(input.text); recipients.push(input.chatId);replyTargets.push(input.replyTo); return { id: "reply" }; },
     async getSessionStatus() { return { status: "WORKING" }; },
   };
   const body = { event: "message", payload: {
@@ -51,6 +51,7 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
   await handleWebhookEvent("123e4567-e89b-42d3-a456-426614174000", body, db, provider, ai);
   assert.equal(aiCalls, 0);
   assert.deepEqual(sent, ["С 9 до 18."]);
+  assert.equal(replyTargets[0],undefined);
   assert.ok(writes.some(write => write.table === "agent_actions" && write.data.action_type === "faq_answer_exact"));
   const warn = console.warn;
   const info = console.info;

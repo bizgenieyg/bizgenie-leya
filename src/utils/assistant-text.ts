@@ -2,6 +2,10 @@ import { localTime, validTimeZone } from "./time-zone.js";
 import { renderText,languageOf } from '../services/templates.service.js';
 import type { OwnerSettings } from '../services/owner-settings.service.js';
 export const clientText = (text:string) => text.replace(/<[^>]*>/g, "").replace(/[<>]/g, "").trim();
+export function withoutRepeatedIntroduction(text:string,introduced:boolean):string {
+ if(!introduced)return clientText(text);
+ return clientText(text).replace(/^(?:Я ассистент владельца\.|I'm the owner's assistant\.|אני העוזרת של בעל העסק\.)\s*/i,'').trim();
+}
 export function waitingText(question:string,quiet?:{at:Date;ownerZone:string;clientZone?:string|null},settings?:OwnerSettings):string {
  const language=languageOf(question);
  if(!quiet)return renderText(settings,'client.waiting',language);

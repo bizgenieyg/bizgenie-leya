@@ -32,6 +32,11 @@ test('templates reject unknown placeholders, runtime rendering removes unsafe ma
  const text=renderText({...settings,templates:{'client.owner_answer':{ru:'Ассистент: {answer}'}}},'client.owner_answer','ru',{answer:'<secret>{placeholder} да'});
  assert.doesNotMatch(text,/[<>{}]/);assert.match(text,/Ассистент/);
 });
+test('conversation behavior settings validate tenant overrides',()=>{
+ const patch=validateRuntimePatch({auto_resume_hours:0,deferred_max_age_hours:12,context_message_count:10,context_retention_hours:48});
+ assert.deepEqual(patch.behaviorPatch,{auto_resume_hours:0,deferred_max_age_hours:12,context_message_count:10,context_retention_hours:48});
+ assert.throws(()=>validateRuntimePatch({auto_resume_hours:-1}));assert.throws(()=>validateRuntimePatch({context_message_count:0}));
+});
 test('weekly schedule and exceptions override legacy quiet hours in owner timezone',()=>{
  const base={mode:'mute_all',quiet_hours_start:'20:00',quiet_hours_end:'09:00',time_zone:'Asia/Jerusalem',behavior:{weekly_schedule:{
   '0':{mode:'working_day'},'1':{mode:'working_hours',start:'09:00',end:'18:00'},'2':{mode:'working_day'},'3':{mode:'working_day'},'4':{mode:'working_day'},'5':{mode:'working_day'},'6':{mode:'day_off'}}}};

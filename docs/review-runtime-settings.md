@@ -36,6 +36,10 @@ All newly introduced behavioral defaults are in `src/config/behavior.ts`, `usage
 | Weekly work schedule | notification_settings.behavior.weekly_schedule | full working day, all days | Yes |
 | Owner time zone | notification_settings.time_zone | Asia/Jerusalem | Yes |
 | Pause auto replies | notification_settings.auto_replies_paused | existing false default | Yes |
+| Auto-resume after owner inactivity, hours | behavior.auto_resume_hours | 0 (disabled) | Yes |
+| Maximum delayed-answer age, hours | behavior.deferred_max_age_hours | 12 | Yes |
+| Conversation context messages | behavior.context_message_count | 10 | Yes |
+| Conversation context retention, hours | behavior.context_retention_hours | 48 | Yes |
 
 `behavior.*` above is inside notification_settings. The initial 026 upgrade clears the old zero voice allowance to NULL so existing tenants inherit the nonzero basic allowance. This one-time conversion is guarded; an explicit zero set after upgrade remains zero and blocks recognition.
 

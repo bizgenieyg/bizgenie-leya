@@ -14,7 +14,7 @@ import { createWhatsAppProvider } from "../providers/whatsapp/index.js";
 import type { WhatsAppProvider } from "../providers/whatsapp/whatsapp-provider.interface.js";
 import { normalizeWebhookMessage, webhookEventType } from "../utils/webhook-message.js";
 import { isStatusBroadcast, senderKey } from "../utils/whatsapp-id.js";
-import { loadContext } from "../services/context.service.js";
+import { loadContext,loadConversationMemory } from "../services/context.service.js";
 import {
   createEscalation, handleOwnerMessage, conversationPaused,
 } from "../services/owner-workflow.service.js";
@@ -23,6 +23,7 @@ import { clientTimeZoneCommand } from "../utils/time-zone.js";
 import { isWithinQuietHours, nextQuietHoursEnd } from "../services/escalation.service.js";
 import { waitingText } from "../utils/assistant-text.js";
 import { clientText } from "../utils/assistant-text.js";
+import { withoutRepeatedIntroduction } from '../utils/assistant-text.js';
 import { findExactKnowledgeAnswer } from "../services/knowledge.service.js";
 import { logSystemEvent, recordAgentAction } from "../services/logging.service.js";
 import {
@@ -141,15 +142,18 @@ export async function handleWebhookEvent(
     });
     return;
   }
+  const memory=await loadConversationMemory(db,tenantId,conversation.id,behavior(settings).context_message_count,behavior(settings).context_retention_hours);
+  const clientReply=(value:string)=>withoutRepeatedIntroduction(value,memory.introduced);
+  const markIntroduced=async()=>{if(memory.introduced)return;await db.from('conversations').update({assistant_introduced_at:new Date().toISOString()}).eq('tenant_id',tenantId).eq('id',conversation.id).is('assistant_introduced_at',null);memory.introduced=true;};
 
-  if (settings.auto_replies_paused || await conversationPaused(db, tenantId, conversation.id)) {await recordUsageEvent(db,{tenantId,eventType:'message_observed',eventKey:usageKey,metadata:{reason:'paused',billable:false}});return;}
+  if (settings.auto_replies_paused || await conversationPaused(db, tenantId, conversation.id,settings)) {await recordUsageEvent(db,{tenantId,eventType:'message_observed',eventKey:usageKey,metadata:{reason:'paused',billable:false}});return;}
 
   const admission=voiceAdmission ? {allowed:true,duplicate:false,unavailable:voiceAdmission.unavailable} : await admitUsage(db,tenantId,usageKey);
   if(admission.duplicate)return;
   if(admission.unavailable)await notifyUsageFailure(db,tenantId,session,provider,settings);
   await deliverUsageNotices(db,tenantId,session,provider);
   if(!admission.allowed){
-    await provider.sendMessage({session,chatId:from,text:limitClientText(text,settings)});
+    await provider.sendMessage({session,chatId:from,text:clientReply(limitClientText(text,settings))});await markIntroduced();
     return;
   }
 
@@ -170,7 +174,7 @@ export async function handleWebhookEvent(
     const confirmation = renderText(settings,'client.timezone_saved',languageOf(text),{zone:clientZone});
     const now = new Date();
     const quiet = isWithinQuietHours(settings, now);
-    await provider.sendMessage({ session, chatId: from, text: confirmation + (quiet ? ' ' + waitingText(text, { at: nextQuietHoursEnd(settings, now), ownerZone: settings.time_zone ?? 'UTC', clientZone },settings) : '') });
+    await provider.sendMessage({ session, chatId: from, text: clientReply(confirmation + (quiet ? ' ' + waitingText(text, { at: nextQuietHoursEnd(settings, now), ownerZone: settings.time_zone ?? 'UTC', clientZone },settings) : '')) });await markIntroduced();
     return;
   }
 
@@ -183,8 +187,7 @@ export async function handleWebhookEvent(
     const sent = await provider.sendMessage({
       session,
       chatId: from,
-      text: clientText(result.answer),
-      ...(incomingMsgId ? { replyTo: incomingMsgId } : {}),
+      text: clientReply(clientText(result.answer)),
     });
     await db.from("messages").insert({
       conversation_id: conversation.id,
@@ -194,6 +197,7 @@ export async function handleWebhookEvent(
       msg_type: "text",
       waha_msg_id: sent.id || null,
     });
+    await markIntroduced();
     await recordAgentAction(db, {
       tenantId,
       conversationId: conversation.id,
@@ -215,16 +219,16 @@ export async function handleWebhookEvent(
     return;
   }
 
-  const generatedReply = await generateKnowledgeReply(context, text, model,agent.systemPrompt);
+  const generatedReply = await generateKnowledgeReply(context, text, model,agent.systemPrompt,memory.messages,memory.introduced);
   if (generatedReply) {
     const sent = await provider.sendMessage({
-      session, chatId: from, text: generatedReply,
-      ...(incomingMsgId ? { replyTo: incomingMsgId } : {}),
+      session, chatId: from, text: clientReply(generatedReply),
     });
     await db.from("messages").insert({
       conversation_id: conversation.id, tenant_id: tenantId, from_me: true,
       body: generatedReply, msg_type: "text", waha_msg_id: sent.id || null,
     });
+    await markIntroduced();
     await recordAgentAction(db, {
       tenantId, conversationId: conversation.id, actionType: "knowledge_ai_answer",
     });

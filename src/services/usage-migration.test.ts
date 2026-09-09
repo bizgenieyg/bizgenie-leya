@@ -20,6 +20,7 @@ test('027 PostgreSQL system settings boundary, calendar RLS and prior usage beha
     await db.query("insert into tenants(id,name,phone)values($1,'A','1111111'),($2,'B','2222222')",[t,other]);
     await db.query("insert into notification_settings(tenant_id,time_zone,quiet_hours_start,quiet_hours_end)values($1,'America/New_York','20:00','09:00')",[t]);
     await db.exec(readFileSync(path,'utf8'));await db.exec(readFileSync(path,'utf8'));
+    await db.exec(readFileSync('supabase/migrations/20260909073722_028_conversation_takeover_and_memory.sql','utf8'));
     const converted=await db.query<{behavior:any}>('select behavior from notification_settings where tenant_id=$1',[t]);
     assert.equal(converted.rows[0]!.behavior.weekly_schedule['0'].start,'09:00');
     assert.equal(converted.rows[0]!.behavior.weekly_schedule['6'].end,'20:00');
@@ -59,6 +60,7 @@ test('027 PostgreSQL system settings boundary, calendar RLS and prior usage beha
     await assert.rejects(db.query("select update_tenant_runtime_settings($1,'{}','{}','Asia/Jerusalem')",[t]),/permission denied/);
     const columns=await db.query<{column_name:string}>("select column_name from information_schema.column_privileges where grantee='authenticated' and table_name='notification_settings' and column_name in ('translate_owner_answer','behavior','templates')");
     assert.equal(columns.rows.length,3);
+    const conversationColumns=await db.query<{column_name:string}>("select column_name from information_schema.columns where table_name='conversations' and column_name in ('owner_last_activity_at','assistant_introduced_at')");assert.equal(conversationColumns.rows.length,2);
     await db.exec('reset role');await db.exec('set role service_role');
     await db.query("insert into schedule_exceptions(tenant_id,start_date,end_date,kind,name) values($1,'2026-09-10','2026-09-11','day_off','Holiday')",[t]);
     await db.exec('reset role');await db.query("select set_config('request.jwt.claim.sub',$1,false)",[user]);await db.exec('set role authenticated');

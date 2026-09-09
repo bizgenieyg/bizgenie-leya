@@ -46,7 +46,8 @@ export function validateRuntimePatch(input:Record<string,unknown>) {
  for(const [key,value]of Object.entries(input)){
   if(SYSTEM_FIELDS.has(key))throw new HttpError(403,'System settings cannot be changed by tenant');
   if(['translate_owner_answer','auto_replies_paused'].includes(key)){if(typeof value!=='boolean')throw new HttpError(400,'Expected boolean');notification[key]=value;}
-  else if(['escalation_remind_minutes','escalation_close_minutes','usage_failure_alert_minutes','pairing_ttl_minutes','scheduler_interval_seconds','stt_timeout_seconds','media_max_bytes'].includes(key))behaviorPatch[key]=integer(key,value,1,2147483647);
+  else if(key==='auto_resume_hours')behaviorPatch[key]=integer(key,value,0,8760);
+  else if(['escalation_remind_minutes','escalation_close_minutes','usage_failure_alert_minutes','pairing_ttl_minutes','scheduler_interval_seconds','stt_timeout_seconds','media_max_bytes','deferred_max_age_hours','context_message_count','context_retention_hours'].includes(key))behaviorPatch[key]=integer(key,value,1,2147483647);
   else if(key==='stt_confidence_threshold'){if(typeof value!=='number'||value<0||value>1)throw new HttpError(400,'Invalid confidence');behaviorPatch[key]=value;}
   else if(key==='enabled_agents'){if(!Array.isArray(value)||!value.length||value.some(v=>typeof v!=='string'||!/^[A-Z][A-Z0-9_]*$/.test(v)))throw new HttpError(400,'Invalid agents');behaviorPatch[key]=[...new Set(value)];}
   else if(key==='default_agent'){if(typeof value!=='string'||!/^[A-Z][A-Z0-9_]*$/.test(value))throw new HttpError(400,'Invalid agent');behaviorPatch[key]=value;}

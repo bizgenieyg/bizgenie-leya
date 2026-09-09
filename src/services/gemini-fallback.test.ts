@@ -29,6 +29,14 @@ test("Gemini receives tenant knowledge/settings and hard rules, returns only fin
   try { assert.equal(await generateKnowledgeReply(context, "Когда?", new GeminiProvider("test-key")), "С 9 до 18."); }
   finally { globalThis.fetch = originalFetch; }
 });
+test('dialogue memory is passed in order and repeated greeting is forbidden',async()=>{
+ let prompt='',payload:any;
+ const ai={async generateReply(input:{systemPrompt:string;userMessage:string}){prompt=input.systemPrompt;payload=JSON.parse(input.userMessage);return{text:'Продолжаем разговор.'};}};
+ const memory=[{fromMe:false,text:'Первый вопрос',createdAt:'2026-09-09T10:00:00Z'},{fromMe:true,text:'Первый ответ',createdAt:'2026-09-09T10:01:00Z'}];
+ assert.equal(await generateKnowledgeReply(context,'Уточнение',ai,'',memory,true),'Продолжаем разговор.');
+ assert.deepEqual(payload.conversationHistory,[{role:'customer',text:'Первый вопрос'},{role:'assistant',text:'Первый ответ'}]);
+ assert.match(prompt,/не приветствуй клиента и не представляйся снова/);
+});
 test("HTTP failures, blocked/empty/partial output and timeout retain old fallback behavior", async () => {
   const originalFetch = globalThis.fetch;
   const originalWarn = console.warn;

@@ -12,6 +12,7 @@ import { decryptCredential } from "../utils/crypto.js";
 import { HttpError } from "../utils/http-error.js";
 import { objectBody } from "../utils/validation.js";
 import { handleWebhookEvent } from "../workers/webhook.worker.js";
+import { observeOwnerOutgoing } from '../services/outgoing-owner.service.js';
 
 export const webhookRouter = Router();
 
@@ -41,6 +42,7 @@ webhookRouter.post("/:tenantId", async (request, response) => {
   const decision = filterIncoming(body);
   if (!decision.allowed) {
     logRejectedIncoming(decision);
+    if(decision.reason==='outgoing_message')setImmediate(()=>{observeOwnerOutgoing(supabase,tenantId,body).catch(error=>console.error('owner_outgoing_observation_failed',{tenantId,errorType:error instanceof Error?error.name:'UnknownError'}));});
     if(voiceUsage(body)) setImmediate(()=>{handleVoiceUsage(supabase,routing,body,createWhatsAppProvider()).catch(()=>console.error('voice_usage_handler_failed'));});
     return;
   }

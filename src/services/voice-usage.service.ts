@@ -15,6 +15,8 @@ import { deliverUsageNotices,limitClientText,notifyUsageFailure } from './usage-
 import { behavior } from './runtime-settings.service.js';
 import { renderText } from './templates.service.js';
 import { agentContext } from '../agents/registry.js';
+import { withoutRepeatedIntroduction } from '../utils/assistant-text.js';
+import { conversationPaused } from './owner-workflow.service.js';
 const object=(value:unknown):Record<string,unknown>=>value!==null&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:{};
 export function voiceUsage(body:Record<string,unknown>):{from:string;seconds:number|null;id:string|null;mime:string;url:string}|null {
  const decision=filterIncoming(body);
@@ -33,12 +35,12 @@ export async function handleVoiceUsage(db:DatabaseClient,routing:TenantRouting,b
  const settings=await loadOwnerSettings(db,tenantId);if(isBusinessOwner(voice.from,settings))return;
  const key=voice.id??randomUUID(),config=behavior(settings);
  const client=await db.from('clients').select('id').eq('tenant_id',tenantId).eq('phone',senderKey(voice.from)).maybeSingle();if(client.error)return;
- let paused=settings.auto_replies_paused;
- if(client.data){const c=await db.from('conversations').select('bot_paused').eq('tenant_id',tenantId).eq('client_id',client.data.id).eq('status','active').order('created_at',{ascending:false}).limit(1).maybeSingle();if(c.error)return;paused=paused||c.data?.bot_paused===true;}
+ let paused=settings.auto_replies_paused,conversationId:string|undefined,introduced=false;
+ if(client.data){const c=await db.from('conversations').select('id,bot_paused,assistant_introduced_at').eq('tenant_id',tenantId).eq('client_id',client.data.id).eq('status','active').order('created_at',{ascending:false}).limit(1).maybeSingle();if(c.error)return;conversationId=c.data?.id;introduced=!!c.data?.assistant_introduced_at;if(conversationId)paused=paused||await conversationPaused(db,tenantId,conversationId,settings);}
  if(paused){await recordUsageEvent(db,{tenantId,eventType:'message_observed',eventKey:key,metadata:{reason:'paused',billable:false,media:'voice'}});return;}
  return agentContext.run({agent:config.default_agent},async()=>{
   const transport=meterWhatsApp(db,tenantId,provider),language=routing.tenant.language??'ru';
-  const explain=async(template:string)=>{await transport.sendMessage({session,chatId:voice.from,text:renderText(settings,template,language)});};
+  const explain=async(template:string)=>{await transport.sendMessage({session,chatId:voice.from,text:withoutRepeatedIntroduction(renderText(settings,template,language),introduced)});if(conversationId&&!introduced){await db.from('conversations').update({assistant_introduced_at:new Date().toISOString()}).eq('tenant_id',tenantId).eq('id',conversationId).is('assistant_introduced_at',null);introduced=true;}};
   if(!stt){console.warn('stt_disabled_missing_key');await explain('client.voice_unavailable');return;}
   let bytes:Buffer|undefined;
   try{
@@ -49,7 +51,7 @@ export async function handleVoiceUsage(db:DatabaseClient,routing:TenantRouting,b
    const admission=await admitUsage(db,tenantId,key,1,seconds);if(admission.duplicate)return;
    if(admission.unavailable)await notifyUsageFailure(db,tenantId,session,provider,settings);
    await deliverUsageNotices(db,tenantId,session,provider);
-   if(!admission.allowed){await transport.sendMessage({session,chatId:voice.from,text:limitClientText(language==='he'?'שלום':language==='ru'?'Здравствуйте':'Hello',settings)});return;}
+   if(!admission.allowed){await transport.sendMessage({session,chatId:voice.from,text:withoutRepeatedIntroduction(limitClientText(language==='he'?'שלום':language==='ru'?'Здравствуйте':'Hello',settings),introduced)});if(conversationId&&!introduced){await db.from('conversations').update({assistant_introduced_at:new Date().toISOString()}).eq('tenant_id',tenantId).eq('id',conversationId).is('assistant_introduced_at',null);}return;}
    const sttKey=randomUUID();let result;
    try{result=await stt.transcribe(bytes,voice.mime,config.stt_timeout_seconds);}
    catch{await recordUsageEvent(db,{tenantId,eventType:'stt_call',eventKey:sttKey,metadata:{status:'failed'}});await recordUsageEvent(db,{tenantId,eventType:'message_received',eventKey:key});await recordUsageEvent(db,{tenantId,eventType:'voice_received',eventKey:key,quantity:seconds});await explain('client.voice_unavailable');return;}

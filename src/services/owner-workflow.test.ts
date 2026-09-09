@@ -3,9 +3,10 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import type { DatabaseClient } from '../db/supabase.js';
 import type { WhatsAppProvider } from '../providers/whatsapp/whatsapp-provider.interface.js';
-import { createEscalation, handleOwnerMessage, runDueScheduledEscalations } from './owner-workflow.service.js';
+import { conversationPaused, createEscalation, handleOwnerMessage, runDueScheduledEscalations } from './owner-workflow.service.js';
 import { saveOwnerSettings, type OwnerSettings } from './owner-settings.service.js';
 import { isWithinQuietHours, nextQuietHoursEnd } from './escalation.service.js';
+import { observeOwnerOutgoing } from './outgoing-owner.service.js';
 import { clientText, isDeferredAnswer, replyId } from '../utils/assistant-text.js';
 process.env.SUPABASE_URL='https://database.invalid';
 process.env.SUPABASE_SERVICE_ROLE_KEY='test-only';
@@ -22,11 +23,13 @@ function harness() {
     tenants:[{id:tenant,name:'Business',phone:null,status:'active',language:'ru'}],whatsapp_instances:[{tenant_id:tenant,session_name:'session'}],clients:[{id:'client',tenant_id:tenant,phone:customer,name:'Клиент'}],assistant_profiles:[]};
   const db={from(table:string){
     const filters:((r:Row)=>boolean)[]=[];let action='read',values:Row|undefined;let single=false;let ran=false;let result:any;
-    const q:any={select(){return q;},eq(k:string,v:unknown){filters.push(r=>r[k]===v);return q;},contains(k:string,v:string[]){filters.push(r=>v.every(x=>r[k]?.includes(x)));return q;},lte(k:string,v:string){filters.push(r=>r[k]<=v);return q;},not(){return q;},order(){return q;},limit(){return q;},
+    const q:any={select(){return q;},eq(k:string,v:unknown){filters.push(r=>r[k]===v);return q;},is(k:string,v:unknown){filters.push(r=>r[k]===v||r[k]===undefined&&v===null);return q;},in(k:string,v:unknown[]){filters.push(r=>v.includes(r[k]));return q;},contains(k:string,v:any){filters.push(r=>Array.isArray(v)?v.every((x:string)=>r[k]?.includes(x)):Object.entries(v).every(([x,y])=>r[k]?.[x]===y));return q;},lte(k:string,v:string){filters.push(r=>r[k]<=v);return q;},lt(k:string,v:string){filters.push(r=>r[k]<v);return q;},gte(k:string,v:string){filters.push(r=>r[k]>=v);return q;},not(){return q;},order(){return q;},limit(){return q;},
       update(v:Row){action='update';values=v;return q;},insert(v:Row){action='insert';values=v;return q;},upsert(v:Row){action='upsert';values=v;return q;},
+      delete(){action='delete';return q;},
       maybeSingle(){single=true;return q;},single(){single=true;return q;},then(resolve:any,reject:any){try{if(!ran){ran=true;const rows=tables[table]??(tables[table]=[]);let found=rows.filter(r=>filters.every(f=>f(r)));
         if(action==='insert'){const row={id:`row-${rows.length}`,status:'queued',owner_message_ids:[],learning_message_ids:[],learning_state:'none',...values};rows.push(row);found=[row];}
         if(action==='update')found.forEach(r=>Object.assign(r,values));
+        if(action==='delete')for(const row of found){const i=rows.indexOf(row);if(i>=0)rows.splice(i,1);}
         if(action==='upsert'){let row=rows.find(r=>r.tenant_id===values?.tenant_id);if(row)Object.assign(row,values);else{row={...values};rows.push(row);}found=[row];}
         result={data:single?(found[0]??null):found.map(r=>({...r})),error:null};}
         return Promise.resolve(result).then(resolve,reject);
@@ -34,7 +37,7 @@ function harness() {
     };return q;
   },async rpc(_name:string,args:Row){if(_name==='admit_tenant_usage'){if(quotaAllowed)admitted++;return {data:{allowed:quotaAllowed,duplicate:false},error:null};}const e=tables.escalations!.find(r=>r.tenant_id===args.p_tenant_id&&r.id===args.p_escalation_id)!;if(e.status!=='delivered')return {error:{}};
     if(!e.knowledge_item_id){tables.knowledge_items!.push({tenant_id:tenant,question:e.question,answer:e.answer});e.knowledge_item_id='knowledge';e.learning_state='saved';}return {data:'knowledge',error:null};}} as unknown as DatabaseClient;
-  const sent:{chatId:string;text:string;id:string}[]=[];
+  const sent:{chatId:string;text:string;id:string;replyTo?:string}[]=[];
   let failClient=false;
   const provider:WhatsAppProvider={async getSessionStatus(){return{status:'WORKING',me:{id:'972500000009@c.us',lid:'99999999@lid'}};},async sendMessage(input){if(failClient&&input.chatId===customer)throw new Error('network');const id=`true_${input.chatId}_MSG${sent.length}`;sent.push({...input,id});return{id};}};
   return {db,tables,sent,provider,admissions:()=>admitted,deny:()=>{quotaAllowed=false;},fail:()=>{failClient=true;}};
@@ -52,6 +55,7 @@ test('owner reply: short GOWS ID, delivery before closure, quoted confirmation o
   assert.equal(e.status,'pending');assert.equal(h.tables.knowledge_items!.length,0);
   await handleOwnerMessage(h.db,h.provider,tenant,'session',owner,'Да, можно',e.owner_message_ids[0],defaults);
   assert.equal(e.status,'delivered');assert.ok(e.client_message_id);assert.equal(h.sent.at(-2)!.chatId,customer);
+  assert.equal(h.sent.at(-2)!.replyTo,undefined);
   assert.match(h.sent.at(-2)!.text,/Передаю ответ владельца/);assert.equal(h.tables.knowledge_items!.length,0);
   const prompt=e.learning_message_ids[0];
   assert.equal(await handleOwnerMessage(h.db,h.provider,tenant,'session',customer,'Да',prompt,defaults),false);
@@ -78,6 +82,18 @@ test('takeover, tenant pause and explicit resume remain separate',async()=>{
   await handleOwnerMessage(h.db,h.provider,tenant,'session',owner,'Продолжить',e.owner_message_ids[0],defaults);
   assert.equal(h.tables.conversations![0]!.bot_paused,false);
 });
+test('manual fromMe send pauses dialogue and closes pending escalation; API send is ignored',async()=>{
+ const h=harness();h.tables.escalations!.push({id:'e',...input,status:'queued',created_at:'2026-09-08T10:00:00Z'});
+ const body={event:'message',payload:{id:'manual-1',from:'972500000009@c.us',to:customer,fromMe:true,source:'app',body:'Ответ владельца',_data:{Info:{IsFromMe:true,Chat:customer}}}};
+ assert.equal(await observeOwnerOutgoing(h.db,tenant,body,new Date('2026-09-08T20:00:00Z')),true);
+ assert.equal(h.tables.conversations![0]!.bot_paused,true);assert.equal(h.tables.escalations![0]!.status,'resolved_by_owner');
+ assert.equal(await observeOwnerOutgoing(h.db,tenant,{...body,payload:{...body.payload,id:'api-1',source:'api'}},new Date()),false);
+});
+test('automatic resume is disabled by default and enabled after configured inactivity',async()=>{
+ const h=harness(),row=h.tables.conversations![0]!;row.bot_paused=true;row.owner_last_activity_at='2026-09-08T10:00:00Z';
+ assert.equal(await conversationPaused(h.db,tenant,row.id,defaults,new Date('2026-09-09T10:00:00Z')),true);
+ assert.equal(await conversationPaused(h.db,tenant,row.id,{...defaults,behavior:{auto_resume_hours:12}},new Date('2026-09-09T10:00:00Z')),false);assert.equal(row.bot_paused,false);
+});
 test('quiet queue uses Jerusalem time, delivers each once across concurrent schedulers',async()=>{
   const h=harness();const night={...defaults,quiet_hours_start:'20:00',quiet_hours_end:'09:00'};
   assert.equal(isWithinQuietHours(night,new Date('2026-09-08T18:00:00Z')),true);
@@ -89,6 +105,12 @@ test('quiet queue uses Jerusalem time, delivers each once across concurrent sche
   await runDueScheduledEscalations(h.db,()=>h.provider,new Date('2026-09-08T18:00:00Z'));assert.equal(h.sent.length,0);
   await Promise.all([runDueScheduledEscalations(h.db,()=>h.provider,new Date('2026-09-09T06:00:00Z')),runDueScheduledEscalations(h.db,()=>h.provider,new Date('2026-09-09T06:00:00Z'))]);
   assert.equal(h.sent.length,1);assert.equal(h.tables.escalations![0]!.status,'pending');
+});
+test('due escalation is cancelled after owner activity and expires after maximum age',async()=>{
+ for(const kind of ['owner','expired']){const h=harness(),created='2026-09-08T00:00:00Z';h.tables.notification_settings![0]!.behavior={deferred_max_age_hours:12};h.tables.conversations![0]!.owner_last_activity_at=kind==='owner'?'2026-09-08T01:00:00Z':null;
+  h.tables.escalations!.push({id:'e',...input,status:'queued',created_at:created,owner_message_ids:[],learning_state:'none'});h.tables.scheduled_jobs!.push({id:'j',tenant_id:tenant,job_type:'owner_escalation',payload:{escalation_id:'e'},status:'pending',scheduled_at:created});
+  await runDueScheduledEscalations(h.db,()=>h.provider,new Date('2026-09-08T13:00:00Z'));assert.equal(h.sent.length,0);assert.equal(h.tables.escalations![0]!.status,kind==='owner'?'resolved_by_owner':'expired');
+ }
 });
 test('owner phone must differ from session; one-time code binds LID and never guesses digits',async()=>{
   const h=harness();

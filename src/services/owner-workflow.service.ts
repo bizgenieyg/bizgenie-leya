@@ -8,7 +8,7 @@ import { translateOwnerAnswer } from "./ai-fallback.service.js";
 import type { DatabaseClient } from '../db/supabase.js';
 import type { WhatsAppProvider } from '../providers/whatsapp/whatsapp-provider.interface.js';
 import { allowedRecipient, ownerIdentityField, readSessionIdentity } from '../utils/incoming-policy.js';
-import { clientText, isDeferredAnswer, ownerAnswerText, replyId, waitingText } from '../utils/assistant-text.js';
+import { clientText, isDeferredAnswer, ownerAnswerText, replyId, waitingText, withoutRepeatedIntroduction } from '../utils/assistant-text.js';
 import { buildEscalationText, isWithinQuietHours, nextQuietHoursEnd } from './escalation.service.js';
 import { isBusinessOwner, loadOwnerSettings, ownerDestination, pairOwner, type OwnerSettings } from './owner-settings.service.js';
 
@@ -31,11 +31,33 @@ async function send(provider:WhatsAppProvider,session:string,chatId:string,text:
   if(!result.id) throw new Error('Message delivery not confirmed');
   return result.id;
 }
-export async function conversationPaused(db:DatabaseClient,tenantId:string,conversationId:string):Promise<boolean> {
-  const {data,error}=await db.from('conversations').select('bot_paused').eq('tenant_id',tenantId).eq('id',conversationId).maybeSingle();check(error);return data?.bot_paused===true;
+async function sendClient(db:DatabaseClient,provider:WhatsAppProvider,e:Escalation,text:string):Promise<string>{
+ const c=await db.from('conversations').select('assistant_introduced_at').eq('tenant_id',e.tenant_id).eq('id',e.conversation_id).maybeSingle();check(c.error);
+ const id=await send(provider,e.session,e.client_chat_id,withoutRepeatedIntroduction(text,!!c.data?.assistant_introduced_at));
+ const marked=await db.from('conversations').update({assistant_introduced_at:new Date().toISOString()}).eq('tenant_id',e.tenant_id).eq('id',e.conversation_id).is('assistant_introduced_at',null);check(marked.error);return id;
+}
+export async function conversationPaused(db:DatabaseClient,tenantId:string,conversationId:string,settings?:OwnerSettings,now=new Date()):Promise<boolean> {
+  const {data,error}=await db.from('conversations').select('bot_paused,owner_last_activity_at').eq('tenant_id',tenantId).eq('id',conversationId).maybeSingle();check(error);
+  if(data?.bot_paused!==true)return false;
+  const hours=Number(behavior(settings??({} as OwnerSettings)).auto_resume_hours);
+  if(hours>0&&data.owner_last_activity_at&&now.getTime()-new Date(data.owner_last_activity_at).getTime()>=hours*3600000){
+    const resumed=await db.from('conversations').update({bot_paused:false}).eq('tenant_id',tenantId).eq('id',conversationId);check(resumed.error);return false;
+  }
+  return true;
+}
+async function obsolete(db:DatabaseClient,e:Escalation,settings:OwnerSettings,now:Date):Promise<'owner'|'expired'|null>{
+  const conversation=await db.from('conversations').select('owner_last_activity_at').eq('tenant_id',e.tenant_id).eq('id',e.conversation_id).maybeSingle();check(conversation.error);
+  if(conversation.data?.owner_last_activity_at&&new Date(conversation.data.owner_last_activity_at)>new Date(e.created_at??0))return 'owner';
+  if(now.getTime()-new Date(e.created_at??now).getTime()>Number(behavior(settings).deferred_max_age_hours)*3600000)return 'expired';
+  return null;
+}
+async function closeObsolete(db:DatabaseClient,e:Escalation,reason:'owner'|'expired',now:Date){
+  await patch(db,e,{status:reason==='owner'?'resolved_by_owner':'expired',closed_at:now.toISOString()});
+  const jobs=await db.from('scheduled_jobs').update({status:'cancelled',executed_at:now.toISOString(),error:reason}).eq('tenant_id',e.tenant_id).eq('job_type',JOB).contains('payload',{escalation_id:e.id}).eq('status','pending');check(jobs.error);
 }
 export async function notifyOwner(db:DatabaseClient,provider:WhatsAppProvider,e:Escalation,settings:OwnerSettings):Promise<boolean> {
   provider=meterWhatsApp(db,e.tenant_id,provider);
+  const now=new Date(),stale=await obsolete(db,e,settings,now);if(stale){await closeObsolete(db,e,stale,now);return false;}
   const destination=ownerDestination(settings);
   if(!destination||!allowedRecipient(destination)) return false;
   // A business-line change must never turn notifications into self-chat.
@@ -65,7 +87,7 @@ export async function createEscalation(db:DatabaseClient,provider:WhatsAppProvid
   const now=new Date(),quiet=isWithinQuietHours(settings,now);
   const scheduledAt=quiet?nextQuietHoursEnd(settings,now):now;
   const {error:jobError}=await db.from('scheduled_jobs').insert({tenant_id:e.tenant_id,job_type:JOB,payload:{escalation_id:e.id},scheduled_at:scheduledAt.toISOString(),status:'pending'});check(jobError);
-  await send(provider,e.session,e.client_chat_id,waitingText(e.question,quiet?{at:scheduledAt,ownerZone:settings.time_zone??'UTC',clientZone:clientZone??null}:undefined,settings));
+  await sendClient(db,provider,e,waitingText(e.question,quiet?{at:scheduledAt,ownerZone:settings.time_zone??'UTC',clientZone:clientZone??null}:undefined,settings));
   if(!quiet) await notifyOwner(db,provider,e,settings);
 }
 async function requestLearning(db:DatabaseClient,provider:WhatsAppProvider,e:Escalation,from:string,settings:OwnerSettings) {
@@ -122,7 +144,7 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
   if(e.status==='delivered'){await requestLearning(db,provider,e,from,settings);return true;}
   if(e.status!=='pending') return true;
   if(isDeferredAnswer(text)) {await send(provider,session,from,renderText(settings,'owner.owner_reply_24',behavior(settings).owner_language));return true;}
-  if(settings.auto_replies_paused||await conversationPaused(db,tenantId,e.conversation_id)){
+  if(settings.auto_replies_paused||await conversationPaused(db,tenantId,e.conversation_id,settings)){
     await send(provider,session,from,renderText(settings,'owner.owner_reply_25',behavior(settings).owner_language));return true;
   }
   const answer=clientText(text);if(!answer) return true;
@@ -130,7 +152,7 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
   if(!await claim(db,e,'pending','delivering')) return true;
   await patch(db,e,{answer});
   try {
-    const id=await send(provider,session,e.client_chat_id,ownerAnswerText(e.question,(settings.translate_owner_answer ?? BEHAVIOR_DEFAULTS.translate_owner_answer) ? await translateOwnerAnswer(e.question,answer,ai) : answer,settings));
+    const id=await sendClient(db,provider,e,ownerAnswerText(e.question,(settings.translate_owner_answer ?? BEHAVIOR_DEFAULTS.translate_owner_answer) ? await translateOwnerAnswer(e.question,answer,ai) : answer,settings));
     await patch(db,e,{status:'delivered',client_message_id:id,delivered_at:new Date().toISOString()});
   } catch {
     await patch(db,e,{status:'delivery_uncertain'});
@@ -149,6 +171,7 @@ export async function runDueScheduledEscalations(db:DatabaseClient,providerFor:(
       const e=found.data as Escalation|null;if(!e) continue;
       if(e.status==='queued'){
         const settings=await loadOwnerSettings(db,e.tenant_id);
+        const stale=await obsolete(db,e,settings,now);if(stale){await closeObsolete(db,e,stale,now);continue;}
         if(isWithinQuietHours(settings,now)) continue;
         if(!await notifyOwner(db,providerFor(),e,settings)) continue;
         count++;
@@ -165,12 +188,13 @@ export async function runEscalationTimeouts(db:DatabaseClient,providerFor:()=>Wh
   const e=row as Escalation;
   try{
    const settings=await loadOwnerSettings(db,e.tenant_id),config=behavior(settings);
-   if(isWithinQuietHours(settings,now)||settings.auto_replies_paused||await conversationPaused(db,e.tenant_id,e.conversation_id))continue;
+   const stale=await obsolete(db,e,settings,now);if(stale){await closeObsolete(db,e,stale,now);continue;}
+   if(isWithinQuietHours(settings,now)||settings.auto_replies_paused||await conversationPaused(db,e.tenant_id,e.conversation_id,settings,now))continue;
    const elapsed=activeElapsedMs(settings,new Date(e.pending_since??e.created_at!),now);
    const provider=meterWhatsApp(db,e.tenant_id,providerFor());
    if(elapsed>=config.escalation_close_minutes*60000){
     if(!await claim(db,e,'pending','closing'))continue;
-    try{const id=await send(provider,e.session,e.client_chat_id,renderText(settings,'client.owner_timeout',/[א-ת]/.test(e.question)?'he':/[а-яё]/i.test(e.question)?'ru':'en'));
+    try{const id=await sendClient(db,provider,e,renderText(settings,'client.owner_timeout',/[א-ת]/.test(e.question)?'he':/[а-яё]/i.test(e.question)?'ru':'en'));
      await patch(db,e,{status:'closed_unanswered',closed_at:now.toISOString(),client_message_id:id});
     }catch{await patch(db,e,{status:'delivery_uncertain'});console.error('escalation_timeout_delivery_uncertain',{tenantId:e.tenant_id,escalationId:e.id});}
    }else if(!e.reminded_at&&elapsed>=config.escalation_remind_minutes*60000){
