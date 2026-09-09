@@ -6,7 +6,14 @@ import type { DatabaseClient } from '../db/supabase.js';
 import { HttpError } from '../utils/http-error.js';
 import { DEFAULT_TIME_ZONE,SUPPORTED_TIME_ZONES,supportedTimeZone } from '../config/time-zones.js';
 import type { WeeklySchedule } from '../config/behavior.js';
-export function behavior(settings:OwnerSettings) {return {...BEHAVIOR_DEFAULTS,...settings.behavior} as typeof BEHAVIOR_DEFAULTS;}
+export function behavior(settings:OwnerSettings) {
+ const stored=settings.behavior&&typeof settings.behavior==='object'&&!Array.isArray(settings.behavior)?settings.behavior:{};
+ return Object.fromEntries(Object.entries(BEHAVIOR_DEFAULTS).map(([key,fallback])=>[key,stored[key]??fallback])) as typeof BEHAVIOR_DEFAULTS;
+}
+export function templates(settings:OwnerSettings){
+ const stored=settings.templates&&typeof settings.templates==='object'?settings.templates:{};
+ return Object.fromEntries(Object.entries(TEMPLATE_DEFAULTS).map(([key,languages])=>[key,{...languages,...(stored[key]??{})}]));
+}
 export async function readRuntimeSettings(db:DatabaseClient,tenantId:string){
  const owner=await loadOwnerSettings(db,tenantId);
  const [{data,error},tenant]=await Promise.all([
@@ -18,14 +25,14 @@ export async function readRuntimeSettings(db:DatabaseClient,tenantId:string){
  messages_per_month:data?.messages_per_month??BASIC_USAGE_LIMITS.messagesPerMonth,
  voice_minutes_per_month:data?.voice_minutes_per_month??BASIC_USAGE_LIMITS.voiceSecondsPerMonth/60,
  warning_percent:data?.warning_percent??BASIC_USAGE_LIMITS.warningPercent,plan:data?.plan??tenant.data?.plan??null,
- auto_replies_paused:owner.auto_replies_paused,owner_phone:owner.owner_phone??'',paired:!!owner.owner_chat_id,
- time_zone:owner.time_zone??DEFAULT_TIME_ZONE,supported_time_zones:SUPPORTED_TIME_ZONES,weekly_schedule:normalizedSchedule(owner),exceptions:owner.exceptions??[]};
+ auto_replies_paused:owner.auto_replies_paused??false,owner_phone:owner.owner_phone??'',paired:!!owner.owner_chat_id,
+ time_zone:owner.time_zone??DEFAULT_TIME_ZONE,supported_time_zones:SUPPORTED_TIME_ZONES,weekly_schedule:normalizedSchedule(owner),templates:templates(owner),exceptions:owner.exceptions??[]};
 }
 const SYSTEM_FIELDS=new Set(['messages_per_month','voice_minutes_per_month','warning_percent','plan']);
 const time=(v:unknown)=>typeof v==='string'&&/^([01]\d|2[0-3]):[0-5]\d$/.test(v);
 export function normalizedSchedule(settings:OwnerSettings):WeeklySchedule {
  const configured=behavior(settings).weekly_schedule;
- if(configured)return configured;
+ if(validSchedule(configured))return configured;
  const day=settings.quiet_hours_start&&settings.quiet_hours_end
    ? {mode:'working_hours' as const,start:settings.quiet_hours_end.slice(0,5),end:settings.quiet_hours_start.slice(0,5)}
    : {mode:'working_day' as const};

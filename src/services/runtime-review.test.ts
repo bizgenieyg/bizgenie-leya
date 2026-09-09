@@ -5,11 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { registry } from '../agents/index.js';
 import { AgentRegistry } from '../agents/registry.js';
-import { validateRuntimePatch } from './runtime-settings.service.js';
+import { behavior,normalizedSchedule,templates,validateRuntimePatch } from './runtime-settings.service.js';
 import { renderText } from './templates.service.js';
 import { activeElapsedMs,isWithinQuietHours } from './escalation.service.js';
 import { reserveFailureAlert } from './alert-throttle.js';
 import type { OwnerSettings } from './owner-settings.service.js';
+import { BEHAVIOR_DEFAULTS } from '../config/behavior.js';
 const settings:OwnerSettings={owner_phone:null,owner_chat_id:null,mode:'mute_all',quiet_hours_start:null,quiet_hours_end:null,auto_replies_paused:false};
 test('cheap intent classification, model confidence, disabled agents and runtime overrides',async()=>{
  let calls=0;const ai={async generateReply(){calls++;return{text:'{"agent":"SALE","confidence":0.82}'};}};
@@ -38,6 +39,13 @@ test('conversation behavior settings validate tenant overrides',()=>{
  assert.throws(()=>validateRuntimePatch({auto_resume_hours:-1}));assert.throws(()=>validateRuntimePatch({context_message_count:0}));
  assert.throws(()=>validateRuntimePatch({default_agent:'SUPPORT'}));
  assert.doesNotThrow(()=>validateRuntimePatch({time_zone:'UTC+3'}));assert.doesNotThrow(()=>validateRuntimePatch({time_zone:'UTC-12'}));
+});
+test('legacy tenants receive every behavior and template default at runtime',()=>{
+ const legacy={...settings,behavior:{campaign_routes:undefined,enabled_agents:null,weekly_schedule:{}},templates:{'client.waiting':{ru:'Свой текст'}}} as any;
+ const normalized=behavior(legacy);for(const key of Object.keys(BEHAVIOR_DEFAULTS))assert.notEqual((normalized as any)[key],undefined);
+ assert.deepEqual(normalized.campaign_routes,[]);assert.deepEqual(normalized.enabled_agents,['SALE','SUPPORT']);
+ assert.equal(Object.keys(normalizedSchedule(legacy)).length,7);
+ const catalog=templates(legacy);assert.equal(catalog['client.waiting']!.ru,'Свой текст');assert.ok(catalog['client.waiting']!.he);assert.ok(catalog['client.reception_question']!.ru);
 });
 test('weekly schedule and exceptions override legacy quiet hours in owner timezone',()=>{
  const base={mode:'mute_all',quiet_hours_start:'20:00',quiet_hours_end:'09:00',time_zone:'Asia/Jerusalem',behavior:{weekly_schedule:{
