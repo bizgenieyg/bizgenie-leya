@@ -1,5 +1,5 @@
 import { BEHAVIOR_DEFAULTS } from "../config/behavior.js";
-import { validTimeZone } from "../utils/time-zone.js";
+import { supportedTimeZone } from "../config/time-zones.js";
 import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseClient } from "../db/supabase.js";
 import type { SessionIdentity } from "../utils/incoming-policy.js";
@@ -13,11 +13,18 @@ export interface OwnerSettings {
   owner_pairing_hash?: string | null; owner_pairing_expires_at?: string | null;
   quiet_hours_start: string | null; quiet_hours_end: string | null;
   mode: string; time_zone?: string; auto_replies_paused: boolean;
+  exceptions?: ScheduleException[];
+}
+export interface ScheduleException {
+  id:string;start_date:string;end_date:string;kind:'day_off'|'special_hours';
+  work_start:string|null;work_end:string|null;name:string;recurs_annually:boolean;
 }
 export async function loadOwnerSettings(db: DatabaseClient, tenantId: string): Promise<OwnerSettings> {
   const { data, error } = await db.from("notification_settings").select("owner_phone,owner_chat_id,owner_pairing_hash,owner_pairing_expires_at,quiet_hours_start,quiet_hours_end,mode,time_zone,auto_replies_paused,translate_owner_answer,behavior,templates").eq("tenant_id",tenantId).maybeSingle();
   if (error) throw new Error("Owner settings lookup failed");
-  return data as unknown as OwnerSettings ?? { owner_phone:null,owner_chat_id:null,quiet_hours_start:null,quiet_hours_end:null,mode:"mute_all",time_zone:"UTC",auto_replies_paused:false };
+  const exceptions=await db.from('schedule_exceptions').select('id,start_date,end_date,kind,work_start,work_end,name,recurs_annually').eq('tenant_id',tenantId).order('start_date');
+  if(exceptions.error)throw new Error('Schedule exceptions lookup failed');
+  return data ? {...data,exceptions:exceptions.data??[]} as unknown as OwnerSettings : { owner_phone:null,owner_chat_id:null,quiet_hours_start:null,quiet_hours_end:null,mode:"mute_all",time_zone:"Asia/Jerusalem",auto_replies_paused:false,exceptions:[] };
 }
 export function ownerDestination(settings: OwnerSettings): string { return settings.owner_chat_id || toChatId(settings.owner_phone); }
 export function isBusinessOwner(from: string, settings: OwnerSettings): boolean {
@@ -34,7 +41,7 @@ export async function saveOwnerSettings(db: DatabaseClient, tenantId: string, in
   const validTime = (v: unknown) => typeof v === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(v);
   if ((start || end) && (!validTime(start) || !validTime(end) || start === end)) throw new HttpError(400,"Укажите начало и окончание тихих часов.");
   const timeZone=typeof input.timeZone==='string'?input.timeZone:'';
-  if(!validTimeZone(timeZone)) throw new HttpError(400,"Выберите часовой пояс владельца.");
+  if(!supportedTimeZone(timeZone)) throw new HttpError(400,"Выберите часовой пояс владельца из списка.");
   const settings = await loadOwnerSettings(db,tenantId);
   const code = randomBytes(12).toString("hex");
   const { error } = await db.from("notification_settings").upsert({tenant_id:tenantId,owner_phone:phone,owner_chat_id:null,

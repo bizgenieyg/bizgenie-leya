@@ -1,4 +1,5 @@
 import { readRuntimeSettings,saveRuntimeSettings } from '../services/runtime-settings.service.js';
+import { createException,deleteException,listExceptions,updateException } from '../services/schedule-exceptions.service.js';
 import { registry } from '../agents/index.js';
 import { usageSummary } from "../services/usage.service.js";
 import { supabase } from '../db/supabase.js';
@@ -13,6 +14,7 @@ import { isUuid } from "../services/tenant.service.js";
 import { requireAdmin } from "../utils/admin-auth.js";
 import { HttpError } from "../utils/http-error.js";
 import { objectBody, requiredString } from "../utils/validation.js";
+import { DEFAULT_TIME_ZONE } from '../config/time-zones.js';
 
 const waha = new WahaAdminService();
 
@@ -56,7 +58,7 @@ adminRouter.post("/waha/disconnect", async (request, response) => {
 adminRouter.get('/owner-settings', async (request,response) => {
   const settings=await loadOwnerSettings(supabase,queryTenantId(request.query.tenantId));
   response.setHeader('Cache-Control','no-store');
-  response.json({timeZone:settings.time_zone??'UTC',phone:settings.owner_phone??'',quietStart:settings.quiet_hours_start?.slice(0,5)??'',quietEnd:settings.quiet_hours_end?.slice(0,5)??'',paired:!!settings.owner_chat_id});
+  response.json({timeZone:settings.time_zone??DEFAULT_TIME_ZONE,phone:settings.owner_phone??'',quietStart:settings.quiet_hours_start?.slice(0,5)??'',quietEnd:settings.quiet_hours_end?.slice(0,5)??'',paired:!!settings.owner_chat_id});
 });
 adminRouter.post('/owner-settings', async (request,response) => {
   const tenantId=queryTenantId(request.query.tenantId);
@@ -76,12 +78,17 @@ adminRouter.get('/usage',async(request,response)=>{
 });
 adminRouter.patch('/usage-limits',async(request,response)=>{
   const tenantId=queryTenantId(request.query.tenantId),body=objectBody(request.body);
-  const messages=body.messagesPerMonth,voice=body.voiceMinutesPerMonth;
-  if(!Number.isSafeInteger(messages)||Number(messages)<0||Number(messages)>2147483647||!Number.isSafeInteger(voice)||Number(voice)<0||Number(voice)>2147483647)throw new HttpError(400,'Limits must be non-negative integers');
-  const {error}=await supabase.from('tenant_usage_limits').upsert({tenant_id:tenantId,messages_per_month:messages,voice_minutes_per_month:voice,updated_at:new Date().toISOString()},{onConflict:'tenant_id'});
+  const messages=body.messagesPerMonth,voice=body.voiceMinutesPerMonth,warning=body.warningPercent,plan=body.plan;
+  if(!Number.isSafeInteger(messages)||Number(messages)<0||Number(messages)>2147483647||!Number.isSafeInteger(voice)||Number(voice)<0||Number(voice)>2147483647||!Number.isSafeInteger(warning)||Number(warning)<1||Number(warning)>100||typeof plan!=='string'||!plan.trim()||plan.length>50)throw new HttpError(400,'Invalid system tariff settings');
+  const {error}=await supabase.from('tenant_usage_limits').upsert({tenant_id:tenantId,messages_per_month:messages,voice_minutes_per_month:voice,warning_percent:warning,plan:plan.trim(),updated_at:new Date().toISOString()},{onConflict:'tenant_id'});
   if(error)throw new HttpError(500,'Could not save usage limits');
   response.json({updated:true});
 });
+
+adminRouter.get('/schedule-exceptions',async(request,response)=>response.json(await listExceptions(supabase,queryTenantId(request.query.tenantId))));
+adminRouter.post('/schedule-exceptions',async(request,response)=>response.status(201).json(await createException(supabase,queryTenantId(request.query.tenantId),objectBody(request.body))));
+adminRouter.patch('/schedule-exceptions',async(request,response)=>response.json(await updateException(supabase,queryTenantId(request.query.tenantId),request.query.id,objectBody(request.body))));
+adminRouter.delete('/schedule-exceptions',async(request,response)=>{await deleteException(supabase,queryTenantId(request.query.tenantId),request.query.id);response.status(204).send();});
 
 adminRouter.get('/tenant-settings',async(request,response)=>{
  response.setHeader('Cache-Control','no-store');response.json(await readRuntimeSettings(supabase,queryTenantId(request.query.tenantId)));

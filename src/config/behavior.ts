@@ -10,6 +10,7 @@ export const BEHAVIOR_DEFAULTS = {
   stt_timeout_seconds: 30,
   media_max_bytes: 10 * 1024 * 1024,
   owner_language: 'ru',
+  weekly_schedule: null as WeeklySchedule | null,
   agent_overrides: {} as Record<string,{priority?:number;keywords?:string[];systemPrompt?:string}>,
   default_agent: 'SUPPORT',
   enabled_agents: ['SALE','SUPPORT'],
@@ -19,3 +20,10 @@ export const STT_DEFAULT_MODEL = 'gemini-2.5-flash-lite';
 // Local operational storage, shared by workers on the supported single VPS.
 export const ALERT_STATE_DIR = '.runtime/usage-alerts';
 export const ALERT_LOCK_STALE_MS = 60_000;
+export const MAX_SCHEDULE_LOOKAHEAD_MINUTES = 370 * 24 * 60;
+
+export type DaySchedule =
+  | { mode: 'working_day' }
+  | { mode: 'day_off' }
+  | { mode: 'working_hours'; start: string; end: string };
+export type WeeklySchedule = Record<'0'|'1'|'2'|'3'|'4'|'5'|'6', DaySchedule>;

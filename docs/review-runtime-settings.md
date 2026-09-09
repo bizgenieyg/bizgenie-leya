@@ -14,9 +14,10 @@ All newly introduced behavioral defaults are in `src/config/behavior.ts`, `usage
 
 | Setting | DB location | System default | Cabinet |
 |---|---|---|---|
-| Incoming messages/month | tenant_usage_limits.messages_per_month | 500 | Yes |
-| Voice minutes/month | tenant_usage_limits.voice_minutes_per_month | 60 | Yes |
-| Warning percentage | tenant_usage_limits.warning_percent | 80 | Yes |
+| Assigned tariff | tenant_usage_limits.plan | unset | Read only |
+| Incoming messages/month | tenant_usage_limits.messages_per_month | 500 | Read only |
+| Voice minutes/month | tenant_usage_limits.voice_minutes_per_month | 60 | Read only |
+| Warning percentage | tenant_usage_limits.warning_percent | 80 | Read only |
 | Translate owner's answer | notification_settings.translate_owner_answer | false | Yes |
 | Remind owner after active minutes | notification_settings.behavior.escalation_remind_minutes | 120 | Yes |
 | Close unanswered after active minutes | behavior.escalation_close_minutes | 1440 | Yes |
@@ -32,28 +33,26 @@ All newly introduced behavioral defaults are in `src/config/behavior.ts`, `usage
 | Agent priority, keywords and prompt overrides | behavior.agent_overrides | no overrides | API |
 | Client and owner templates | notification_settings.templates | he/ru/en config catalog | API, intentionally not UI |
 | Owner phone | notification_settings.owner_phone | unset; owner supplies it | Yes, existing pairing API |
-| Quiet start/end | notification_settings.quiet_hours_start/end | unset | Yes |
-| Owner time zone | notification_settings.time_zone | existing UTC default | Yes |
+| Weekly work schedule | notification_settings.behavior.weekly_schedule | full working day, all days | Yes |
+| Owner time zone | notification_settings.time_zone | Asia/Jerusalem | Yes |
 | Pause auto replies | notification_settings.auto_replies_paused | existing false default | Yes |
 
 `behavior.*` above is inside notification_settings. The initial 026 upgrade clears the old zero voice allowance to NULL so existing tenants inherit the nonzero basic allowance. This one-time conversion is guarded; an explicit zero set after upgrade remains zero and blocks recognition.
 
-API: `GET/PATCH /api/admin/tenant-settings?tenantId=UUID` with existing `Authorization: Bearer ADMIN_SECRET`. Example JSON:
+Tenant settings use `GET/PATCH /api/admin/tenant-settings?tenantId=UUID` with existing `Authorization: Bearer ADMIN_SECRET`. The PATCH endpoint rejects `plan`, `messages_per_month`, `voice_minutes_per_month`, and `warning_percent`, including crafted browser requests. System tariff values are changed only through `PATCH /api/admin/usage-limits?tenantId=UUID` with the same operator secret:
 
 ```json
 {
-  "messages_per_month": 1000,
-  "voice_minutes_per_month": 60,
-  "warning_percent": 75,
-  "translate_owner_answer": false,
-  "escalation_remind_minutes": 120,
-  "escalation_close_minutes": 1440,
-  "enabled_agents": ["SALE", "SUPPORT"],
-  "default_agent": "SUPPORT"
+  "messagesPerMonth": 1000,
+  "voiceMinutesPerMonth": 60,
+  "warningPercent": 75,
+  "plan": "basic"
 }
 ```
 
-Backend validates types, time zones, quiet-hour pairs, default-agent membership and reminder-before-close. Settings/limits are saved in one SQL transaction. The browser can only submit the listed cabinet fields to the Next.js proxy; tenantId is derived from authenticated membership, role must be owner/admin, cross-origin mutations are rejected. Pairing credentials and backend keys never appear in the settings response.
+Backend validates types, supported IANA time zones, the complete seven-day schedule, default-agent membership and reminder-before-close. The supported-zone list is returned by the backend and drives the cabinet dropdown. The browser can only submit tenant settings; tenantId is derived from authenticated membership, role must be owner/admin, and cross-origin mutations are rejected. Pairing credentials and backend keys never appear in the settings response.
+
+Migration 027 adds `schedule_exceptions`: tenant_id, start_date/end_date, kind (`day_off` or `special_hours`), optional work_start/work_end, name, recurs_annually and timestamps. Owner/admin CRUD is tenant-isolated by RLS. Exceptions override the weekday schedule. Annual entries match month/day; holidays are never preloaded. Legacy quiet-hours pairs are converted into the same working-hours row for all seven weekdays. The migration also grants authenticated SELECT on the three notification columns added by 026.
 
 ## Texts and translation
 
@@ -94,7 +93,7 @@ Sources checked 2026-09-08: [Gemini audio](https://ai.google.dev/gemini-api/docs
 
 There is no verified comparative Hebrew/Russian accuracy benchmark for this project's recordings. Gemini's reported confidence is a conservative routing signal, not calibrated probability. Structured ambiguity flags for names/dates/quantities or confidence below threshold trigger a clarification template and never enter FAQ/agents with guessed details. Real representative voice recordings still need an acceptance check after the key is installed.
 
-Duration is parsed from downloaded audio using pinned music-metadata; missing/unreadable duration stops STT rather than allowing unmetered recognition. Quota is admitted before STT. At exhausted voice quota no STT request is made; text remains independently usable. The buffer is cleared after recognition and never written to disk or Supabase. The resulting text is persisted by the normal message pipeline; raw media fields are removed. WAHA's own existing media cache is outside this backend's storage and was not changed under the provider restriction.
+Duration is parsed from downloaded audio using pinned music-metadata; missing/unreadable duration stops STT rather than allowing unmetered recognition. Quota is admitted before STT. Every admitted customer voice message consumes one incoming-message unit and its recognition duration in seconds. At exhausted voice quota no STT request is made; text remains independently usable. The buffer is cleared after recognition and never written to disk or Supabase. The resulting text is persisted by the normal message pipeline; raw media fields are removed. WAHA's own existing media cache is outside this backend's storage and was not changed under the provider restriction.
 
 ## Accounting and failure behavior
 
@@ -108,8 +107,10 @@ Business defaults above are configurable. Fixed values that remain are protocol/
 
 Automated verification covers build/types, actual HTTP auth behavior, SQL migration replay/RLS, runtime warning thresholds, tenant isolation, quoted owner workflow, quiet-hour timeout accounting, fail-open throttling, agent routing, STT/media contracts and a GOWS-derived audio fixture through the complete transcript/FAQ/agent/accounting pipeline. No real WhatsApp messages or production STT calls are sent during tests.
 
-Verification result: backend build/typecheck and 94 tests passed; admin build/lint/typecheck and 127 tests passed. Existing user edits in .env.example and unrelated Markdown files were preserved.
+Verification result for migration 027: backend build/typecheck and 95 tests passed; admin build/lint/typecheck and 129 tests passed. Existing user edits in .env.example and unrelated Markdown files were preserved.
 
 Migration applied successfully via Supabase apply_migration, recorded version `20260908174719`. Verified: only SELECT RLS policy remains on usage_events; authenticated cannot execute admission/settings-update RPCs, service_role can update settings. Backend commit c18096a; admin commit e035eda, both pushed. VPS restart and STT key installation remain deployment steps.
 
 Post-apply check on 2026-09-09: aggregate RPC returned valid summaries for both existing tenants. Supabase security advisors reported the same pre-existing unrelated findings documented in [the prior security review](tenant-usage.md#verification-and-rollout), with no new findings for 026. They include public execution of `rls_auto_enable` ([remediation](https://supabase.com/docs/guides/database/database-linter?lint=0028_anon_security_definer_function_executable)); those unrelated settings were left untouched.
+
+Migration 027 was applied through Supabase apply_migration and recorded as `20260909041638_system_tenant_settings_and_calendar`. Production verification found zero legacy quiet-hour rows left without a weekly schedule. The new calendar table has RLS and tenant policies; the 026 notification columns are readable by authenticated members. Security advisors reported only the pre-existing findings above. Performance advisors include pre-existing unindexed foreign keys and unused indexes; the new calendar index is expected to remain unused until production calendar queries begin.

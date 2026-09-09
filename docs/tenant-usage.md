@@ -2,6 +2,8 @@
 
 Historical report for migration 025. The [review fixes in 026](review-runtime-settings.md) supersede voice defaults, warning thresholds, paused-input accounting and settings access below.
 
+Current rule: an admitted customer voice message consumes both one incoming-message unit and its audio duration in recognition seconds. Tariff values are operator-controlled system settings; tenants see them read-only.
+
 ## Schema and defaults
 
 Migration `025_tenant_usage_limits` extends existing `usage_events` with `event_key` for idempotency and reuses `tenant_usage_limits`. New `tenant_monthly_usage` stores tenant_id, local calendar month, time_zone, messages_used and voice_seconds_used. SQL is in `supabase/migrations/*_025_tenant_usage_limits.sql`.

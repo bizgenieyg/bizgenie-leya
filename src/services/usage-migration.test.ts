@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { PGlite } from '@electric-sql/pglite';
-const path='supabase/migrations/20260908174719_026_runtime_behavior_and_agents.sql';
-test('026 PostgreSQL quota admission, receipts, owner-local month, alerts, summary and RLS',async()=>{
+const path='supabase/migrations/20260909041638_027_system_tenant_settings_and_calendar.sql';
+test('027 PostgreSQL system settings boundary, calendar RLS and prior usage behavior',async()=>{
   const db=new PGlite();
   try{
     await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;create schema auth;
@@ -15,11 +15,15 @@ test('026 PostgreSQL quota admission, receipts, owner-local month, alerts, summa
     await db.exec(readFileSync('supabase/migrations/20260908114713_024_owner_escalation_workflow.sql','utf8'));
     await db.exec('grant all on all tables in schema public to service_role;grant insert,update,delete on usage_events to authenticated;');
     await db.exec(readFileSync('supabase/migrations/20260908164604_025_tenant_usage_limits.sql','utf8'));
-    await db.exec(readFileSync(path,'utf8'));await db.exec(readFileSync(path,'utf8'));
+    await db.exec(readFileSync('supabase/migrations/20260908174719_026_runtime_behavior_and_agents.sql','utf8'));
     const t='10000000-0000-4000-8000-000000000001',other='10000000-0000-4000-8000-000000000002',user='20000000-0000-4000-8000-000000000001';
     await db.query("insert into tenants(id,name,phone)values($1,'A','1111111'),($2,'B','2222222')",[t,other]);
+    await db.query("insert into notification_settings(tenant_id,time_zone,quiet_hours_start,quiet_hours_end)values($1,'America/New_York','20:00','09:00')",[t]);
+    await db.exec(readFileSync(path,'utf8'));await db.exec(readFileSync(path,'utf8'));
+    const converted=await db.query<{behavior:any}>('select behavior from notification_settings where tenant_id=$1',[t]);
+    assert.equal(converted.rows[0]!.behavior.weekly_schedule['0'].start,'09:00');
+    assert.equal(converted.rows[0]!.behavior.weekly_schedule['6'].end,'20:00');
     await db.query("insert into tenant_users values($1,$2,'owner')",[t,user]);
-    await db.query("insert into notification_settings(tenant_id,time_zone)values($1,'America/New_York')",[t]);
     await db.query('insert into tenant_usage_limits(tenant_id,messages_per_month,voice_minutes_per_month)values($1,5,1)',[t]);
     const admit=async(key:string,messages=1,voice=0,now='2026-10-01T03:59:00Z',tenant=t)=>{
       const r=await db.query<{v:{allowed:boolean;duplicate:boolean;month:string;messages_used:number}}>('select admit_tenant_usage($1,$2,$3,$4,500,0,80,$5) as v',[tenant,key,messages,voice,now]);return r.rows[0]!.v;
@@ -41,17 +45,25 @@ test('026 PostgreSQL quota admission, receipts, owner-local month, alerts, summa
     const summary=await db.query<{v:any}>('select tenant_usage_summary($1,500,0,$2) as v',[t,'2026-10-01T04:00:00Z']);
     assert.equal(summary.rows[0]!.v.messages_used,1);assert.equal(summary.rows[0]!.v.voice_minutes_used,1);assert.equal(summary.rows[0]!.v.time_zone,'America/New_York');
     // Tenant threshold and config fallback are runtime values, not SQL literals.
-    await db.query("select update_tenant_runtime_settings($1,$2::jsonb,$3::jsonb,$4::jsonb)",[other,JSON.stringify({messages_per_month:10,warning_percent:20}),JSON.stringify({translate_owner_answer:true}),JSON.stringify({escalation_remind_minutes:30})]);
+    await db.query("insert into tenant_usage_limits(tenant_id,messages_per_month,warning_percent,plan) values($1,10,20,'basic') on conflict(tenant_id) do update set messages_per_month=10,warning_percent=20,plan='basic'",[other]);
+    await db.query("select update_tenant_runtime_settings($1,$2::jsonb,$3::jsonb,$4)",[other,JSON.stringify({translate_owner_answer:true}),JSON.stringify({escalation_remind_minutes:30}),'Asia/Jerusalem']);
     await admit('other-warning',1,0,'2026-10-01T04:00:00Z',other);
     const custom=await db.query<{p:any}>("select payload as p from scheduled_jobs where tenant_id=$1 and payload->>'stage'='messages_warning'",[other]);assert.equal(custom.rows[0]!.p.warning_percent,20);
-    const configuration=await db.query<{translate_owner_answer:boolean;behavior:any}>("select translate_owner_answer,behavior from notification_settings where tenant_id=$1",[other]);assert.equal(configuration.rows[0]!.translate_owner_answer,true);assert.equal(configuration.rows[0]!.behavior.escalation_remind_minutes,30);
+    const configuration=await db.query<{translate_owner_answer:boolean;behavior:any;time_zone:string}>("select translate_owner_answer,behavior,time_zone from notification_settings where tenant_id=$1",[other]);assert.equal(configuration.rows[0]!.translate_owner_answer,true);assert.equal(configuration.rows[0]!.behavior.escalation_remind_minutes,30);assert.equal(configuration.rows[0]!.time_zone,'Asia/Jerusalem');
     await db.query("insert into usage_events(tenant_id,event_type,quantity,agent) values($1,'stt_call',1,'SALE')",[other]);
     await db.exec('reset role');await db.query("select set_config('request.jwt.claim.sub',$1,false)",[user]);await db.exec('set role authenticated');
     const own=await db.query<{tenant_id:string}>('select tenant_id from tenant_monthly_usage');assert.ok(own.rows.every(r=>r.tenant_id===t));
     await assert.rejects(db.query('update tenant_usage_limits set messages_per_month=999999'),/permission denied/);
     await assert.rejects(db.query('delete from usage_events'),/permission denied/);
     await assert.rejects(db.query("select admit_tenant_usage($1,'hack',1,0,99999,0,80)",[t]),/permission denied/);
-    await assert.rejects(db.query("select update_tenant_runtime_settings($1,'{}','{}','{}')",[t]),/permission denied/);
+    await assert.rejects(db.query("select update_tenant_runtime_settings($1,'{}','{}','Asia/Jerusalem')",[t]),/permission denied/);
+    const columns=await db.query<{column_name:string}>("select column_name from information_schema.column_privileges where grantee='authenticated' and table_name='notification_settings' and column_name in ('translate_owner_answer','behavior','templates')");
+    assert.equal(columns.rows.length,3);
+    await db.exec('reset role');await db.exec('set role service_role');
+    await db.query("insert into schedule_exceptions(tenant_id,start_date,end_date,kind,name) values($1,'2026-09-10','2026-09-11','day_off','Holiday')",[t]);
+    await db.exec('reset role');await db.query("select set_config('request.jwt.claim.sub',$1,false)",[user]);await db.exec('set role authenticated');
+    assert.equal((await db.query('select name from schedule_exceptions')).rows.length,1);
+    await assert.rejects(db.query("insert into schedule_exceptions(tenant_id,start_date,end_date,kind,name) values($1,'2026-10-01','2026-10-01','day_off','Foreign')",[other]),/row-level security/);
     await db.exec('reset role');await db.exec('set role anon');await assert.rejects(db.query('select * from tenant_monthly_usage'),/permission denied/);
   }finally{await db.close();}
 });
