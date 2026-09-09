@@ -7,7 +7,7 @@ import { entrySource,routeConversation } from './conversation-routing.service.js
 const tenant='123e4567-e89b-42d3-a456-426614174000';
 const base:OwnerSettings={owner_phone:null,owner_chat_id:null,mode:'mute_all',quiet_hours_start:null,quiet_hours_end:null,auto_replies_paused:false};
 function db(open=false){const writes:{table:string;value:any}[]=[];return {writes,client:{from(table:string){const q:any={select(){return q;},eq(){return q;},in(){return q;},limit(){return q;},update(value:any){writes.push({table,value});return q;},insert(value:any){writes.push({table,value});return q;},then(resolve:any){return Promise.resolve({data:table==='escalations'&&open?[{id:'e'}]:[],error:null}).then(resolve);}};return q;}} as unknown as DatabaseClient};}
-const conversation=(extra:Record<string,unknown>={})=>({id:'c',tenant_id:tenant,client_id:'x',status:'active',last_message_at:new Date().toISOString(),source_label:null,routed_agent:null,route_selected_at:null,reception_question_asked:false,...extra});
+const conversation=(extra:Record<string,unknown>={})=>({id:'c',tenant_id:tenant,client_id:'x',status:'active',last_message_at:new Date().toISOString(),source_label:null,routed_agent:null,route_selected_at:null,...extra});
 
 test('entry source is parsed and deterministic campaign/source/open-case routes win',async()=>{
  assert.equal(entrySource('go https://x.test/?utm_campaign=summer'),'summer');

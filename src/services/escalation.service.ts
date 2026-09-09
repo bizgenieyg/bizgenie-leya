@@ -37,12 +37,16 @@ export function isWithinQuietHours(settings:RuntimeSettings,now:Date):boolean {
 }
 export function nextQuietHoursEnd(settings:RuntimeSettings,now:Date):Date {
   const inside=isWithinQuietHours(settings,now);
+  const base=Math.floor(now.getTime()/60000)*60000;
   // Advance UTC instants to handle owner-local DST transitions, independent of VPS TZ.
-  for(let minute=1;minute<=MAX_SCHEDULE_LOOKAHEAD_MINUTES;minute++){
-    const candidate=new Date(Math.floor(now.getTime()/60000)*60000+minute*60000);
-    if(inside?!isWithinQuietHours(settings,candidate):isWithinQuietHours(settings,candidate)) return candidate;
-  }
-  throw new Error('Quiet hours end unavailable');
+  const flips=(minute:number)=>{const candidate=new Date(base+minute*60000);return inside?!isWithinQuietHours(settings,candidate):isWithinQuietHours(settings,candidate);};
+  // Coarse hourly probe first: a schedule that never opens (e.g. every weekday day_off)
+  // otherwise spins the full minute loop and throws, silently dropping the reply.
+  let coarse=0;
+  for(let minute=60;minute<=MAX_SCHEDULE_LOOKAHEAD_MINUTES;minute+=60){ if(flips(minute)){coarse=minute;break;} }
+  if(coarse===0) return new Date(base+MAX_SCHEDULE_LOOKAHEAD_MINUTES*60000);
+  for(let minute=Math.max(1,coarse-59);minute<=coarse;minute++){ if(flips(minute)) return new Date(base+minute*60000); }
+  return new Date(base+coarse*60000);
 }
 export function buildEscalationText(clientName:string,clientMessage:string,settings?:OwnerSettings):string {
  return renderText(settings,'owner.escalation',String(settings?.behavior?.owner_language??BEHAVIOR_DEFAULTS.owner_language),{name:clientName,question:clientMessage});

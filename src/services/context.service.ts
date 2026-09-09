@@ -17,10 +17,14 @@ export interface TenantContext {
 }
 
 export interface ConversationMemory { fromMe:boolean; text:string; createdAt:string; }
+/**
+ * Read-only conversation window for the model: the last `count` text messages within
+ * `retentionHours`. It never deletes rows — message storage has its own retention and a
+ * separate background sweep (see message-retention.service.ts). Older rows stay in
+ * `messages` for the weekly report, audit of `raw_payload` and owner-takeover history.
+ */
 export async function loadConversationMemory(db:DatabaseClient,tenantId:string,conversationId:string,count:number,retentionHours:number):Promise<{messages:ConversationMemory[];introduced:boolean}>{
   const cutoff=new Date(Date.now()-retentionHours*3600000).toISOString();
-  const cleanup=await db.from('messages').delete().eq('tenant_id',tenantId).eq('conversation_id',conversationId).lt('created_at',cutoff);
-  if(cleanup.error)console.error('conversation_context_cleanup_failed',{tenantId,conversationId});
   const [history,conversation]=await Promise.all([
     db.from('messages').select('from_me,body,created_at').eq('tenant_id',tenantId).eq('conversation_id',conversationId).eq('msg_type','text').gte('created_at',cutoff).order('created_at',{ascending:false}).limit(count),
     db.from('conversations').select('assistant_introduced_at').eq('tenant_id',tenantId).eq('id',conversationId).maybeSingle(),

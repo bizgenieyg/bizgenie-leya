@@ -7,6 +7,7 @@ export const BEHAVIOR_DEFAULTS = {
   deferred_max_age_hours: 12,
   context_message_count: 10,
   context_retention_hours: 48,
+  message_retention_days: 30,
   usage_failure_alert_minutes: 60,
   pairing_ttl_minutes: 30,
   scheduler_interval_seconds: 60,
@@ -24,6 +25,10 @@ export const BEHAVIOR_DEFAULTS = {
   reception_max_messages: 0,
 };
 export const SCHEDULER_POLL_MS = 1000;
+// Message storage retention: floor for behavior.message_retention_days, and how often
+// the scheduler runs the background sweep per tenant.
+export const MESSAGE_RETENTION_MIN_DAYS = 7;
+export const MESSAGE_RETENTION_SWEEP_MS = 60 * 60 * 1000;
 export const STT_DEFAULT_MODEL = 'gemini-2.5-flash-lite';
 // Local operational storage, shared by workers on the supported single VPS.
 export const ALERT_STATE_DIR = '.runtime/usage-alerts';

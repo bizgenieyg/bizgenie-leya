@@ -56,6 +56,33 @@ test("nextQuietHoursEnd stays today when end is still ahead", () => {
   assert.equal(deferred.getUTCDate(), 28);
 });
 
+test("nextQuietHoursEnd caps instead of spinning when the schedule never opens", () => {
+  const alwaysClosed = {
+    mode: "mute_all", time_zone: "Asia/Jerusalem",
+    quiet_hours_start: null, quiet_hours_end: null,
+    behavior: { weekly_schedule: Object.fromEntries(Array.from({ length: 7 }, (_, i) => [String(i), { mode: "day_off" }])) },
+  };
+  const now = at(12);
+  const capped = nextQuietHoursEnd(alwaysClosed, now);
+  // No throw, and the result is pushed far out rather than returned as "now".
+  assert.ok(capped.getTime() - now.getTime() > 300 * 24 * 60 * 60 * 1000);
+});
+
+test("nextQuietHoursEnd still finds a real transition on a schedule that opens later", () => {
+  const opensWednesday = {
+    mode: "mute_all", time_zone: "Asia/Jerusalem",
+    quiet_hours_start: null, quiet_hours_end: null,
+    behavior: {
+      weekly_schedule: Object.fromEntries(Array.from({ length: 7 }, (_, i) =>
+        [String(i), i === 3 ? { mode: "working_hours", start: "09:00", end: "17:00" } : { mode: "day_off" }])),
+    },
+  };
+  // at() builds 2026-08-28, a Friday. Next open is Wednesday 09:00 Jerusalem = 06:00Z.
+  const end = nextQuietHoursEnd(opensWednesday, at(12));
+  assert.equal(end.getUTCDay(), 3);
+  assert.equal(end.getUTCHours(), 6);
+});
+
 test("escalation text keeps the owner template", () => {
   const body = buildEscalationText("Dana", "Do you open on Saturday?");
   assert.match(body, /❓ Новый вопрос от Dana:/);

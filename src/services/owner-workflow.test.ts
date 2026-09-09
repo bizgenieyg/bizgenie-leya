@@ -135,6 +135,33 @@ test('complete real GOWS client and owner reply payloads traverse worker filters
   h.tables.notification_settings![0]!.auto_replies_paused=true;const count=h.sent.length;
   await handleWebhookEvent(tenant,body,h.db,h.provider,{async generateReply(){throw new Error('must not call AI');}});assert.equal(h.sent.length,count);
 });
+test('observeOwnerOutgoing guard #1 is idempotent on a re-delivered waha_msg_id',async()=>{
+ const h=harness();h.tables.escalations!.push({id:'e',...input,status:'queued',created_at:'2026-09-08T10:00:00Z'});
+ const body={event:'message',payload:{id:'manual-7',from:'972500000009@c.us',to:customer,fromMe:true,source:'app',body:'Ответ владельца',_data:{Info:{IsFromMe:true,Chat:customer}}}};
+ assert.equal(await observeOwnerOutgoing(h.db,tenant,body,new Date('2026-09-08T20:00:00Z')),true);
+ const rows=h.tables.messages!.length;
+ h.tables.conversations![0]!.bot_paused=false;
+ assert.equal(await observeOwnerOutgoing(h.db,tenant,body,new Date('2026-09-08T20:05:00Z')),false);
+ assert.equal(h.tables.messages!.length,rows,'no duplicate stored message');
+ assert.equal(h.tables.conversations![0]!.bot_paused,false,'no repeated pause/close side effects');
+});
+
+test('returning contact with assistant_introduced_at gets no repeated greeting',async()=>{
+ const {handleWebhookEvent}=await import('../workers/webhook.worker.js');
+ const intro='Я ассистент владельца. Открыто с 9 до 18.';
+ const ai={async generateReply(i:{systemPrompt:string}){return{text:i.systemPrompt.includes('классификатор намерений')?'{"agent":"SALE","confidence":0.9}':intro};}};
+ const run=async(introduced:boolean)=>{
+  const h=harness();
+  h.tables.knowledge_items!.push({tenant_id:tenant,type:'faq',question:'Есть ли доставка в Хайфу?',answer:'Да, доставка есть.',active:true});
+  h.tables.conversations![0]!.assistant_introduced_at=introduced?'2026-09-01T00:00:00Z':null;
+  const body={event:'message',payload:{from:customer,fromMe:false,hasMedia:false,body:'Сколько стоит доставка?',author:null,replyTo:null,_data:{Info:{Chat:customer,PushName:'Клиент'}}}};
+  await handleWebhookEvent(tenant,body,h.db,h.provider,ai);
+  return h.sent.at(-1)?.text;
+ };
+ assert.equal(await run(true),'Открыто с 9 до 18.');
+ assert.equal(await run(false),intro);
+});
+
 test('assistant formatting strips placeholders and defer detection does not reject substantive tomorrow answer',()=>{
   assert.equal(clientText('Ответ <имя> без > скобок'),'Ответ  без  скобок');
   assert.equal(isDeferredAnswer('Завтра доставка с 9 до 18'),false);

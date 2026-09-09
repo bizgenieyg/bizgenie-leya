@@ -11,8 +11,6 @@ export interface SendMessageInput {
   /** Recipient chat id, e.g. `972500000000@c.us`. */
   chatId: string;
   text: string;
-  /** WhatsApp message id to quote, when replying in-thread. */
-  replyTo?: string;
 }
 
 export interface SendMessageResult {

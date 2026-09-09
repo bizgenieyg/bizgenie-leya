@@ -10,7 +10,7 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = "test-only";
 test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is null", async () => {
   const { handleWebhookEvent } = await import("../workers/webhook.worker.js");
   const writes: { table: string; data: Record<string, unknown> }[] = [];
-  const sent: string[] = [];const replyTargets:(string|undefined)[]=[];
+  const sent: string[] = [];
   const recipients: string[] = [];
   const clientKeys: unknown[] = [];
   let quotaAllowed = true;
@@ -32,14 +32,14 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
       then(resolve: (value: unknown) => unknown) {
         const data = write ? null : table === "knowledge_items"
           ? [{ id: "faq", question: "Часы работы?", answer: "С 9 до 18." }]
-          : table === "conversations" ? [{ id: "conversation", client_id: "client", reception_question_asked: true, last_message_at:new Date().toISOString() }] : [];
+          : table === "conversations" ? [{ id: "conversation", client_id: "client", last_message_at:new Date().toISOString() }] : [];
         return Promise.resolve(resolve({ data, error: null }));
       },
     };
     return query;
   } } as unknown as DatabaseClient;
   const provider: WhatsAppProvider = {
-    async sendMessage(input) { sent.push(input.text); recipients.push(input.chatId);replyTargets.push(input.replyTo); return { id: "reply" }; },
+    async sendMessage(input) { sent.push(input.text); recipients.push(input.chatId); return { id: "reply" }; },
     async getSessionStatus() { return { status: "WORKING" }; },
   };
   const body = { event: "message", payload: {
@@ -51,7 +51,6 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
   await handleWebhookEvent("123e4567-e89b-42d3-a456-426614174000", body, db, provider, ai);
   assert.equal(aiCalls, 0);
   assert.deepEqual(sent, ["С 9 до 18."]);
-  assert.equal(replyTargets[0],undefined);
   assert.ok(writes.some(write => write.table === "agent_actions" && write.data.action_type === "faq_answer_exact"));
   const warn = console.warn;
   const info = console.info;
