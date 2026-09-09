@@ -34,6 +34,15 @@ export async function generateKnowledgeReply(context: TenantContext, text: strin
   }
 }
 
+export async function generateReceptionReply(context:TenantContext,text:string,clarification:string,ai:AIProvider|null,memory:ConversationMemory[],introduced:boolean):Promise<{reply:string|null;escalate:boolean}> {
+ if(!ai)return{reply:null,escalate:true};
+ try{
+  const result=await ai.generateReply({systemPrompt:`Ты RECEPTION — дружелюбная приёмная ассистента владельца. Поддерживай естественную короткую беседу, но факты о бизнесе, цены, сроки и условия бери ТОЛЬКО из базы знаний. Ничего не выдумывай. Естественно уточняй цель обращения, когда это уместно; ориентир формулировки: ${clarification}. Не задавай этот вопрос в каждой реплике и не превращай разговор в анкету. Если клиент прямо просит владельца, вопрос требует решения вне компетенции бота или разговор явно зашёл в тупик, верни только ESCALATE_OWNER. Как только виден интерес к покупке или поддержке, не объявляй переключение: маршрутизация произойдёт отдельно. Отвечай на языке клиента, 2–4 предложениями, без заголовков и угловых скобок. Ты ассистент владельца и не выдаёшь себя за владельца. ${introduced?'Ассистент уже представлялся: не приветствуй и не представляйся снова.':'Можно кратко поприветствовать и представиться один раз.'}`,userMessage:JSON.stringify({knowledge:context.knowledge.map(x=>({question:x.question,answer:x.answer})),conversationHistory:memory.map(x=>({role:x.fromMe?'assistant':'customer',text:x.text})),customerMessage:text})});
+  if(result.text.includes('ESCALATE_OWNER'))return{reply:null,escalate:true};
+  return{reply:clientText(result.text)||null,escalate:false};
+ }catch{console.warn('reception_model_unavailable');return{reply:null,escalate:true};}
+}
+
 /** Translate only the owner's supplied answer; never add knowledge or promises. */
 export async function translateOwnerAnswer(question:string,answer:string,ai:AIProvider|null=createAIProvider()):Promise<string> {
   const language=(text:string)=>/[א-ת]/.test(text)?'he':/[а-яё]/i.test(text)?'ru':'en';

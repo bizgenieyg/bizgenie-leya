@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { GeminiProvider, DEFAULT_GEMINI_MODEL } from "../providers/ai/gemini.provider.js";
 import { createAIProvider } from "../providers/ai/index.js";
-import { generateKnowledgeReply } from "./ai-fallback.service.js";
+import { generateKnowledgeReply,generateReceptionReply } from "./ai-fallback.service.js";
 
 const context = { assistant: { assistant_name: "Лея", allowed_languages: ["he", "ru", "en"], tone: "friendly", mode: null, system_rules: null }, knowledge: [{ id: "a", question: "Часы?", answer: "9–18" }] };
 
@@ -36,6 +36,12 @@ test('dialogue memory is passed in order and repeated greeting is forbidden',asy
  assert.equal(await generateKnowledgeReply(context,'Уточнение',ai,'',memory,true),'Продолжаем разговор.');
  assert.deepEqual(payload.conversationHistory,[{role:'customer',text:'Первый вопрос'},{role:'assistant',text:'Первый ответ'}]);
  assert.match(prompt,/не приветствуй клиента и не представляйся снова/);
+});
+test('RECEPTION chats freely, preserves one-time introduction, and can request escalation',async()=>{
+ let prompt='';const ai={async generateReply(input:{systemPrompt:string}){prompt=input.systemPrompt;return{text:'Рад помочь. Чем вы сегодня заняты?'};}};
+ const chat=await generateReceptionReply(context,'Просто привет','Вас интересуют SALE / SUPPORT?',ai,[],true);
+ assert.equal(chat.reply,'Рад помочь. Чем вы сегодня заняты?');assert.equal(chat.escalate,false);assert.match(prompt,/не приветствуй и не представляйся снова/);assert.match(prompt,/не задавай этот вопрос в каждой реплике/i);
+ const escalate=await generateReceptionReply(context,'Позовите владельца','уточнение',{async generateReply(){return{text:'ESCALATE_OWNER'};}},[],false);assert.equal(escalate.escalate,true);
 });
 test("HTTP failures, blocked/empty/partial output and timeout retain old fallback behavior", async () => {
   const originalFetch = globalThis.fetch;

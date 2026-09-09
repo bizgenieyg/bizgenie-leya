@@ -8,7 +8,7 @@ import { meterAI, meterWhatsApp } from '../services/metered-providers.js';
 import { deliverUsageNotices,limitClientText } from '../services/usage-notifications.service.js';
 import { filterIncoming, incomingDiagnostics, logRejectedIncoming, ownerIdentityField, readSessionIdentity } from "../utils/incoming-policy.js";
 import type { AIProvider } from "../providers/ai/ai-provider.interface.js";
-import { generateKnowledgeReply } from "../services/ai-fallback.service.js";
+import { generateKnowledgeReply,generateReceptionReply } from "../services/ai-fallback.service.js";
 import { supabase, type DatabaseClient } from "../db/supabase.js";
 import { createWhatsAppProvider } from "../providers/whatsapp/index.js";
 import type { WhatsAppProvider } from "../providers/whatsapp/whatsapp-provider.interface.js";
@@ -174,9 +174,12 @@ export async function handleWebhookEvent(
   for(const metadata of classification)await agentContext.run({agent:'RECEPTION'},()=>recordUsageEvent(db,{tenantId,eventType:'model_call',eventKey:randomUUID(),metadata:{...metadata,purpose:'intent_classification'}}));
   if(outcome.kind==='reception')return agentContext.run({agent:'RECEPTION'},async()=>{
     await recordUsageEvent(db,{tenantId,eventType:'message_received',eventKey:usageKey});
-    const question=renderText(settings,'client.reception_question',languageOf(text),{agents:enabledAgentNames(settings)});
-    const sent=await provider.sendMessage({session,chatId:from,text:clientReply(question)});
-    await db.from('messages').insert({conversation_id:conversation.id,tenant_id:tenantId,from_me:true,body:question,msg_type:'text',waha_msg_id:sent.id||null});await markIntroduced();
+    const clarification=renderText(settings,'client.reception_question',languageOf(text),{agents:enabledAgentNames(settings)});
+    const reception=await generateReceptionReply(context,text,clarification,model,memory.messages,memory.introduced);
+    if(reception.escalate||!reception.reply){await createEscalation(db,provider,{tenant_id:tenantId,session,conversation_id:conversation.id,client_chat_id:from,client_name:pushName||client.name||clientPhone,question:text,inbound_id:incomingMsgId},settings,client.time_zone);await recordUsageEvent(db,{tenantId,eventType:'escalation_created'});return;}
+    const sent=await provider.sendMessage({session,chatId:from,text:clientReply(reception.reply)});
+    await db.from('messages').insert({conversation_id:conversation.id,tenant_id:tenantId,from_me:true,body:reception.reply,msg_type:'text',waha_msg_id:sent.id||null});
+    const counted=await db.from('conversations').update({reception_message_count:Number(conversation.reception_message_count??0)+1}).eq('tenant_id',tenantId).eq('id',conversation.id);if(counted.error)console.error('reception_counter_update_failed',{tenantId,conversationId:conversation.id});await markIntroduced();
   });
   if(outcome.kind==='escalate')return agentContext.run({agent:'RECEPTION'},async()=>{
     await recordUsageEvent(db,{tenantId,eventType:'message_received',eventKey:usageKey});

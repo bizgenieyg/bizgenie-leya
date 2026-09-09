@@ -21,6 +21,7 @@ export const BEHAVIOR_DEFAULTS = {
   source_routes: [] as Array<{source:string;agent:string}>,
   intent_confidence_threshold: 0.75,
   route_stickiness_hours: 24,
+  reception_max_messages: 0,
 };
 export const SCHEDULER_POLL_MS = 1000;
 export const STT_DEFAULT_MODEL = 'gemini-2.5-flash-lite';

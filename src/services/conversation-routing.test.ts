@@ -22,7 +22,8 @@ test('route is sticky, another-agent signal switches, and inactivity reclassifie
  h=db();result=await routeConversation(h.client,tenant,conversation({routed_agent:'SUPPORT',last_message_at:'2020-01-01T00:00:00Z'}),'hello',base,{async generateReply(){return{text:'{"agent":"SALE","confidence":0.9}'}}});assert.equal(result.kind==='agent'&&result.agent.name,'SALE');
 });
 
-test('low confidence asks once through RECEPTION, persists unknown, then escalates',async()=>{
+test('low confidence remains in RECEPTION unless tenant message limit is reached',async()=>{
  const ai={async generateReply(){return{text:'{"agent":"SALE","confidence":0.3}'}}};let h=db();let result=await routeConversation(h.client,tenant,conversation(),'неясно',base,ai);assert.equal(result.kind,'reception');assert.ok(h.writes.some(x=>x.table==='unrecognized_routes'));
- h=db();result=await routeConversation(h.client,tenant,conversation({routed_agent:'RECEPTION',reception_question_asked:true}),'всё ещё неясно',base,ai);assert.equal(result.kind,'escalate');
+ h=db();result=await routeConversation(h.client,tenant,conversation({routed_agent:'RECEPTION',reception_message_count:20}),'всё ещё неясно',base,ai);assert.equal(result.kind,'reception');
+ h=db();result=await routeConversation(h.client,tenant,conversation({routed_agent:'RECEPTION',reception_message_count:2}),'всё ещё неясно',{...base,behavior:{reception_max_messages:2}},ai);assert.equal(result.kind,'escalate');
 });

@@ -30,9 +30,8 @@ export async function routeConversation(db:DatabaseClient,tenantId:string,conver
  const classified=await registry.classify(text,settings,ai,onModel,isFirstMessage?'Контекст: это новый контакт; считай его кандидатом SALE, но не назначай SALE без достаточной уверенности.':'');
  if(classified.agent&&classified.confidence>=config.intent_confidence_threshold){await assign(db,tenantId,conversation.id,classified.agent.name,source);return{kind:'agent',agent:classified.agent,method:'model'};}
  await unresolved(db,tenantId,conversation.id,text);
- if(conversation.reception_question_asked)return{kind:'escalate',method:'reception_exhausted'};
+ if(config.reception_max_messages>0&&Number(conversation.reception_message_count??0)>=config.reception_max_messages)return{kind:'escalate',method:'reception_limit'};
  await assign(db,tenantId,conversation.id,'RECEPTION',source);
- const marked=await db.from('conversations').update({reception_question_asked:true}).eq('tenant_id',tenantId).eq('id',conversation.id);if(marked.error)throw new Error('Reception state save failed');
  return{kind:'reception',method:'low_confidence'};
 }
 export function enabledAgentNames(settings:OwnerSettings){return registry.enabled(settings).map(a=>a.name).join(' / ');}

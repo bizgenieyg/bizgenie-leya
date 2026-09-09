@@ -33,10 +33,11 @@ test('templates reject unknown placeholders, runtime rendering removes unsafe ma
  assert.doesNotMatch(text,/[<>{}]/);assert.match(text,/Ассистент/);
 });
 test('conversation behavior settings validate tenant overrides',()=>{
- const patch=validateRuntimePatch({auto_resume_hours:0,deferred_max_age_hours:12,context_message_count:10,context_retention_hours:48,intent_confidence_threshold:.8,route_stickiness_hours:24,campaign_routes:[{keyword:'AUDIT',agent:'SALE'}],source_routes:[{source:'catalog',agent:'SALE'}]});
+ const patch=validateRuntimePatch({auto_resume_hours:0,deferred_max_age_hours:12,context_message_count:10,context_retention_hours:48,intent_confidence_threshold:.8,route_stickiness_hours:24,reception_max_messages:0,campaign_routes:[{keyword:'AUDIT',agent:'SALE'}],source_routes:[{source:'catalog',agent:'SALE'}]});
  assert.equal(patch.behaviorPatch.intent_confidence_threshold,.8);assert.equal(patch.behaviorPatch.route_stickiness_hours,24);
  assert.throws(()=>validateRuntimePatch({auto_resume_hours:-1}));assert.throws(()=>validateRuntimePatch({context_message_count:0}));
  assert.throws(()=>validateRuntimePatch({default_agent:'SUPPORT'}));
+ assert.doesNotThrow(()=>validateRuntimePatch({time_zone:'UTC+3'}));assert.doesNotThrow(()=>validateRuntimePatch({time_zone:'UTC-12'}));
 });
 test('weekly schedule and exceptions override legacy quiet hours in owner timezone',()=>{
  const base={mode:'mute_all',quiet_hours_start:'20:00',quiet_hours_end:'09:00',time_zone:'Asia/Jerusalem',behavior:{weekly_schedule:{
