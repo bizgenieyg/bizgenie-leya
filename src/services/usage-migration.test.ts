@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { PGlite } from '@electric-sql/pglite';
-const path='supabase/migrations/20260908172018_026_runtime_behavior_and_agents.sql';
+const path='supabase/migrations/20260908174719_026_runtime_behavior_and_agents.sql';
 test('026 PostgreSQL quota admission, receipts, owner-local month, alerts, summary and RLS',async()=>{
   const db=new PGlite();
   try{
