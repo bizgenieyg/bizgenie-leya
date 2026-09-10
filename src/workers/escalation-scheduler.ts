@@ -18,7 +18,8 @@ export function startEscalationScheduler() {
    await runDueScheduledEscalations(supabase,createWhatsAppProvider,new Date(now),row.tenant_id);
    await deliverUsageNotices(supabase,row.tenant_id,row.session_name,createWhatsAppProvider());
    await runEscalationTimeouts(supabase,createWhatsAppProvider,new Date(now),row.tenant_id);
-   await deliverOwnerSummaryIfDue(supabase,row.tenant_id,row.session_name,createWhatsAppProvider(),new Date(now));
+   try{await deliverOwnerSummaryIfDue(supabase,row.tenant_id,row.session_name,createWhatsAppProvider(),new Date(now));}
+   catch{console.error('owner_summary_tick_failed',{tenantId:row.tenant_id});}
    if(now-(lastPurge.get(row.tenant_id)??0)>=MESSAGE_RETENTION_SWEEP_MS){
     lastPurge.set(row.tenant_id,now);
     try{await purgeExpiredMessages(supabase,row.tenant_id,behavior(settings).message_retention_days,new Date(now));}

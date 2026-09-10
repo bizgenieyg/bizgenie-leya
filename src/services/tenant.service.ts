@@ -103,7 +103,7 @@ export async function findOrCreateClient(
 
   const { data: existing, error: findError } = await db
     .from("clients")
-    .select("id, tenant_id, phone, whatsapp_jid, name, time_zone,language,language_overridden,auto_reply_allowed")
+    .select("id, tenant_id, phone, whatsapp_jid, name, time_zone,language,language_overridden,auto_reply_allowed,deleted_at")
     .eq("tenant_id", tenantId)
     .eq("whatsapp_jid", whatsappJid)
     .maybeSingle();
@@ -112,7 +112,7 @@ export async function findOrCreateClient(
   }
 
   if (existing) {
-    const patch: Record<string, unknown> = { last_seen_at: nowIso };
+    const patch: Record<string, unknown> = { last_seen_at: nowIso,deleted_at:null };
     if (name && name !== existing.name) {
       patch.name = name;
     }

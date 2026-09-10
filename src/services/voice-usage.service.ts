@@ -6,7 +6,6 @@ import type { STTProvider } from '../providers/stt/stt-provider.interface.js';
 import { createSTTProvider } from '../providers/stt/index.js';
 import { WahaMedia,type MediaProvider } from '../providers/media/waha-media.js';
 import { isTenantServiceable,type TenantRouting } from './tenant.service.js';
-import { senderKey } from '../utils/whatsapp-id.js';
 import { filterIncoming,allowedRecipient,ownerIdentityField,readSessionIdentity } from '../utils/incoming-policy.js';
 import { loadOwnerSettings,isBusinessOwner } from './owner-settings.service.js';
 import { recordUsageEvent,admitUsage } from './usage.service.js';
@@ -34,7 +33,8 @@ export async function handleVoiceUsage(db:DatabaseClient,routing:TenantRouting,b
  if(!me.id||ownerIdentityField(voice.from,me))return;
  const settings=await loadOwnerSettings(db,tenantId);if(isBusinessOwner(voice.from,settings))return;
  const key=voice.id??randomUUID(),config=behavior(settings);
- const client=await db.from('clients').select('id').eq('tenant_id',tenantId).eq('phone',senderKey(voice.from)).maybeSingle();if(client.error)return;
+ const client=await db.from('clients').select('id,auto_reply_allowed').eq('tenant_id',tenantId).eq('whatsapp_jid',voice.from).maybeSingle();if(client.error)return;
+ if(client.data?.auto_reply_allowed===false){await recordUsageEvent(db,{tenantId,eventType:'message_observed',eventKey:key,metadata:{reason:'client_opt_out',billable:false,media:'voice'}});return;}
  let paused=settings.auto_replies_paused,conversationId:string|undefined,introduced=false;
  if(client.data){const c=await db.from('conversations').select('id,bot_paused,assistant_introduced_at').eq('tenant_id',tenantId).eq('client_id',client.data.id).eq('status','active').order('created_at',{ascending:false}).limit(1).maybeSingle();if(c.error)return;conversationId=c.data?.id;introduced=!!c.data?.assistant_introduced_at;if(conversationId)paused=paused||await conversationPaused(db,tenantId,conversationId,settings);}
  if(paused){await recordUsageEvent(db,{tenantId,eventType:'message_observed',eventKey:key,metadata:{reason:'paused',billable:false,media:'voice'}});return;}

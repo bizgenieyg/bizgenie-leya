@@ -1,16 +1,17 @@
 import { BEHAVIOR_DEFAULTS } from '../config/behavior.js';
-import { DEFAULT_TIME_ZONE,intlTimeZone } from '../config/time-zones.js';
+import { DEFAULT_TIME_ZONE } from '../config/time-zones.js';
+import { zonedDateTimeFormat } from '../utils/time-zone.js';
 import { renderText } from './templates.service.js';
 import type { OwnerSettings } from './owner-settings.service.js';
 export interface NotificationSettings {mode:string;quiet_hours_start:string|null;quiet_hours_end:string|null;time_zone?:string;}
 type RuntimeSettings=NotificationSettings&{behavior?:Record<string,unknown>;exceptions?:Array<{start_date:string;end_date:string;kind:string;work_start:string|null;work_end:string|null;recurs_annually:boolean}>};
 function minutes(time:string):number { const m=/^([01]\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?$/.exec(time); return m ? Number(m[1])*60+Number(m[2]) : -1; }
 function localMinutes(now:Date,timeZone:string):number {
-  const parts=new Intl.DateTimeFormat('en-GB',{timeZone:intlTimeZone(timeZone),hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(now);
+  const parts=zonedDateTimeFormat('en-GB',{hour:'2-digit',minute:'2-digit',hourCycle:'h23'},timeZone).formatToParts(now);
   return Number(parts.find(p=>p.type==='hour')?.value)*60+Number(parts.find(p=>p.type==='minute')?.value);
 }
 function localDate(now:Date,timeZone:string){
-  const parts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:intlTimeZone(timeZone),year:'numeric',month:'2-digit',day:'2-digit',weekday:'short'}).formatToParts(now).map(p=>[p.type,p.value]));
+  const parts=Object.fromEntries(zonedDateTimeFormat('en-CA',{year:'numeric',month:'2-digit',day:'2-digit',weekday:'short'},timeZone).formatToParts(now).map(p=>[p.type,p.value]));
   const weekdays:Record<string,string>={Sun:'0',Mon:'1',Tue:'2',Wed:'3',Thu:'4',Fri:'5',Sat:'6'};
   return {iso:`${parts.year}-${parts.month}-${parts.day}`,monthDay:`${parts.month}-${parts.day}`,weekday:weekdays[parts.weekday!]!};
 }
@@ -36,7 +37,7 @@ export function isWithinQuietHours(settings:RuntimeSettings,now:Date):boolean {
 }
 // Wall-clock time in `timeZone` -> the UTC instant, resolving DST with a second pass.
 function tzOffsetMs(timeZone:string,at:Date):number {
-  const p=Object.fromEntries(new Intl.DateTimeFormat('en-US',{timeZone:intlTimeZone(timeZone),hourCycle:'h23',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}).formatToParts(at).map(x=>[x.type,x.value]));
+  const p=Object.fromEntries(zonedDateTimeFormat('en-US',{hourCycle:'h23',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'},timeZone).formatToParts(at).map(x=>[x.type,x.value]));
   return Date.UTC(Number(p.year),Number(p.month)-1,Number(p.day),Number(p.hour),Number(p.minute),Number(p.second))-Math.floor(at.getTime()/1000)*1000;
 }
 function wallToInstant(y:number,mo:number,d:number,minsOfDay:number,timeZone:string):number {

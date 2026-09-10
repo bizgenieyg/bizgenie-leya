@@ -254,3 +254,9 @@ test('voice pause and quota stop STT; uncertainty asks for clarification without
   else assert.match(h.sent.at(-1)!.text,mode==='uncertain'?/уточните/:mode==='denied'?/недоступны/:/не удалось распознать/);
  }
 });
+test('voice opt-out exits before download, STT, admission or client response',async()=>{
+ const {handleVoiceUsage}=await import('./voice-usage.service.js');const h=harness();h.tables.clients![0]!.auto_reply_allowed=false;
+ const body=JSON.parse(readFileSync('src/services/fixtures/gows-incoming-lid.json','utf8'));body.payload.from=customer;body.payload._data.Info.Chat=customer;body.payload.body=null;body.payload.hasMedia=true;body.payload.media={mimetype:'audio/wav',url:'http://internal/api/files/session/id.wav'};
+ let transcriptions=0,downloads=0;await handleVoiceUsage(h.db,{tenant:h.tables.tenants![0],instance:h.tables.whatsapp_instances![0]} as any,body,h.provider,{async transcribe(){transcriptions++;return{text:'Текст',confidence:1,ambiguous:false,language:'ru'};}},{async download(){downloads++;return wav();}});
+ assert.equal(downloads,0);assert.equal(transcriptions,0);assert.equal(h.admissions(),0);assert.equal(h.sent.length,0);assert.equal(h.tables.usage_events![0]!.metadata.reason,'client_opt_out');
+});
