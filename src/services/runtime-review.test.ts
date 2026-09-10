@@ -39,6 +39,9 @@ test('conversation behavior settings validate tenant overrides',()=>{
  assert.throws(()=>validateRuntimePatch({auto_resume_hours:-1}));assert.throws(()=>validateRuntimePatch({context_message_count:0}));
  assert.throws(()=>validateRuntimePatch({default_agent:'SUPPORT'}));
  assert.doesNotThrow(()=>validateRuntimePatch({time_zone:'UTC+3'}));assert.doesNotThrow(()=>validateRuntimePatch({time_zone:'UTC-12'}));
+ assert.equal(validateRuntimePatch({cabinet_language:'en'}).behaviorPatch.cabinet_language,'en');
+ assert.doesNotThrow(()=>validateRuntimePatch({cabinet_language:'he'}));
+ assert.throws(()=>validateRuntimePatch({cabinet_language:'de'}));
 });
 test('operator runtime settings remain accepted by the ADMIN_SECRET API validator',()=>{
  const patch=validateRuntimePatch({translate_owner_answer:true,escalation_remind_minutes:120,escalation_close_minutes:1440,auto_resume_hours:0,deferred_max_age_hours:12,context_message_count:10,context_retention_hours:48,intent_confidence_threshold:.75,route_stickiness_hours:24,reception_max_messages:0,campaign_routes:[],source_routes:[],templates:{'client.waiting':{ru:'Я уточню и вернусь с ответом.'}}});

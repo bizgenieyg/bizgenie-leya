@@ -1,4 +1,4 @@
-# Leia backend
+# Leya backend
 
 Phase 1 Express and TypeScript backend skeleton with Supabase migrations.
 

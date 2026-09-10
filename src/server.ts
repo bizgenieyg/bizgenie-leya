@@ -47,6 +47,6 @@ app.use((error: unknown, _request: express.Request, response: express.Response, 
 if (require.main === module) {
   startEscalationScheduler();
   app.listen(env.port, () => {
-    console.log(`Leia backend listening on port ${env.port}`);
+    console.log(`Leya backend listening on port ${env.port}`);
   });
 }

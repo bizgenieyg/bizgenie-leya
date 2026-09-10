@@ -15,6 +15,7 @@ export const BEHAVIOR_DEFAULTS = {
   stt_timeout_seconds: 30,
   media_max_bytes: 10 * 1024 * 1024,
   owner_language: 'ru',
+  cabinet_language: null as 'ru'|'en'|'he'|null,
   weekly_schedule: null as WeeklySchedule | null,
   agent_overrides: {} as Record<string,{priority?:number;keywords?:string[];systemPrompt?:string}>,
   enabled_agents: ['SALE','SUPPORT'],
