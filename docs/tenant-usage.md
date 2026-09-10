@@ -1,6 +1,6 @@
 # Tenant usage and monthly limits
 
-Historical report for migration 025. The [review fixes in 026](review-runtime-settings.md) supersede voice defaults, warning thresholds, paused-input accounting and settings access below.
+Historical report for migration 025. Migration 037 supersedes the old code defaults and introduces operator-managed plans.
 
 Current rule: an admitted customer voice message consumes both one incoming-message unit and its audio duration in recognition seconds. Tariff values are operator-controlled system settings; tenants see them read-only.
 
@@ -8,7 +8,11 @@ Current rule: an admitted customer voice message consumes both one incoming-mess
 
 Migration `025_tenant_usage_limits` extends existing `usage_events` with `event_key` for idempotency and reuses `tenant_usage_limits`. New `tenant_monthly_usage` stores tenant_id, local calendar month, time_zone, messages_used and voice_seconds_used. SQL is in `supabase/migrations/*_025_tenant_usage_limits.sql`.
 
-Basic defaults live in `src/config/usage.ts`: 500 incoming customer messages/month and 0 voice seconds (voice processing is not part of Phase 1). Existing explicit tariff values remain unchanged. No new environment variables are required.
+The single source of allowance defaults is `public.plans`. The initial row is `basic` / «Базовый»: 500 incoming customer messages, 60 voice minutes, and an 80% warning threshold. Operators can edit it without a deployment. `system_config.signup_default_plan` points to `basic`.
+
+Effective limits resolve in this order: the assigned plan supplies each value, then a tenant value replaces it only when its matching `*_overridden` flag is true. Copied values remain in `tenant_usage_limits` for auditability and provisioning checks, but changing a plan affects tenants that still inherit that field. There is no numeric TypeScript fallback: a missing plan is a configuration error, and admission follows the existing logged fail-open path rather than silently applying potentially stale allowances.
+
+The legacy columns `ai_calls_per_month`, `ocr_scans_per_month`, and `active_modules` are not read by Phase 1 business logic. They only appear in the original schema (and in the legacy setup response because that endpoint selects the complete row). Model calls are measured in `usage_events`; OCR and module-count billing are outside Phase 1. Migration 037 intentionally leaves these columns intact pending a separate schema-removal decision.
 
 Only admitted incoming customer messages consume the message quota. Owner commands, outbound messages and model calls do not. Paused conversations do not consume quota. The last message within the limit completes normally; subsequent inputs receive a neutral explanation that the owner can respond personally. Human owner replies remain available.
 
@@ -31,19 +35,26 @@ GOWS audio duration is read from `_data.Message.audioMessage.seconds`. Tests use
 Server administrative API, using the existing `Authorization: Bearer <ADMIN_SECRET>` authentication:
 
 - `GET /api/admin/usage?tenantId=UUID`: current month/time zone/bounds; messages_used/messages_limit; voice_seconds_used/voice_minutes_used/voice_minutes_limit; separate operational event and token aggregates.
-- `PATCH /api/admin/usage-limits?tenantId=UUID`: JSON `{"messagesPerMonth":1000,"voiceMinutesPerMonth":60}`. Both nonnegative integer values are required.
+- `GET /api/admin/plans`: list operator-managed plans.
+- `PUT /api/admin/plans/basic`: update a plan with `displayName`, `messagesPerMonth`, `voiceMinutesPerMonth`, and `warningPercent`.
+- `PATCH /api/admin/usage-limits?tenantId=UUID`: assign a plan and individual overrides. Send `{"plan":"basic","usePlanDefaults":true}` to inherit the plan, or send all three numeric fields with `usePlanDefaults:false` to create tenant-specific overrides.
 
 Only the trusted backend can change limits. Public setup tokens cannot modify them. A future cabinet caller must use its server proxy and derive tenantId from the authenticated membership; this change adds the backend aggregate, not a cabinet widget.
 
-Alternatively an operator can set limits in Supabase SQL Editor (substitute the actual tenant UUID):
+Alternatively an operator can set explicit overrides in Supabase SQL Editor (substitute the actual tenant UUID):
 
 ```sql
 insert into public.tenant_usage_limits
-  (tenant_id, messages_per_month, voice_minutes_per_month)
-values ('TENANT_UUID'::uuid, 1000, 60)
+  (tenant_id, plan, messages_per_month, voice_minutes_per_month, warning_percent,
+   messages_overridden, voice_overridden, warning_overridden)
+values ('TENANT_UUID'::uuid, 'basic', 1000, 90, 75, true, true, true)
 on conflict (tenant_id) do update set
   messages_per_month = excluded.messages_per_month,
   voice_minutes_per_month = excluded.voice_minutes_per_month,
+  warning_percent = excluded.warning_percent,
+  messages_overridden = true,
+  voice_overridden = true,
+  warning_overridden = true,
   updated_at = now();
 ```
 

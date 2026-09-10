@@ -1,5 +1,4 @@
 import { BEHAVIOR_DEFAULTS, MESSAGE_RETENTION_MIN_DAYS } from '../config/behavior.js';
-import { BASIC_USAGE_LIMITS } from '../config/usage.js';
 import { TEMPLATE_DEFAULTS } from '../config/templates.js';
 import { loadOwnerSettings, type OwnerSettings } from './owner-settings.service.js';
 import type { DatabaseClient } from '../db/supabase.js';
@@ -17,14 +16,17 @@ export function templates(settings:OwnerSettings){
 export async function readRuntimeSettings(db:DatabaseClient,tenantId:string){
  const owner=await loadOwnerSettings(db,tenantId);
  const [{data,error},tenant]=await Promise.all([
-  db.from('tenant_usage_limits').select('messages_per_month,voice_minutes_per_month,warning_percent,plan').eq('tenant_id',tenantId).maybeSingle(),
-  db.from('tenants').select('plan').eq('id',tenantId).maybeSingle(),
+  db.from('tenant_usage_limits').select('messages_per_month,voice_minutes_per_month,warning_percent,plan,messages_overridden,voice_overridden,warning_overridden').eq('tenant_id',tenantId).maybeSingle(),
+  db.from('tenants').select('tier').eq('id',tenantId).maybeSingle(),
  ]);
  if(error)throw new Error('Tenant limits unavailable');
+ const planCode=data?.plan??tenant.data?.tier;
+ const plan=planCode?await db.from('plans').select('code,display_name,messages_per_month,voice_minutes_per_month,warning_percent').eq('code',planCode).maybeSingle():{data:null,error:{}};
+ if(plan.error||!plan.data)throw new Error('Tenant plan unavailable');
  return { ...behavior(owner),translate_owner_answer:owner.translate_owner_answer??BEHAVIOR_DEFAULTS.translate_owner_answer,
- messages_per_month:data?.messages_per_month??BASIC_USAGE_LIMITS.messagesPerMonth,
- voice_minutes_per_month:data?.voice_minutes_per_month??BASIC_USAGE_LIMITS.voiceSecondsPerMonth/60,
- warning_percent:data?.warning_percent??BASIC_USAGE_LIMITS.warningPercent,plan:data?.plan??tenant.data?.plan??null,
+ messages_per_month:data?.messages_overridden?data.messages_per_month:plan.data.messages_per_month,
+ voice_minutes_per_month:data?.voice_overridden?data.voice_minutes_per_month:plan.data.voice_minutes_per_month,
+ warning_percent:data?.warning_overridden?data.warning_percent:plan.data.warning_percent,plan:plan.data.code,plan_name:plan.data.display_name,
  auto_replies_paused:owner.auto_replies_paused??false,owner_phone:owner.owner_phone??'',paired:!!owner.owner_chat_id,
  time_zone:owner.time_zone??DEFAULT_TIME_ZONE,supported_time_zones:SUPPORTED_TIME_ZONES,weekly_schedule:normalizedSchedule(owner),templates:templates(owner),exceptions:owner.exceptions??[]};
 }

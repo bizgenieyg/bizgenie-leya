@@ -1,4 +1,3 @@
-import { BASIC_USAGE_LIMITS } from '../config/usage.js';
 import { reserveFailureAlert } from './alert-throttle.js';
 import { renderText,languageOf } from './templates.service.js';
 import { behavior } from './runtime-settings.service.js';
@@ -27,7 +26,7 @@ export async function deliverUsageNotices(db:DatabaseClient,tenantId:string,sess
       const resource=renderText(settings,voice?'owner.resource_voice':'owner.resource_messages',behavior(settings).owner_language);
       const used=voice?Number(job.payload.voice_seconds_used)/60:Number(job.payload.messages_used);
       const limit=voice?Number(job.payload.voice_seconds_limit)/60:Number(job.payload.messages_limit);
-      const text=renderText(settings,exhausted?'owner.usage_exhausted':'owner.usage_warning',behavior(settings).owner_language,{percent:Number(job.payload.warning_percent??BASIC_USAGE_LIMITS.warningPercent),resource,used,limit});
+      const text=renderText(settings,exhausted?'owner.usage_exhausted':'owner.usage_warning',behavior(settings).owner_language,{percent:Number(job.payload.warning_percent),resource,used,limit});
       try{
         const sent=await transport.sendMessage({session,chatId:to,text});if(!sent.id)throw new Error('Missing message ID');
         const done=await db.from('scheduled_jobs').update({status:'done',executed_at:new Date().toISOString()}).eq('tenant_id',tenantId).eq('id',job.id);if(done.error)throw new Error('Notice state failed');

@@ -179,9 +179,7 @@ export class OnboardingService {
   async complete(token: string) {
     const session = await this.requireSession(token);
     const tenantId = session.tenant_id as string;
-    const { error: limitsError } = await this.db
-      .from("tenant_usage_limits")
-      .upsert({ tenant_id: tenantId }, { onConflict: "tenant_id", ignoreDuplicates: true });
+    const { error: limitsError } = await this.db.rpc("ensure_tenant_usage_limits", { p_tenant_id: tenantId });
     if (limitsError) databaseError("Could not create default usage limits", limitsError);
     const { error: modulesError } = await this.db
       .from("module_settings")

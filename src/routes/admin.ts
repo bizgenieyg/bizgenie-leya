@@ -78,11 +78,25 @@ adminRouter.get('/usage',async(request,response)=>{
 });
 adminRouter.patch('/usage-limits',async(request,response)=>{
   const tenantId=queryTenantId(request.query.tenantId),body=objectBody(request.body);
-  const messages=body.messagesPerMonth,voice=body.voiceMinutesPerMonth,warning=body.warningPercent,plan=body.plan;
-  if(!Number.isSafeInteger(messages)||Number(messages)<0||Number(messages)>2147483647||!Number.isSafeInteger(voice)||Number(voice)<0||Number(voice)>2147483647||!Number.isSafeInteger(warning)||Number(warning)<1||Number(warning)>100||typeof plan!=='string'||!plan.trim()||plan.length>50)throw new HttpError(400,'Invalid system tariff settings');
-  const {error}=await supabase.from('tenant_usage_limits').upsert({tenant_id:tenantId,messages_per_month:messages,voice_minutes_per_month:voice,warning_percent:warning,plan:plan.trim(),updated_at:new Date().toISOString()},{onConflict:'tenant_id'});
+  const messages=body.messagesPerMonth,voice=body.voiceMinutesPerMonth,warning=body.warningPercent,plan=body.plan,usePlanDefaults=body.usePlanDefaults===true;
+  if(typeof plan!=='string'||!plan.trim()||plan.length>50||!usePlanDefaults&&(!Number.isSafeInteger(messages)||Number(messages)<0||Number(messages)>2147483647||!Number.isSafeInteger(voice)||Number(voice)<0||Number(voice)>2147483647||!Number.isSafeInteger(warning)||Number(warning)<1||Number(warning)>100))throw new HttpError(400,'Invalid system tariff settings');
+  const planCode=plan.trim();
+  const configured=await supabase.from('plans').select('code,messages_per_month,voice_minutes_per_month,warning_percent').eq('code',planCode).maybeSingle();
+  if(configured.error||!configured.data)throw new HttpError(400,'Unknown plan');
+  const {error}=await supabase.from('tenant_usage_limits').upsert({tenant_id:tenantId,messages_per_month:usePlanDefaults?configured.data.messages_per_month:messages,voice_minutes_per_month:usePlanDefaults?configured.data.voice_minutes_per_month:voice,warning_percent:usePlanDefaults?configured.data.warning_percent:warning,plan:planCode,messages_overridden:!usePlanDefaults,voice_overridden:!usePlanDefaults,warning_overridden:!usePlanDefaults,updated_at:new Date().toISOString()},{onConflict:'tenant_id'});
   if(error)throw new HttpError(500,'Could not save usage limits');
   response.json({updated:true});
+});
+adminRouter.get('/plans',async(_request,response)=>{
+  const {data,error}=await supabase.from('plans').select('code,display_name,messages_per_month,voice_minutes_per_month,warning_percent').order('code');
+  if(error)throw new HttpError(500,'Could not load plans');response.json(data??[]);
+});
+adminRouter.put('/plans/:code',async(request,response)=>{
+  const code=String(request.params.code),body=objectBody(request.body);
+  const name=body.displayName,messages=body.messagesPerMonth,voice=body.voiceMinutesPerMonth,warning=body.warningPercent;
+  if(!/^[a-z][a-z0-9_-]{0,49}$/.test(code)||typeof name!=='string'||!name.trim()||name.length>100||!Number.isSafeInteger(messages)||Number(messages)<0||!Number.isSafeInteger(voice)||Number(voice)<0||!Number.isSafeInteger(warning)||Number(warning)<1||Number(warning)>100)throw new HttpError(400,'Invalid plan');
+  const {error}=await supabase.from('plans').upsert({code,display_name:name.trim(),messages_per_month:messages,voice_minutes_per_month:voice,warning_percent:warning,updated_at:new Date().toISOString()});
+  if(error)throw new HttpError(500,'Could not save plan');response.json({updated:true});
 });
 
 adminRouter.get('/schedule-exceptions',async(request,response)=>response.json(await listExceptions(supabase,queryTenantId(request.query.tenantId))));
