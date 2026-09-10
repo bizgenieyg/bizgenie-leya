@@ -55,7 +55,7 @@ export class OnboardingService {
         this.db.from("services").select("*").eq("tenant_id", tenantId).order("created_at"),
         this.db.from("subscriptions").select("*").eq("tenant_id", tenantId).maybeSingle(),
         this.db.from("subscription_addons").select("*").eq("tenant_id", tenantId),
-        this.db.from("tenant_usage_limits").select("*").eq("tenant_id", tenantId).maybeSingle(),
+        this.db.from("tenant_usage_limits").select("plan,messages_per_month,voice_minutes_per_month,warning_percent").eq("tenant_id", tenantId).maybeSingle(),
         this.db.from("module_settings").select("*").eq("tenant_id", tenantId),
         this.db
           .from("whatsapp_instances")

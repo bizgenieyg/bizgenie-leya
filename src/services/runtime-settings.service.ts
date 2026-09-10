@@ -5,6 +5,7 @@ import type { DatabaseClient } from '../db/supabase.js';
 import { HttpError } from '../utils/http-error.js';
 import { DEFAULT_TIME_ZONE,SUPPORTED_TIME_ZONES,supportedTimeZone } from '../config/time-zones.js';
 import type { WeeklySchedule } from '../config/behavior.js';
+import { logSystemEvent } from './logging.service.js';
 export function behavior(settings:OwnerSettings) {
  const stored=settings.behavior&&typeof settings.behavior==='object'&&!Array.isArray(settings.behavior)?settings.behavior:{};
  return Object.fromEntries(Object.entries(BEHAVIOR_DEFAULTS).map(([key,fallback])=>[key,stored[key]??fallback])) as typeof BEHAVIOR_DEFAULTS;
@@ -15,18 +16,15 @@ export function templates(settings:OwnerSettings){
 }
 export async function readRuntimeSettings(db:DatabaseClient,tenantId:string){
  const owner=await loadOwnerSettings(db,tenantId);
- const [{data,error},tenant]=await Promise.all([
-  db.from('tenant_usage_limits').select('messages_per_month,voice_minutes_per_month,warning_percent,plan,messages_overridden,voice_overridden,warning_overridden').eq('tenant_id',tenantId).maybeSingle(),
-  db.from('tenants').select('tier').eq('id',tenantId).maybeSingle(),
- ]);
+ const {data,error}=await db.from('tenant_usage_limits').select('messages_per_month,voice_minutes_per_month,warning_percent,plan,messages_overridden,voice_overridden,warning_overridden').eq('tenant_id',tenantId).maybeSingle();
  if(error)throw new Error('Tenant limits unavailable');
- const planCode=data?.plan??tenant.data?.tier;
- const plan=planCode?await db.from('plans').select('code,display_name,messages_per_month,voice_minutes_per_month,warning_percent').eq('code',planCode).maybeSingle():{data:null,error:{}};
- if(plan.error||!plan.data)throw new Error('Tenant plan unavailable');
+ const planCode=data?.plan;
+ const plan=planCode?await db.from('plans').select('code,display_name,messages_per_month,voice_minutes_per_month,warning_percent,unlimited').eq('code',planCode).maybeSingle():{data:null,error:{}};
+ if(plan.error||!plan.data){console.error('critical_tenant_plan_integrity_violation',{tenantId});try{await logSystemEvent(db,{tenantId,level:'error',event:'tenant_plan_integrity_violation'});}catch{}throw new Error('Tenant plan unavailable');}
  return { ...behavior(owner),translate_owner_answer:owner.translate_owner_answer??BEHAVIOR_DEFAULTS.translate_owner_answer,
  messages_per_month:data?.messages_overridden?data.messages_per_month:plan.data.messages_per_month,
  voice_minutes_per_month:data?.voice_overridden?data.voice_minutes_per_month:plan.data.voice_minutes_per_month,
- warning_percent:data?.warning_overridden?data.warning_percent:plan.data.warning_percent,plan:plan.data.code,plan_name:plan.data.display_name,
+ warning_percent:data?.warning_overridden?data.warning_percent:plan.data.warning_percent,plan:plan.data.code,plan_name:plan.data.display_name,unlimited:Boolean(plan.data.unlimited),
  auto_replies_paused:owner.auto_replies_paused??false,owner_phone:owner.owner_phone??'',paired:!!owner.owner_chat_id,
  time_zone:owner.time_zone??DEFAULT_TIME_ZONE,supported_time_zones:SUPPORTED_TIME_ZONES,weekly_schedule:normalizedSchedule(owner),templates:templates(owner),exceptions:owner.exceptions??[]};
 }

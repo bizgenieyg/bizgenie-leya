@@ -15,6 +15,12 @@ test('metering never breaks message handling on database rejection or thrown net
     assert.equal((await admitUsage(db,'t','id')).allowed,true);
   }
 });
+test('fail-open admission writes a structured operator-visible system event',async()=>{
+  const rows:any[]=[];
+  const db={rpc:async()=>({data:null,error:{code:'network'}}),from(table:string){return{insert:async(value:unknown)=>{rows.push({table,value});return{error:null};}};}} as unknown as DatabaseClient;
+  assert.equal((await admitUsage(db,'tenant','message')).unavailable,true);
+  assert.deepEqual(rows,[{table:'system_logs',value:{tenant_id:'tenant',level:'error',event:'usage_admission_unavailable',details:{mode:'fail_open'}}}]);
+});
 test('Gemini success, failure and owner translation are metered, disabled provider is not',async()=>{
   const events:any[]=[];const db={from(){return{insert:async(value:unknown)=>{events.push(value);return{error:null};}};}} as unknown as DatabaseClient;
   let calls=0;const raw={async generateReply(){calls++;return{text:'ok',usage:{model:'model',input_tokens:12,output_tokens:3}};}};

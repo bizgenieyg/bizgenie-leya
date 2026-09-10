@@ -8,9 +8,11 @@ Current rule: an admitted customer voice message consumes both one incoming-mess
 
 Migration `025_tenant_usage_limits` extends existing `usage_events` with `event_key` for idempotency and reuses `tenant_usage_limits`. New `tenant_monthly_usage` stores tenant_id, local calendar month, time_zone, messages_used and voice_seconds_used. SQL is in `supabase/migrations/*_025_tenant_usage_limits.sql`.
 
-The single source of allowance defaults is `public.plans`. The initial row is `basic` / «Базовый»: 500 incoming customer messages, 60 voice minutes, and an 80% warning threshold. Operators can edit it without a deployment. `system_config.signup_default_plan` points to `basic`.
+The single source of allowance defaults is `public.plans`. `basic` / «Базовый» contains 500 incoming customer messages, 60 voice minutes, and an 80% warning threshold. Migration 038 adds `pilot` / «Пилотный» with `unlimited=true`, assigns it to existing tenants, and makes it the signup default. Unlimited tenants are still metered, but admission never stops replies and no threshold notices are queued. Operators can edit plans without a deployment.
 
 Effective limits resolve in this order: the assigned plan supplies each value, then a tenant value replaces it only when its matching `*_overridden` flag is true. Copied values remain in `tenant_usage_limits` for auditability and provisioning checks, but changing a plan affects tenants that still inherit that field. There is no numeric TypeScript fallback: a missing plan is a configuration error, and admission follows the existing logged fail-open path rather than silently applying potentially stale allowances.
+
+Migration 038 enforces `tenant_usage_limits.plan → plans.code` with `ON DELETE RESTRICT` and `ON UPDATE CASCADE`. Triggers validate `system_config.signup_default_plan`, prevent deletion of its plan, and keep the setting synchronized when a plan code changes. The remaining missing-plan guards indicate critical database corruption and write `tenant_plan_integrity_violation`; they are not a normal fallback.
 
 The legacy columns `ai_calls_per_month`, `ocr_scans_per_month`, and `active_modules` are not read by Phase 1 business logic. They only appear in the original schema (and in the legacy setup response because that endpoint selects the complete row). Model calls are measured in `usage_events`; OCR and module-count billing are outside Phase 1. Migration 037 intentionally leaves these columns intact pending a separate schema-removal decision.
 
@@ -67,6 +69,12 @@ Zero messages disables automatic answers. Zero voice allowance disables audio ad
 RLS permits members to read their counters/limits. Clients cannot write usage or tariff limits. Admission/aggregate RPC execution is restricted to service_role; functions are SECURITY INVOKER.
 
 Usage recording failures log safe event information and do not stop processing. If the quota database check itself is unavailable, processing continues (fail-open) with `usage_admission_unavailable`; this means quota enforcement and accounting cannot be guaranteed during a database outage. Full message texts and secrets are not logged by metering.
+
+`usage_admission_unavailable` is also written to backend-only `system_logs` at error level with the tenant id and `mode=fail_open`, so an operator can identify tenants processed while accounting was unavailable.
+
+## Historical migration ordering
+
+The production history records canonicalized migrations 022 and 023 at timestamps after 024–033, although those migrations were originally applied before the later RLS changes. Renaming already-applied versions would split local and remote history. The repository therefore treats the production database/schema dump as the baseline for a new environment and preserves every applied filename. A future baseline-squash migration should replace the historical chain before clean replay is advertised; applied files are not renumbered or edited.
 
 ## Verification and rollout
 

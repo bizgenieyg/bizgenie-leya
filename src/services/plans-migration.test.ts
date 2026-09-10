@@ -45,6 +45,24 @@ test('037 provisions plan limits and backfills existing tenants without overwrit
     const overridden=await db.query<{messages_per_month:number}>('select messages_per_month from effective_tenant_usage_limits($1)',[legacy]);
     assert.equal(inherited.rows[0]!.messages_per_month,700);
     assert.equal(overridden.rows[0]!.messages_per_month,500);
+    await db.query("update plans set messages_per_month=500 where code='basic'");
     assert.equal((await db.query<{value:string}>("select value#>>'{}' as value from system_config where key='signup_default_plan'")).rows[0]!.value,'basic');
+
+    await db.exec(readFileSync('supabase/migrations/20260910110000_038_plan_integrity_and_pilot.sql','utf8'));
+    assert.equal((await db.query<{value:string}>("select value#>>'{}' as value from system_config where key='signup_default_plan'")).rows[0]!.value,'pilot');
+    assert.equal((await db.query<{count:number}>('select count(*)::int as count from tenant_usage_limits where plan<>\'pilot\'')).rows[0]!.count,0);
+    assert.equal((await db.query<{messages_overridden:boolean}>('select messages_overridden from tenant_usage_limits where tenant_id=$1',[legacy])).rows[0]!.messages_overridden,false);
+    await assert.rejects(db.query("update tenant_usage_limits set plan='missing' where tenant_id=$1",[legacy]),/foreign key/);
+    await assert.rejects(db.query("update system_config set value='\"missing\"' where key='signup_default_plan'"),/signup_default_plan/);
+    await db.query("update plans set code='pilot-renamed' where code='pilot'");
+    assert.equal((await db.query<{plan:string}>('select plan from tenant_usage_limits where tenant_id=$1',[legacy])).rows[0]!.plan,'pilot-renamed');
+    assert.equal((await db.query<{value:string}>("select value#>>'{}' as value from system_config where key='signup_default_plan'")).rows[0]!.value,'pilot-renamed');
+    const unlimited=await db.query<{v:{allowed:boolean;unlimited:boolean} }>("select admit_tenant_usage($1,'pilot-test',1,999999,0,0,0,now()) as v",[legacy]);
+    assert.equal(unlimited.rows[0]!.v.allowed,true);assert.equal(unlimited.rows[0]!.v.unlimited,true);
+    assert.equal((await db.query<{count:number}>('select count(*)::int as count from scheduled_jobs where tenant_id=$1',[legacy])).rows[0]!.count,0);
+    await db.exec('create index idx_messages_tenant_created_at on messages(tenant_id,created_at);create index idx_messages_tenant_created on messages(tenant_id,created_at);');
+    await db.exec(readFileSync('supabase/migrations/20260910111000_039_drop_duplicate_messages_index.sql','utf8'));
+    const indexes=await db.query<{indexname:string}>("select indexname from pg_indexes where schemaname='public' and tablename='messages' and indexname like 'idx_messages_tenant_created%'");
+    assert.deepEqual(indexes.rows,[{indexname:'idx_messages_tenant_created'}]);
   }finally{await db.close();}
 });

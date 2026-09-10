@@ -88,14 +88,14 @@ adminRouter.patch('/usage-limits',async(request,response)=>{
   response.json({updated:true});
 });
 adminRouter.get('/plans',async(_request,response)=>{
-  const {data,error}=await supabase.from('plans').select('code,display_name,messages_per_month,voice_minutes_per_month,warning_percent').order('code');
+  const {data,error}=await supabase.from('plans').select('code,display_name,messages_per_month,voice_minutes_per_month,warning_percent,unlimited').order('code');
   if(error)throw new HttpError(500,'Could not load plans');response.json(data??[]);
 });
 adminRouter.put('/plans/:code',async(request,response)=>{
   const code=String(request.params.code),body=objectBody(request.body);
-  const name=body.displayName,messages=body.messagesPerMonth,voice=body.voiceMinutesPerMonth,warning=body.warningPercent;
-  if(!/^[a-z][a-z0-9_-]{0,49}$/.test(code)||typeof name!=='string'||!name.trim()||name.length>100||!Number.isSafeInteger(messages)||Number(messages)<0||!Number.isSafeInteger(voice)||Number(voice)<0||!Number.isSafeInteger(warning)||Number(warning)<1||Number(warning)>100)throw new HttpError(400,'Invalid plan');
-  const {error}=await supabase.from('plans').upsert({code,display_name:name.trim(),messages_per_month:messages,voice_minutes_per_month:voice,warning_percent:warning,updated_at:new Date().toISOString()});
+  const name=body.displayName,messages=body.messagesPerMonth,voice=body.voiceMinutesPerMonth,warning=body.warningPercent,unlimited=body.unlimited??false;
+  if(!/^[a-z][a-z0-9_-]{0,49}$/.test(code)||typeof name!=='string'||!name.trim()||name.length>100||typeof unlimited!=='boolean'||!Number.isSafeInteger(messages)||Number(messages)<0||!Number.isSafeInteger(voice)||Number(voice)<0||!Number.isSafeInteger(warning)||Number(warning)<1||Number(warning)>100)throw new HttpError(400,'Invalid plan');
+  const {error}=await supabase.from('plans').upsert({code,display_name:name.trim(),messages_per_month:messages,voice_minutes_per_month:voice,warning_percent:warning,unlimited,updated_at:new Date().toISOString()});
   if(error)throw new HttpError(500,'Could not save plan');response.json({updated:true});
 });
 
