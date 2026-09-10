@@ -17,7 +17,7 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
   const db = { async rpc() { return {data:{allowed:quotaAllowed,duplicate:false},error:null}; }, from(table: string) {
     let write = false;
     const query = {
-      select() { return query; }, eq(column: string, value: unknown) { if (table === "clients" && column === "phone") clientKeys.push(value); return query; }, in(){return query;},is(){return query;},gte(){return query;},lt(){return query;},not() { return query; }, order() { return query; }, limit() { return query; },delete(){write=true;return query;},
+      select() { return query; }, eq(column: string, value: unknown) { if (table === "clients" && column === "whatsapp_jid") clientKeys.push(value); return query; }, in(){return query;},is(){return query;},gte(){return query;},lt(){return query;},not() { return query; }, order() { return query; }, limit() { return query; },delete(){write=true;return query;},
       update() { write = true; return query; },
       insert(data: Record<string, unknown>) { write = true; writes.push({ table, data }); return query; },
       async maybeSingle() {

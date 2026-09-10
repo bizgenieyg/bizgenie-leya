@@ -20,7 +20,7 @@ function harness() {
  let quotaAllowed=true;let admitted=0;
   type Row=Record<string,any>;
   const tables:Record<string,Row[]>={notification_settings:[{tenant_id:tenant,...defaults}],conversations:[{id:'conversation',tenant_id:tenant,client_id:'client',status:'active',bot_paused:false}],escalations:[],unrecognized_routes:[],scheduled_jobs:[],knowledge_items:[],
-    tenants:[{id:tenant,name:'Business',phone:null,status:'active',language:'ru'}],whatsapp_instances:[{tenant_id:tenant,session_name:'session'}],clients:[{id:'client',tenant_id:tenant,phone:customer,name:'Клиент'}],assistant_profiles:[]};
+    tenants:[{id:tenant,name:'Business',phone:null,status:'active',language:'ru'}],whatsapp_instances:[{tenant_id:tenant,session_name:'session'}],clients:[{id:'client',tenant_id:tenant,phone:customer,whatsapp_jid:customer,name:'Клиент'}],assistant_profiles:[]};
   const db={from(table:string){
     const filters:((r:Row)=>boolean)[]=[];let action='read',values:Row|undefined;let single=false;let ran=false;let result:any;
     const q:any={select(){return q;},eq(k:string,v:unknown){filters.push(r=>r[k]===v);return q;},is(k:string,v:unknown){filters.push(r=>r[k]===v||r[k]===undefined&&v===null);return q;},in(k:string,v:unknown[]){filters.push(r=>v.includes(r[k]));return q;},contains(k:string,v:any){filters.push(r=>Array.isArray(v)?v.every((x:string)=>r[k]?.includes(x)):Object.entries(v).every(([x,y])=>r[k]?.[x]===y));return q;},lte(k:string,v:string){filters.push(r=>r[k]<=v);return q;},lt(k:string,v:string){filters.push(r=>r[k]<v);return q;},gte(k:string,v:string){filters.push(r=>r[k]>=v);return q;},not(){return q;},order(){return q;},limit(){return q;},

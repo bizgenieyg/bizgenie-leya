@@ -15,6 +15,8 @@ import { requireAdmin } from "../utils/admin-auth.js";
 import { HttpError } from "../utils/http-error.js";
 import { objectBody, requiredString } from "../utils/validation.js";
 import { DEFAULT_TIME_ZONE } from '../config/time-zones.js';
+import { deleteClientCard,getClientCard,listClientCards,updateClientCard } from '../services/client-cards.service.js';
+import { buildOwnerSummary } from '../services/owner-summary.service.js';
 
 const waha = new WahaAdminService();
 
@@ -107,6 +109,11 @@ adminRouter.delete('/schedule-exceptions',async(request,response)=>{await delete
 adminRouter.get('/tenant-settings',async(request,response)=>{
  response.setHeader('Cache-Control','no-store');response.json(await readRuntimeSettings(supabase,queryTenantId(request.query.tenantId)));
 });
+adminRouter.get('/clients',async(request,response)=>{response.setHeader('Cache-Control','no-store');response.json(await listClientCards(supabase,queryTenantId(request.query.tenantId),typeof request.query.search==='string'?request.query.search:''));});
+adminRouter.get('/clients/:id',async(request,response)=>{response.setHeader('Cache-Control','no-store');response.json(await getClientCard(supabase,queryTenantId(request.query.tenantId),String(request.params.id)));});
+adminRouter.patch('/clients/:id',async(request,response)=>response.json(await updateClientCard(supabase,queryTenantId(request.query.tenantId),String(request.params.id),objectBody(request.body))));
+adminRouter.delete('/clients/:id',async(request,response)=>{await deleteClientCard(supabase,queryTenantId(request.query.tenantId),String(request.params.id));response.status(204).send();});
+adminRouter.get('/owner-summary',async(request,response)=>{const tenantId=queryTenantId(request.query.tenantId),to=request.query.to?new Date(String(request.query.to)):new Date(),from=request.query.from?new Date(String(request.query.from)):new Date(to.getTime()-7*86400000);if(!Number.isFinite(from.getTime())||!Number.isFinite(to.getTime())||from>=to||to.getTime()-from.getTime()>366*86400000)throw new HttpError(400,'Invalid summary period');response.setHeader('Cache-Control','no-store');response.json(await buildOwnerSummary(supabase,tenantId,from,to));});
 // This endpoint is reachable only with ADMIN_SECRET (requireAdmin). There is no separate
 // operator credential, so a `?scope=operator` flag would be security theatre — anyone
 // holding ADMIN_SECRET could add it. The real tenant-facing boundary is the Next.js proxy,

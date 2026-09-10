@@ -1,4 +1,9 @@
 export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
+  "owner.summary": {
+    "ru": "Сводка Леи: обращений — {inquiries}, новых клиентов — {new_clients}, закрыто Леей — {closed_by_bot}, передано владельцу — {escalated}, ждут ответа — {unanswered}. Не хватило знаний: {missing_knowledge}.",
+    "he": "סיכום ליה: פניות — {inquiries}, לקוחות חדשים — {new_clients}, נסגרו על ידי ליה — {closed_by_bot}, הועברו לבעל העסק — {escalated}, ממתינים לתשובה — {unanswered}. ידע חסר: {missing_knowledge}.",
+    "en": "Leia summary: inquiries — {inquiries}, new clients — {new_clients}, closed by Leia — {closed_by_bot}, sent to owner — {escalated}, awaiting reply — {unanswered}. Missing knowledge: {missing_knowledge}."
+  },
   "client.reception_question": {
     "ru": "Я ассистент владельца. Подскажите, пожалуйста, вас интересует {agents}?",
     "he": "אני העוזרת של בעל העסק. אפשר להבהיר אם מעניין אותך {agents}?",

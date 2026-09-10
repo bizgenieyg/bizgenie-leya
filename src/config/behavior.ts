@@ -23,6 +23,9 @@ export const BEHAVIOR_DEFAULTS = {
   intent_confidence_threshold: 0.75,
   route_stickiness_hours: 24,
   reception_max_messages: 0,
+  summary_frequency: 'weekly' as 'off'|'daily'|'weekly',
+  summary_time: '09:00',
+  summary_weekday: 1,
 };
 export const SCHEDULER_POLL_MS = 1000;
 // Message storage retention: floor for behavior.message_retention_days, and how often

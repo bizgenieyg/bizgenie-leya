@@ -72,6 +72,9 @@ export function validateRuntimePatch(input:Record<string,unknown>) {
     if(Object.keys(o).some(k=>!['priority','keywords','systemPrompt'].includes(k))||o.priority!==undefined&&!Number.isSafeInteger(o.priority)||o.keywords!==undefined&&(!Array.isArray(o.keywords)||o.keywords.some(k=>typeof k!=='string'||!k.trim()))||o.systemPrompt!==undefined&&typeof o.systemPrompt!=='string')throw new HttpError(400,'Invalid agent override');
    }behaviorPatch[key]=value;
   }else if(key==='owner_language'){if(!['he','ru','en'].includes(String(value)))throw new HttpError(400,'Invalid language');behaviorPatch[key]=value;}
+  else if(key==='summary_frequency'){if(!['off','daily','weekly'].includes(String(value)))throw new HttpError(400,'Invalid summary frequency');behaviorPatch[key]=value;}
+  else if(key==='summary_time'){if(!time(value))throw new HttpError(400,'Invalid summary time');behaviorPatch[key]=value;}
+  else if(key==='summary_weekday')behaviorPatch[key]=integer(key,value,0,6);
   else if(key==='time_zone'){if(!supportedTimeZone(value))throw new HttpError(400,'Unsupported timezone');notification[key]=value;}
   else if(key==='weekly_schedule'){if(!validSchedule(value))throw new HttpError(400,'Invalid weekly schedule');behaviorPatch[key]=value;}
   else if(key==='templates'){

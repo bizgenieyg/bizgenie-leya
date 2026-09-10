@@ -6,6 +6,7 @@ import { runDueScheduledEscalations,runEscalationTimeouts } from '../services/ow
 import { purgeExpiredMessages } from '../services/message-retention.service.js';
 import { loadOwnerSettings } from '../services/owner-settings.service.js';
 import { behavior } from '../services/runtime-settings.service.js';
+import { deliverOwnerSummaryIfDue } from '../services/owner-summary.service.js';
 export function startEscalationScheduler() {
  let busy=false;const last=new Map<string,number>();const lastPurge=new Map<string,number>();
  const tick=async()=>{if(busy)return;busy=true;try{
@@ -17,6 +18,7 @@ export function startEscalationScheduler() {
    await runDueScheduledEscalations(supabase,createWhatsAppProvider,new Date(now),row.tenant_id);
    await deliverUsageNotices(supabase,row.tenant_id,row.session_name,createWhatsAppProvider());
    await runEscalationTimeouts(supabase,createWhatsAppProvider,new Date(now),row.tenant_id);
+   await deliverOwnerSummaryIfDue(supabase,row.tenant_id,row.session_name,createWhatsAppProvider(),new Date(now));
    if(now-(lastPurge.get(row.tenant_id)??0)>=MESSAGE_RETENTION_SWEEP_MS){
     lastPurge.set(row.tenant_id,now);
     try{await purgeExpiredMessages(supabase,row.tenant_id,behavior(settings).message_retention_days,new Date(now));}

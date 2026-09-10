@@ -32,7 +32,9 @@ export interface ClientRow {
   id: string;
   tenant_id: string;
   phone: string;
+  whatsapp_jid?:string;
   name: string | null;
+  language?:string|null;language_overridden?:boolean;auto_reply_allowed?:boolean;
 }
 
 export interface ConversationRow {
@@ -95,14 +97,15 @@ export async function findOrCreateClient(
   tenantId: string,
   phone: string,
   name: string | null,
+  whatsappJid=phone,
 ): Promise<ClientRow> {
   const nowIso = new Date().toISOString();
 
   const { data: existing, error: findError } = await db
     .from("clients")
-    .select("id, tenant_id, phone, name, time_zone")
+    .select("id, tenant_id, phone, whatsapp_jid, name, time_zone,language,language_overridden,auto_reply_allowed")
     .eq("tenant_id", tenantId)
-    .eq("phone", phone)
+    .eq("whatsapp_jid", whatsappJid)
     .maybeSingle();
   if (findError) {
     throw new HttpError(500, "Client lookup failed");
@@ -110,7 +113,7 @@ export async function findOrCreateClient(
 
   if (existing) {
     const patch: Record<string, unknown> = { last_seen_at: nowIso };
-    if (name && !existing.name) {
+    if (name && name !== existing.name) {
       patch.name = name;
     }
     await db.from("clients").update(patch).eq("id", existing.id);
@@ -118,8 +121,10 @@ export async function findOrCreateClient(
       id: existing.id as string,
       tenant_id: existing.tenant_id as string,
       phone: existing.phone as string,
+      whatsapp_jid:existing.whatsapp_jid as string,
       time_zone: existing.time_zone as string | null,
-      name: (name && !existing.name ? name : (existing.name as string | null)) ?? null,
+      name: name ?? (existing.name as string | null) ?? null,
+      language:existing.language as string|null,language_overridden:existing.language_overridden===true,auto_reply_allowed:existing.auto_reply_allowed!==false,
     };
   }
 
@@ -128,11 +133,12 @@ export async function findOrCreateClient(
     .insert({
       tenant_id: tenantId,
       phone,
+      whatsapp_jid:whatsappJid,
       name,
       first_seen_at: nowIso,
       last_seen_at: nowIso,
     })
-    .select("id, tenant_id, phone, name, time_zone")
+    .select("id, tenant_id, phone, whatsapp_jid, name, time_zone,language,language_overridden,auto_reply_allowed")
     .single();
   if (createError || !created) {
     throw new HttpError(500, "Could not create client");

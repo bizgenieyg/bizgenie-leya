@@ -34,6 +34,7 @@ import {
 } from "../services/tenant.service.js";
 import { admitUsage, recordUsageEvent } from "../services/usage.service.js";
 import { enabledAgentNames, routeConversation } from '../services/conversation-routing.service.js';
+import { inferredLanguage,requestsNoAutomaticReplies } from '../services/client-cards.service.js';
 
 /**
  * Process one already-authenticated webhook body for `tenantId`.
@@ -122,8 +123,12 @@ export async function handleWebhookEvent(
     tenantId,
     clientPhone,
     pushName,
+    from,
   );
   const conversation = await findOrCreateConversation(db, tenantId, client.id);
+  const optedOut=requestsNoAutomaticReplies(text);
+  const clientPatch:Record<string,unknown>={};if(!client.language_overridden)clientPatch.language=inferredLanguage(text);if(optedOut){clientPatch.auto_reply_allowed=false;clientPatch.auto_reply_opted_out_at=new Date().toISOString();client.auto_reply_allowed=false;}
+  if(Object.keys(clientPatch).length){const preference=await db.from('clients').update(clientPatch).eq('tenant_id',tenantId).eq('id',client.id);if(preference.error)console.error('client_preferences_update_failed',{tenantId,clientId:client.id});}
 
   const { error: insertError } = await db.from("messages").insert({
     conversation_id: conversation.id,
@@ -143,6 +148,7 @@ export async function handleWebhookEvent(
     });
     return;
   }
+  if(client.auto_reply_allowed===false){if(optedOut)await db.from('conversations').update({bot_paused:true}).eq('tenant_id',tenantId).eq('id',conversation.id);await recordUsageEvent(db,{tenantId,eventType:'message_observed',eventKey:usageKey,metadata:{reason:'client_opt_out',billable:false}});return;}
   const memory=await loadConversationMemory(db,tenantId,conversation.id,behavior(settings).context_message_count,behavior(settings).context_retention_hours);
   const clientReply=(value:string)=>withoutRepeatedIntroduction(value,memory.introduced);
   const markIntroduced=async()=>{if(memory.introduced)return;await db.from('conversations').update({assistant_introduced_at:new Date().toISOString()}).eq('tenant_id',tenantId).eq('id',conversation.id).is('assistant_introduced_at',null);memory.introduced=true;};
