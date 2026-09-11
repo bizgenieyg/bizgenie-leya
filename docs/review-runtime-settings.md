@@ -6,7 +6,7 @@ This change addresses review items 1–10. It does not change incoming filters, 
 
 Migration **026_runtime_behavior_and_agents** supersedes the live functions from 025; already applied historical SQL is not rewritten. Supabase's actual migration history was checked: 024 is recorded as 20260908114713 and 025 as 20260908164604. Regardless of their earlier manual execution, 026 runs after both and reuses both schemas. Exact SQL is in `supabase/migrations/*_026_runtime_behavior_and_agents.sql`.
 
-Apply SQL before restarting the backend. Add `STT_API_KEY` on the VPS (a Gemini API key; same provider account is allowed). Optional `STT_MODEL`, default `gemini-2.5-flash-lite`. Missing key disables recognition with `stt_disabled_missing_key` and a client explanation. No new Vercel secrets: existing server-only `LEIA_API_URL` and `LEIA_ADMIN_API_KEY` remain in use.
+Apply SQL before restarting the backend. Add `STT_API_KEY` on the VPS (a Gemini API key; same provider account is allowed). Optional `STT_MODEL`, default `gemini-2.5-flash-lite`. Missing key disables recognition with `stt_disabled_missing_key` and a client explanation. No new Vercel secrets: new server-only `LEYA_API_URL` and `LEYA_ADMIN_API_KEY` are preferred; deprecated `LEIA_*` aliases remain available during stage 1.
 
 ## Settings and system defaults
 

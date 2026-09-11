@@ -1,4 +1,4 @@
-# CLAUDE.md — Leia Project Instructions
+# CLAUDE.md — Leya Project Instructions
 
 Follow AGENTS.md.
 
@@ -6,7 +6,7 @@ Follow AGENTS.md.
 
 Use relevant project skills:
 
-- leia-architecture-guardian
+- leya-architecture-guardian
 - supabase-rls-migrations
 - waha-whatsapp-provider
 - express-typescript-backend

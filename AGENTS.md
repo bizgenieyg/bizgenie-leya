@@ -1,8 +1,8 @@
-# AGENTS.md — Leia Project Instructions
+# AGENTS.md — Leya Project Instructions
 
 ## Project
 
-Leia is a multi-tenant WhatsApp AI assistant platform for small businesses in Israel.
+Leya is a multi-tenant WhatsApp AI assistant platform for small businesses in Israel.
 
 ## Current phase
 

@@ -6,7 +6,7 @@ import { encryptCredential } from "../utils/crypto.js";
 process.env.SUPABASE_URL = "https://database.invalid";
 process.env.SUPABASE_SERVICE_ROLE_KEY = "test-only";
 process.env.CREDENTIAL_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString("base64");
-process.env.PUBLIC_BASE_URL = "https://leia.example.com";
+process.env.PUBLIC_BASE_URL = "https://leya.example.com";
 process.env.WAHA_URL = "https://waha.invalid";
 
 let forcedTenantReads = 0;

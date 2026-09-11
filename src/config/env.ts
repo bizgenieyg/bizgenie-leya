@@ -1,6 +1,8 @@
 import "dotenv/config";
+import {readLeyaEnvironment} from "./leya-env.js";
 
 const DEFAULT_PORT = 3000;
+const leyaEnvironment=readLeyaEnvironment();
 
 function optionalPort(value: string | undefined): number {
   if (value === undefined || value.trim() === "") {
@@ -25,10 +27,10 @@ export const env = Object.freeze({
   geminiModel: process.env.GEMINI_MODEL,
   supabaseUrl: process.env.SUPABASE_URL,
   supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
-  adminSecret: process.env.ADMIN_SECRET,
+  adminSecret: leyaEnvironment.adminApiKey ?? process.env.ADMIN_SECRET,
   wahaUrl: process.env.WAHA_URL,
   wahaApiKey: process.env.WAHA_API_KEY,
-  publicBaseUrl: process.env.PUBLIC_BASE_URL,
+  publicBaseUrl: leyaEnvironment.apiUrl ?? process.env.PUBLIC_BASE_URL,
   credentialEncryptionKey: process.env.CREDENTIAL_ENCRYPTION_KEY,
 });
 

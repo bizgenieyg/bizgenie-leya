@@ -180,6 +180,12 @@ the Express JSON parser, including Cyrillic and Hebrew payloads.
 
 Deploy in `/var/www/bizgenie-leya`:
 `git pull && npm run build && pm2 restart leia-api --update-env`.
+
+During environment migration the backend accepts `LEYA_API_URL` as the preferred
+public base URL and `LEYA_ADMIN_API_KEY` as the preferred admin secret. Deprecated
+`LEIA_API_URL` and `LEIA_ADMIN_API_KEY` remain stage-1 fallbacks and emit warnings
+without values. Existing `PUBLIC_BASE_URL` and `ADMIN_SECRET` also remain supported
+for the current VPS deployment. If both spellings are present, `LEYA_*` wins.
 **Deployment alone does not update existing WAHA sessions.** Afterwards call
 `POST /api/admin/waha/reconnect?tenantId=<uuid>` with the existing
 `Authorization: Bearer <ADMIN_SECRET>` server credential for each affected tenant.

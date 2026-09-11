@@ -22,7 +22,7 @@ test("WAHA start sends the shared-container session config without exposing its 
   try {
     const provider = new WahaProvider("http://waha.internal/", "container-secret");
     const result = await provider.startSession(
-      sessionConfigForTenant(TENANT_ID, "https://leia.example.com", "test-webhook-secret"),
+      sessionConfigForTenant(TENANT_ID, "https://leya.example.com", "test-webhook-secret"),
     );
 
     assert.equal(capturedUrl, "http://waha.internal/api/sessions");
@@ -74,7 +74,7 @@ test("restart updates webhook config before starting an existing STOPPED session
   };
   try {
     const provider = new WahaProvider("http://waha.internal");
-    assert.equal((await provider.restartSession(sessionConfigForTenant(TENANT_ID, "https://leia.example.com", "webhook-secret"))).status, "SCAN_QR_CODE");
+    assert.equal((await provider.restartSession(sessionConfigForTenant(TENANT_ID, "https://leya.example.com", "webhook-secret"))).status, "SCAN_QR_CODE");
     const base = `http://waha.internal/api/sessions/tenant-${TENANT_ID}`;
     assert.deepEqual(calls, [`POST ${base}/stop`, `PUT ${base}`, `POST ${base}/start`, `GET ${base}`]);
   } finally { globalThis.fetch = originalFetch; }
@@ -89,7 +89,7 @@ test("restart does not delete or recreate when WAHA authorization fails", async 
   };
   try {
     await assert.rejects(new WahaProvider("http://waha.internal").restartSession(
-      sessionConfigForTenant(TENANT_ID, "https://leia.example.com", "secret")
+      sessionConfigForTenant(TENANT_ID, "https://leya.example.com", "secret")
     ), /status 401/);
     assert.equal(methods.includes("DELETE"), false);
   } finally { globalThis.fetch = originalFetch; }

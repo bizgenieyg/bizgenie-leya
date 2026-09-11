@@ -52,14 +52,14 @@ class FakeSessionProvider implements WhatsAppSessionProvider {
 
 test("builds one deterministic shared-container session config per tenant", () => {
   assert.deepEqual(
-    sessionConfigForTenant(TENANT_ID, "https://leia.example.com/", "test-webhook-secret"),
+    sessionConfigForTenant(TENANT_ID, "https://leya.example.com/", "test-webhook-secret"),
     {
       name: `tenant-${TENANT_ID}`,
       config: {
         markOnline: false,
         webhooks: [
           {
-            url: `https://leia.example.com/webhook/${TENANT_ID}`,
+            url: `https://leya.example.com/webhook/${TENANT_ID}`,
             events: ["message", "session.status"],
             customHeaders: [{ name: "X-Webhook-Token", value: "test-webhook-secret" }],
           },
@@ -72,7 +72,7 @@ test("builds one deterministic shared-container session config per tenant", () =
 
 test("reconnect restarts without logout when recovery succeeds", async () => {
   const provider = new FakeSessionProvider();
-  const config = sessionConfigForTenant(TENANT_ID, "https://leia.example.com", "test-webhook-secret");
+  const config = sessionConfigForTenant(TENANT_ID, "https://leya.example.com", "test-webhook-secret");
   await reconnectWahaSession(provider, config);
   assert.deepEqual(provider.calls, [
     `restart:tenant-${TENANT_ID}`,
@@ -93,7 +93,7 @@ for (const status of ["FAILED", "STOPPED"]) {
   test(`reconnect recreates after restart remains ${status}`, async () => {
     const provider = new FakeSessionProvider();
     provider.restartStatus = status;
-    await reconnectWahaSession(provider, sessionConfigForTenant(TENANT_ID, "https://leia.example.com", "secret"));
+    await reconnectWahaSession(provider, sessionConfigForTenant(TENANT_ID, "https://leya.example.com", "secret"));
     assert.deepEqual(provider.calls, ["restart", "logout", "stop", "delete", "start"].map(action => `${action}:tenant-${TENANT_ID}`));
   });
 }

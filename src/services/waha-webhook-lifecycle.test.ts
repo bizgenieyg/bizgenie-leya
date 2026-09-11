@@ -64,7 +64,7 @@ test("create persists the matching encrypted secret before WAHA starts; reconnec
     getSessionStatus: async () => { if (!starts) throw new SessionNotFoundError(); return { status: "FAILED" }; },
     getQrImage: async () => { throw new Error("sensitive upstream 422"); },
   };
-  const service = new WahaAdminService(db, provider, "https://leia.example.com", "http://waha.internal");
+  const service = new WahaAdminService(db, provider, "https://leya.example.com", "http://waha.internal");
   await service.create(tenantId);
   const firstSecret = row?.webhook_secret_encrypted;
   await service.reconnect(tenantId);
