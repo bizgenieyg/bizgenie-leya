@@ -17,6 +17,7 @@ import { objectBody, requiredString } from "../utils/validation.js";
 import { DEFAULT_TIME_ZONE } from '../config/time-zones.js';
 import { deleteClientCard,getClientCard,listClientCards,updateClientCard } from '../services/client-cards.service.js';
 import { buildOwnerSummary } from '../services/owner-summary.service.js';
+import { simulateCustomerMessage } from '../services/simulator.service.js';
 
 const waha = new WahaAdminService();
 
@@ -114,6 +115,7 @@ adminRouter.get('/clients/:id',async(request,response)=>{response.setHeader('Cac
 adminRouter.patch('/clients/:id',async(request,response)=>response.json(await updateClientCard(supabase,queryTenantId(request.query.tenantId),String(request.params.id),objectBody(request.body))));
 adminRouter.delete('/clients/:id',async(request,response)=>{await deleteClientCard(supabase,queryTenantId(request.query.tenantId),String(request.params.id),request.query.permanent==='true');response.status(204).send();});
 adminRouter.get('/owner-summary',async(request,response)=>{const tenantId=queryTenantId(request.query.tenantId),to=request.query.to?new Date(String(request.query.to)):new Date(),from=request.query.from?new Date(String(request.query.from)):new Date(to.getTime()-7*86400000);if(!Number.isFinite(from.getTime())||!Number.isFinite(to.getTime())||from>=to||to.getTime()-from.getTime()>366*86400000)throw new HttpError(400,'Invalid summary period');response.setHeader('Cache-Control','no-store');response.json(await buildOwnerSummary(supabase,tenantId,from,to));});
+adminRouter.post('/simulator',async(request,response)=>{const tenantId=queryTenantId(request.query.tenantId),text=requiredString(objectBody(request.body),'text').trim();if(!text||text.length>2000)throw new HttpError(400,'Message must contain 1 to 2000 characters');response.setHeader('Cache-Control','no-store');response.json(await simulateCustomerMessage(supabase,tenantId,text));});
 // This endpoint is reachable only with ADMIN_SECRET (requireAdmin). There is no separate
 // operator credential, so a `?scope=operator` flag would be security theatre — anyone
 // holding ADMIN_SECRET could add it. The real tenant-facing boundary is the Next.js proxy,
