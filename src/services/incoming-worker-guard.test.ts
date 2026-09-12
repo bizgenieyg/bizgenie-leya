@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { DatabaseClient } from "../db/supabase.js";
+// Deliberately kept on a hand-rolled DatabaseClient mock, not PGlite (see review that
+// moved context.service/conversation-routing/owner-workflow/webhook-worker/
+// message-retention to PGlite): these tests exercise the incoming-filter guard branches
+// and never touch real table schema/types/constraints in the paths under test, so a mock
+// carries no schema-drift risk here. Do not convert without a concrete reason.
 process.env.SUPABASE_URL = "https://database.invalid";
 process.env.SUPABASE_SERVICE_ROLE_KEY = "test-only";
 process.env.WHATSAPP_ALLOWLIST_ENABLED = "true";

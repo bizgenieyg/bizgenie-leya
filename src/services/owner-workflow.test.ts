@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import type { PGlite } from '@electric-sql/pglite';
 import type { DatabaseClient } from '../db/supabase.js';
 import type { WhatsAppProvider } from '../providers/whatsapp/whatsapp-provider.interface.js';
 import { conversationPaused, createEscalation, handleOwnerMessage, runDueScheduledEscalations } from './owner-workflow.service.js';
@@ -8,255 +10,385 @@ import { saveOwnerSettings, type OwnerSettings } from './owner-settings.service.
 import { isWithinQuietHours, nextQuietHoursEnd } from './escalation.service.js';
 import { observeOwnerOutgoing } from './outgoing-owner.service.js';
 import { clientText, isDeferredAnswer, replyId } from '../utils/assistant-text.js';
-process.env.SUPABASE_URL='https://database.invalid';
-process.env.SUPABASE_SERVICE_ROLE_KEY='test-only';
-process.env.GEMINI_API_KEY='';
-const tenant='123e4567-e89b-42d3-a456-426614174000';
-const owner='972500000002@c.us';
-const customer='261885798707406@lid';
-const defaults:OwnerSettings={owner_phone:'972500000002',owner_chat_id:owner,mode:'mute_all',time_zone:'Asia/Jerusalem',quiet_hours_start:null,quiet_hours_end:null,auto_replies_paused:false};
-// Fluent in-memory PostgREST double, including conditional claims and tenant predicates.
-function harness() {
- let quotaAllowed=true;let admitted=0;
-  type Row=Record<string,any>;
-  const tables:Record<string,Row[]>={notification_settings:[{tenant_id:tenant,...defaults}],conversations:[{id:'conversation',tenant_id:tenant,client_id:'client',status:'active',bot_paused:false}],escalations:[],unrecognized_routes:[],scheduled_jobs:[],knowledge_items:[],
-    tenants:[{id:tenant,name:'Business',phone:null,status:'active',language:'ru'}],whatsapp_instances:[{tenant_id:tenant,session_name:'session'}],clients:[{id:'client',tenant_id:tenant,phone:customer,whatsapp_jid:customer,name:'Клиент'}],assistant_profiles:[]};
-  const db={from(table:string){
-    const filters:((r:Row)=>boolean)[]=[];let action='read',values:Row|undefined;let single=false;let ran=false;let result:any;
-    const q:any={select(){return q;},eq(k:string,v:unknown){filters.push(r=>r[k]===v);return q;},is(k:string,v:unknown){filters.push(r=>r[k]===v||r[k]===undefined&&v===null);return q;},in(k:string,v:unknown[]){filters.push(r=>v.includes(r[k]));return q;},contains(k:string,v:any){filters.push(r=>Array.isArray(v)?v.every((x:string)=>r[k]?.includes(x)):Object.entries(v).every(([x,y])=>r[k]?.[x]===y));return q;},lte(k:string,v:string){filters.push(r=>r[k]<=v);return q;},lt(k:string,v:string){filters.push(r=>r[k]<v);return q;},gte(k:string,v:string){filters.push(r=>r[k]>=v);return q;},not(){return q;},order(){return q;},limit(){return q;},
-      update(v:Row){action='update';values=v;return q;},insert(v:Row){action='insert';values=v;return q;},upsert(v:Row){action='upsert';values=v;return q;},
-      delete(){action='delete';return q;},
-      maybeSingle(){single=true;return q;},single(){single=true;return q;},then(resolve:any,reject:any){try{if(!ran){ran=true;const rows=tables[table]??(tables[table]=[]);let found=rows.filter(r=>filters.every(f=>f(r)));
-        if(action==='insert'){const row={id:`row-${rows.length}`,status:'queued',owner_message_ids:[],learning_message_ids:[],learning_state:'none',...values};rows.push(row);found=[row];}
-        if(action==='update')found.forEach(r=>Object.assign(r,values));
-        if(action==='delete')for(const row of found){const i=rows.indexOf(row);if(i>=0)rows.splice(i,1);}
-        if(action==='upsert'){let row=rows.find(r=>r.tenant_id===values?.tenant_id);if(row)Object.assign(row,values);else{row={...values};rows.push(row);}found=[row];}
-        result={data:single?(found[0]??null):found.map(r=>({...r})),error:null};}
-        return Promise.resolve(result).then(resolve,reject);
-      }catch(e){return Promise.reject(e).then(resolve,reject);}}
-    };return q;
-  },async rpc(_name:string,args:Row){if(_name==='admit_tenant_usage'){if(quotaAllowed)admitted++;return {data:{allowed:quotaAllowed,duplicate:false},error:null};}const e=tables.escalations!.find(r=>r.tenant_id===args.p_tenant_id&&r.id===args.p_escalation_id)!;if(e.status!=='delivered')return {error:{}};
-    if(!e.knowledge_item_id){tables.knowledge_items!.push({tenant_id:tenant,question:e.question,answer:e.answer});e.knowledge_item_id='knowledge';e.learning_state='saved';}return {data:'knowledge',error:null};}} as unknown as DatabaseClient;
-  const sent:{chatId:string;text:string;id:string;replyTo?:string}[]=[];
-  let failClient=false;
-  const provider:WhatsAppProvider={async getSessionStatus(){return{status:'WORKING',me:{id:'972500000009@c.us',lid:'99999999@lid'}};},async sendMessage(input){if(failClient&&input.chatId===customer)throw new Error('network');const id=`true_${input.chatId}_MSG${sent.length}`;sent.push({...input,id});return{id};}};
-  return {db,tables,sent,provider,admissions:()=>admitted,deny:()=>{quotaAllowed=false;},fail:()=>{failClient=true;}};
+import { createTestDatabase, pgliteDatabaseClient } from './test-support/pglite-harness.js';
+
+// Converted to PGlite (real migrations, real Postgres types/constraints/RPCs) per review.
+// The previous hand-rolled in-memory mock accepted plain strings ('conversation', 'e',
+// 'other-tenant') as ids on columns that are `uuid` in the real schema, ran its own
+// simplified re-implementation of `admit_tenant_usage`/`confirm_escalation_learning`
+// instead of the real SQL functions, and never enforced the escalations CHECK
+// constraints or the compound (conversation_id, tenant_id) foreign key. Running the
+// same service code against a real Postgres schema is what would have caught the
+// simulator's non-UUID id (see simulator.service.ts git history) — this file guards
+// the escalation/owner-reply/timeout paths against the same class of gap.
+process.env.SUPABASE_URL = 'https://database.invalid';
+process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-only';
+process.env.GEMINI_API_KEY = '';
+
+const owner = '972500000002@c.us';
+const customer = '261885798707406@lid';
+const defaultsFor = (tenant: string): OwnerSettings => ({ owner_phone: '972500000002', owner_chat_id: owner, mode: 'mute_all', time_zone: 'Asia/Jerusalem', quiet_hours_start: null, quiet_hours_end: null, auto_replies_paused: false });
+
+async function pgHarness() {
+  const pg: PGlite = await createTestDatabase();
+  const db = pgliteDatabaseClient(pg);
+  const tenant = (await db.from('tenants').insert({ name: 'Business', business_name: 'Business', phone: '972500000001', language: 'ru', tier: 'basic', status: 'active' }).select('id').single()).data as { id: string };
+  const tenantId = tenant.id;
+  await pg.query('insert into notification_settings(tenant_id,owner_phone,owner_chat_id,mode,time_zone,auto_replies_paused) values($1,$2,$3,$4,$5,false)', [tenantId, '972500000002', owner, 'mute_all', 'Asia/Jerusalem']);
+  await pg.query("insert into plans(code,display_name,messages_per_month,voice_minutes_per_month,warning_percent,unlimited) values('basic','Базовый',500,60,80,false) on conflict(code) do nothing");
+  await pg.query('insert into tenant_usage_limits(tenant_id,plan,messages_per_month,voice_minutes_per_month,warning_percent,messages_overridden,voice_overridden,warning_overridden) values($1,\'basic\',500,60,80,false,false,false)', [tenantId]);
+  const clientRow = (await db.from('clients').insert({ tenant_id: tenantId, phone: customer, whatsapp_jid: customer, name: 'Клиент' }).select('id').single()).data as { id: string };
+  const conversation = (await db.from('conversations').insert({ tenant_id: tenantId, client_id: clientRow.id, status: 'active', bot_paused: false }).select('id').single()).data as { id: string };
+
+  const sent: { chatId: string; text: string; id: string; replyTo?: string }[] = [];
+  let failClient = false;
+  const provider: WhatsAppProvider = {
+    async getSessionStatus() { return { status: 'WORKING', me: { id: '972500000009@c.us', lid: '99999999@lid' } }; },
+    async sendMessage(input) {
+      if (failClient && input.chatId === customer) throw new Error('network');
+      const id = `true_${input.chatId}_MSG${sent.length}`;
+      sent.push({ ...input, id });
+      return { id };
+    },
+  };
+
+  const admissionCount = async () => Number((await pg.query<{ count: string }>("select count(*)::text as count from usage_events where tenant_id=$1 and event_type='message_received'", [tenantId])).rows[0]!.count);
+  const settings = defaultsFor(tenantId);
+  return {
+    pg, db, tenant: tenantId, conversationId: conversation.id, clientId: clientRow.id, provider, sent, settings,
+    admissions: admissionCount,
+    deny: async () => { await pg.query("update tenant_usage_limits set messages_per_month=0,messages_overridden=true where tenant_id=$1", [tenantId]); },
+    fail: () => { failClient = true; },
+    escalation: async (id: string) => (await pg.query('select * from escalations where id=$1', [id])).rows[0] as Record<string, unknown> & { id: string; status: string; owner_message_ids: string[]; learning_message_ids: string[]; learning_state: string; client_message_id: string | null },
+    conversation: async () => (await pg.query('select * from conversations where id=$1', [conversation.id])).rows[0] as Record<string, unknown> & { bot_paused: boolean; owner_last_activity_at: string | null; assistant_introduced_at: string | null },
+    notificationSettings: async () => (await pg.query('select * from notification_settings where tenant_id=$1', [tenantId])).rows[0] as Record<string, unknown> & { auto_replies_paused: boolean },
+    knowledgeCount: async () => Number((await pg.query<{ count: string }>('select count(*)::text as count from knowledge_items where tenant_id=$1', [tenantId])).rows[0]!.count),
+  };
 }
-const input={tenant_id:tenant,conversation_id:'conversation',client_chat_id:customer,client_name:'Тестовый клиент',question:'Можно завтра?',session:'session',inbound_id:'incoming'};
+async function seedEscalation(h: Awaited<ReturnType<typeof pgHarness>>, overrides: Partial<{ question: string; created_at: string }> = {}) {
+  const row = (await h.db.from('escalations').insert({
+    tenant_id: h.tenant, conversation_id: h.conversationId, client_chat_id: customer, client_name: 'Тестовый клиент',
+    question: overrides.question ?? 'Можно завтра?', session: 'session', inbound_id: 'incoming', ...overrides,
+  }).select('id').single()).data as { id: string };
+  return row.id;
+}
 
-test('owner reply: short GOWS ID, delivery before closure, quoted confirmation only and tenant isolation',async()=>{
-  const h=harness();await createEscalation(h.db,h.provider,input,defaults);
-  assert.equal(h.sent.length,2);assert.match(h.sent[0]!.text,/ассистент владельца/);assert.equal(h.sent[1]!.chatId,owner);
-  const e=h.tables.escalations![0]!;assert.equal(e.status,'pending');
-  assert.match(h.sent[1]!.text,/Тестовый клиент/);
-  await handleOwnerMessage(h.db,h.provider,'other-tenant','session',owner,'Ответ',replyId(h.sent[1]!.id),defaults);
-  assert.equal(e.status,'pending');assert.equal(h.sent.length,2);
-  await handleOwnerMessage(h.db,h.provider,tenant,'session',owner,'Завтра отвечу',e.owner_message_ids[0],defaults);
-  assert.equal(e.status,'pending');assert.equal(h.tables.knowledge_items!.length,0);
-  await handleOwnerMessage(h.db,h.provider,tenant,'session',owner,'Да, можно',e.owner_message_ids[0],defaults);
-  assert.equal(e.status,'delivered');assert.ok(e.client_message_id);assert.equal(h.sent.at(-2)!.chatId,customer);
-  assert.equal(h.sent.at(-2)!.replyTo,undefined);
-  assert.match(h.sent.at(-2)!.text,/Передаю ответ владельца/);assert.equal(h.tables.knowledge_items!.length,0);
-  const prompt=e.learning_message_ids[0];
-  assert.equal(await handleOwnerMessage(h.db,h.provider,tenant,'session',customer,'Да',prompt,defaults),false);
-  assert.equal(h.tables.knowledge_items!.length,0);
-  await handleOwnerMessage(h.db,h.provider,tenant,'session',owner,'Да',prompt,defaults);
-  await handleOwnerMessage(h.db,h.provider,tenant,'session',owner,'Да',prompt,defaults);
-  assert.equal(h.tables.knowledge_items!.length,1);assert.equal(e.learning_state,'saved');
-});
-test('failed client delivery leaves escalation open and never offers learning',async()=>{
-  const h=harness();await createEscalation(h.db,h.provider,input,defaults);h.fail();
-  const e=h.tables.escalations![0]!;
-  await handleOwnerMessage(h.db,h.provider,tenant,'session',owner,'Ответ',e.owner_message_ids[0],defaults);
-  assert.equal(e.status,'delivery_uncertain');assert.equal(e.learning_state,'none');assert.equal(h.tables.knowledge_items!.length,0);
-});
-test('createEscalation with an all-day-off schedule promises a callback and escalates now',async()=>{
-  const h=harness();
-  const closed={...defaults,behavior:{weekly_schedule:Object.fromEntries(Array.from({length:7},(_,i)=>[String(i),{mode:'day_off'}]))}};
-  const before=Date.now();
-  await createEscalation(h.db,h.provider,input,closed);
-  assert.equal(h.sent.length,2);
-  assert.match(h.sent[0]!.text,/свяжется с вами/);
-  assert.doesNotMatch(h.sent[0]!.text,/\d{1,2}:\d{2}/);
-  assert.equal(h.sent[1]!.chatId,owner);
-  const job=h.tables.scheduled_jobs![0]!;
-  assert.ok(new Date(job.scheduled_at).getTime()-before<5*60*1000);
-});
-test('takeover, tenant pause and explicit resume remain separate',async()=>{
-  const h=harness();await createEscalation(h.db,h.provider,input,defaults);const e=h.tables.escalations![0]!;
-  await handleOwnerMessage(h.db,h.provider,tenant,'session',owner,'Беру на себя',e.owner_message_ids[0],defaults);
-  assert.equal(h.tables.conversations![0]!.bot_paused,true);
-  await handleOwnerMessage(h.db,h.provider,tenant,'session',owner,'Ответ',e.owner_message_ids[0],defaults);assert.equal(e.status,'pending');
-  await handleOwnerMessage(h.db,h.provider,tenant,'session',owner,'Пауза всё',null,defaults);
-  assert.equal(h.tables.notification_settings![0]!.auto_replies_paused,true);
-  await handleOwnerMessage(h.db,h.provider,tenant,'session',owner,'Продолжить всё',null,defaults);
-  assert.equal(h.tables.conversations![0]!.bot_paused,true);
-  await handleOwnerMessage(h.db,h.provider,tenant,'session',owner,'Продолжить',e.owner_message_ids[0],defaults);
-  assert.equal(h.tables.conversations![0]!.bot_paused,false);
-});
-test('manual fromMe send pauses dialogue and closes pending escalation; API send is ignored',async()=>{
- const h=harness();h.tables.escalations!.push({id:'e',...input,status:'queued',created_at:'2026-09-08T10:00:00Z'});
- const body={event:'message',payload:{id:'manual-1',from:'972500000009@c.us',to:customer,fromMe:true,source:'app',body:'Ответ владельца',_data:{Info:{IsFromMe:true,Chat:customer}}}};
- assert.equal(await observeOwnerOutgoing(h.db,tenant,body,new Date('2026-09-08T20:00:00Z')),true);
- assert.equal(h.tables.conversations![0]!.bot_paused,true);assert.equal(h.tables.escalations![0]!.status,'resolved_by_owner');
- assert.equal(await observeOwnerOutgoing(h.db,tenant,{...body,payload:{...body.payload,id:'api-1',source:'api'}},new Date()),false);
-});
-test('automatic resume is disabled by default and enabled after configured inactivity',async()=>{
- const h=harness(),row=h.tables.conversations![0]!;row.bot_paused=true;row.owner_last_activity_at='2026-09-08T10:00:00Z';
- assert.equal(await conversationPaused(h.db,tenant,row.id,defaults,new Date('2026-09-09T10:00:00Z')),true);
- assert.equal(await conversationPaused(h.db,tenant,row.id,{...defaults,behavior:{auto_resume_hours:12}},new Date('2026-09-09T10:00:00Z')),false);assert.equal(row.bot_paused,false);
-});
-test('quiet queue uses Jerusalem time, delivers each once across concurrent schedulers',async()=>{
-  const h=harness();const night={...defaults,quiet_hours_start:'20:00',quiet_hours_end:'09:00'};
-  assert.equal(isWithinQuietHours(night,new Date('2026-09-08T18:00:00Z')),true);
-  assert.equal(nextQuietHoursEnd(night,new Date('2026-09-08T18:00:00Z'))!.toISOString(),'2026-09-09T06:00:00.000Z');
-  assert.equal(nextQuietHoursEnd(night,new Date('2026-10-24T18:00:00Z'))!.toISOString(),'2026-10-25T07:00:00.000Z');
-  h.tables.notification_settings![0]={tenant_id:tenant,...night};
-  h.tables.escalations!.push({id:'e',...input,status:'queued',owner_message_ids:[],learning_state:'none'});
-  h.tables.scheduled_jobs!.push({id:'j',tenant_id:tenant,job_type:'owner_escalation',payload:{escalation_id:'e'},status:'pending',scheduled_at:'2026-09-08T00:00:00Z'});
-  await runDueScheduledEscalations(h.db,()=>h.provider,new Date('2026-09-08T18:00:00Z'));assert.equal(h.sent.length,0);
-  await Promise.all([runDueScheduledEscalations(h.db,()=>h.provider,new Date('2026-09-09T06:00:00Z')),runDueScheduledEscalations(h.db,()=>h.provider,new Date('2026-09-09T06:00:00Z'))]);
-  assert.equal(h.sent.length,1);assert.equal(h.tables.escalations![0]!.status,'pending');
-});
-test('due escalation is cancelled after owner activity and expires after maximum age',async()=>{
- for(const kind of ['owner','expired']){const h=harness(),created='2026-09-08T00:00:00Z';h.tables.notification_settings![0]!.behavior={deferred_max_age_hours:12};h.tables.conversations![0]!.owner_last_activity_at=kind==='owner'?'2026-09-08T01:00:00Z':null;
-  h.tables.escalations!.push({id:'e',...input,status:'queued',created_at:created,owner_message_ids:[],learning_state:'none'});h.tables.scheduled_jobs!.push({id:'j',tenant_id:tenant,job_type:'owner_escalation',payload:{escalation_id:'e'},status:'pending',scheduled_at:created});
-  await runDueScheduledEscalations(h.db,()=>h.provider,new Date('2026-09-08T13:00:00Z'));assert.equal(h.sent.length,0);assert.equal(h.tables.escalations![0]!.status,kind==='owner'?'resolved_by_owner':'expired');
- }
-});
-test('owner phone must differ from session; one-time code binds LID and never guesses digits',async()=>{
-  const h=harness();
-  await assert.rejects(saveOwnerSettings(h.db,tenant,{phone:'972500000009'},{id:'972500000009@c.us'}),/отличаться/);
-  const result=await saveOwnerSettings(h.db,tenant,{phone:'972500000002',timeZone:'Asia/Jerusalem'},{id:'972500000009@c.us'});
-  const settings=h.tables.notification_settings![0] as OwnerSettings;
-  await handleOwnerMessage(h.db,h.provider,tenant,'session','88888888@lid',result.pairingCommand,null,settings);
-  assert.equal(settings.owner_chat_id,'88888888@lid');assert.equal(settings.owner_pairing_hash,null);
-  await handleOwnerMessage(h.db,h.provider,tenant,'session','77777777@lid',result.pairingCommand,null,settings);
-  assert.equal(settings.owner_chat_id,'88888888@lid');
-});
-test('complete real GOWS client and owner reply payloads traverse worker filters through delivery',async()=>{
-  const {handleWebhookEvent}=await import('../workers/webhook.worker.js');const h=harness();
-  const body=JSON.parse(readFileSync('src/services/fixtures/gows-incoming-lid.json','utf8'));
-  body.payload.from=customer;body.payload._data.Info.Chat=customer;body.payload.body='Неизвестный вопрос';
-  await handleWebhookEvent(tenant,body,h.db,h.provider,null);
-  await handleWebhookEvent(tenant,body,h.db,h.provider,null);
-  const e=h.tables.escalations![0]!;assert.equal(e.status,'pending');assert.equal(e.client_name,body.payload._data.Info.PushName);
-  h.tables.notification_settings![0]!.owner_chat_id='88888888@lid';
-  const reply=structuredClone(body);reply.payload.from='88888888@lid';reply.payload._data.Info.Chat=reply.payload.from;reply.payload.body='Ответ владельца';reply.payload.replyTo={id:e.owner_message_ids[0]};
-  await handleWebhookEvent(tenant,reply,h.db,h.provider,null);assert.equal(e.status,'delivered');
-  h.tables.notification_settings![0]!.auto_replies_paused=true;const count=h.sent.length;
-  await handleWebhookEvent(tenant,body,h.db,h.provider,{async generateReply(){throw new Error('must not call AI');}});assert.equal(h.sent.length,count);
-});
-test('observeOwnerOutgoing guard #1 is idempotent on a re-delivered waha_msg_id',async()=>{
- const h=harness();h.tables.escalations!.push({id:'e',...input,status:'queued',created_at:'2026-09-08T10:00:00Z'});
- const body={event:'message',payload:{id:'manual-7',from:'972500000009@c.us',to:customer,fromMe:true,source:'app',body:'Ответ владельца',_data:{Info:{IsFromMe:true,Chat:customer}}}};
- assert.equal(await observeOwnerOutgoing(h.db,tenant,body,new Date('2026-09-08T20:00:00Z')),true);
- const rows=h.tables.messages!.length;
- h.tables.conversations![0]!.bot_paused=false;
- assert.equal(await observeOwnerOutgoing(h.db,tenant,body,new Date('2026-09-08T20:05:00Z')),false);
- assert.equal(h.tables.messages!.length,rows,'no duplicate stored message');
- assert.equal(h.tables.conversations![0]!.bot_paused,false,'no repeated pause/close side effects');
+test('owner reply: short GOWS ID, delivery before closure, quoted confirmation only and tenant isolation', async () => {
+  const h = await pgHarness();
+  const input = { tenant_id: h.tenant, conversation_id: h.conversationId, client_chat_id: customer, client_name: 'Тестовый клиент', question: 'Можно завтра?', session: 'session', inbound_id: 'incoming' };
+  await createEscalation(h.db, h.provider, input, h.settings);
+  assert.equal(h.sent.length, 2); assert.match(h.sent[0]!.text, /ассистент владельца/); assert.equal(h.sent[1]!.chatId, owner);
+  let e = await h.escalation((await h.pg.query<{ id: string }>('select id from escalations limit 1')).rows[0]!.id);
+  assert.equal(e.status, 'pending');
+  assert.match(h.sent[1]!.text, /Тестовый клиент/);
+
+  await handleOwnerMessage(h.db, h.provider, randomUUID(), 'session', owner, 'Ответ', replyId(h.sent[1]!.id), h.settings);
+  e = await h.escalation(e.id); assert.equal(e.status, 'pending'); assert.equal(h.sent.length, 2);
+
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'Завтра отвечу', e.owner_message_ids[0]!, h.settings);
+  e = await h.escalation(e.id); assert.equal(e.status, 'pending'); assert.equal(await h.knowledgeCount(), 0);
+
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'Да, можно', e.owner_message_ids[0]!, h.settings);
+  e = await h.escalation(e.id); assert.equal(e.status, 'delivered'); assert.ok(e.client_message_id);
+  assert.equal(h.sent.at(-2)!.chatId, customer); assert.equal(h.sent.at(-2)!.replyTo, undefined);
+  assert.match(h.sent.at(-2)!.text, /Передаю ответ владельца/); assert.equal(await h.knowledgeCount(), 0);
+
+  const prompt = e.learning_message_ids[0]!;
+  assert.equal(await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', customer, 'Да', prompt, h.settings), false);
+  assert.equal(await h.knowledgeCount(), 0);
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'Да', prompt, h.settings);
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'Да', prompt, h.settings);
+  assert.equal(await h.knowledgeCount(), 1);
+  e = await h.escalation(e.id); assert.equal(e.learning_state, 'saved');
 });
 
-test('returning contact with assistant_introduced_at gets no repeated greeting',async()=>{
- const {handleWebhookEvent}=await import('../workers/webhook.worker.js');
- const intro='Я ассистент владельца. Открыто с 9 до 18.';
- const ai={async generateReply(i:{systemPrompt:string}){return{text:i.systemPrompt.includes('классификатор намерений')?'{"agent":"SALE","confidence":0.9}':intro};}};
- const run=async(introduced:boolean)=>{
-  const h=harness();
-  h.tables.knowledge_items!.push({tenant_id:tenant,type:'faq',question:'Есть ли доставка в Хайфу?',answer:'Да, доставка есть.',active:true});
-  h.tables.conversations![0]!.assistant_introduced_at=introduced?'2026-09-01T00:00:00Z':null;
-  const body={event:'message',payload:{from:customer,fromMe:false,hasMedia:false,body:'Сколько стоит доставка?',author:null,replyTo:null,_data:{Info:{Chat:customer,PushName:'Клиент'}}}};
-  await handleWebhookEvent(tenant,body,h.db,h.provider,ai);
-  return h.sent.at(-1)?.text;
- };
- assert.equal(await run(true),'Открыто с 9 до 18.');
- assert.equal(await run(false),intro);
+test('failed client delivery leaves escalation open and never offers learning', async () => {
+  const h = await pgHarness();
+  const input = { tenant_id: h.tenant, conversation_id: h.conversationId, client_chat_id: customer, client_name: 'Тестовый клиент', question: 'Можно завтра?', session: 'session', inbound_id: 'incoming' };
+  await createEscalation(h.db, h.provider, input, h.settings); h.fail();
+  let e = await h.escalation((await h.pg.query<{ id: string }>('select id from escalations limit 1')).rows[0]!.id);
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'Ответ', e.owner_message_ids[0]!, h.settings);
+  e = await h.escalation(e.id);
+  assert.equal(e.status, 'delivery_uncertain'); assert.equal(e.learning_state, 'none'); assert.equal(await h.knowledgeCount(), 0);
 });
 
-test('assistant formatting strips placeholders and defer detection does not reject substantive tomorrow answer',()=>{
-  assert.equal(clientText('Ответ <имя> без > скобок'),'Ответ  без  скобок');
-  assert.equal(isDeferredAnswer('Завтра доставка с 9 до 18'),false);
-  assert.equal(isDeferredAnswer('позже'),true);
+test('createEscalation with an all-day-off schedule promises a callback and escalates now', async () => {
+  const h = await pgHarness();
+  const input = { tenant_id: h.tenant, conversation_id: h.conversationId, client_chat_id: customer, client_name: 'Тестовый клиент', question: 'Можно завтра?', session: 'session', inbound_id: 'incoming' };
+  const closed = { ...h.settings, behavior: { weekly_schedule: Object.fromEntries(Array.from({ length: 7 }, (_, i) => [String(i), { mode: 'day_off' }])) } };
+  const before = Date.now();
+  await createEscalation(h.db, h.provider, input, closed);
+  assert.equal(h.sent.length, 2);
+  assert.match(h.sent[0]!.text, /свяжется с вами/);
+  assert.doesNotMatch(h.sent[0]!.text, /\d{1,2}:\d{2}/);
+  assert.equal(h.sent[1]!.chatId, owner);
+  const job = (await h.pg.query<{ scheduled_at: string }>('select scheduled_at from scheduled_jobs limit 1')).rows[0]!;
+  assert.ok(new Date(job.scheduled_at).getTime() - before < 5 * 60 * 1000);
 });
 
-test('owner can pause any dialogue without an escalation; foreign dialogue cannot be changed',async()=>{
-  const h=harness();const id='30000000-0000-4000-8000-000000000001';h.tables.conversations![0]!.id=id;
-  await handleOwnerMessage(h.db,h.provider,tenant,'session',owner,`Беру на себя ${id}`,null,defaults);
-  assert.equal(h.tables.conversations![0]!.bot_paused,true);
-  await handleOwnerMessage(h.db,h.provider,'another-tenant','session',owner,`Продолжить диалог ${id}`,null,defaults);
-  assert.equal(h.tables.conversations![0]!.bot_paused,true);
-  await handleOwnerMessage(h.db,h.provider,tenant,'session',owner,`Продолжить диалог ${id}`,null,defaults);
-  assert.equal(h.tables.conversations![0]!.bot_paused,false);
+test('takeover, tenant pause and explicit resume remain separate', async () => {
+  const h = await pgHarness();
+  const input = { tenant_id: h.tenant, conversation_id: h.conversationId, client_chat_id: customer, client_name: 'Тестовый клиент', question: 'Можно завтра?', session: 'session', inbound_id: 'incoming' };
+  await createEscalation(h.db, h.provider, input, h.settings);
+  let e = await h.escalation((await h.pg.query<{ id: string }>('select id from escalations limit 1')).rows[0]!.id);
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'Беру на себя', e.owner_message_ids[0]!, h.settings);
+  assert.equal((await h.conversation()).bot_paused, true);
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'Ответ', e.owner_message_ids[0]!, h.settings);
+  e = await h.escalation(e.id); assert.equal(e.status, 'pending');
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'Пауза всё', null, h.settings);
+  assert.equal((await h.notificationSettings()).auto_replies_paused, true);
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'Продолжить всё', null, h.settings);
+  assert.equal((await h.conversation()).bot_paused, true);
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'Продолжить', e.owner_message_ids[0]!, h.settings);
+  assert.equal((await h.conversation()).bot_paused, false);
 });
 
-test('owner timezone changes quiet hours and client time converts across calendar days',async()=>{
-  const {waitingText}=await import('../utils/assistant-text.js');
-  const {clientTimeZoneCommand}=await import('../utils/time-zone.js');
-  const settings={...defaults,time_zone:'America/New_York',quiet_hours_start:'20:00',quiet_hours_end:'09:00'};
-  const now=new Date('2026-09-09T02:00:00Z');
-  assert.equal(isWithinQuietHours(settings,now),true);
-  const end=nextQuietHoursEnd(settings,now);
+test('manual fromMe send pauses dialogue and closes pending escalation; API send is ignored', async () => {
+  const h = await pgHarness();
+  await seedEscalation(h, { created_at: '2026-09-08T10:00:00Z' });
+  const body = { event: 'message', payload: { id: 'manual-1', from: '972500000009@c.us', to: customer, fromMe: true, source: 'app', body: 'Ответ владельца', _data: { Info: { IsFromMe: true, Chat: customer } } } };
+  assert.equal(await observeOwnerOutgoing(h.db, h.tenant, body, new Date('2026-09-08T20:00:00Z')), true);
+  assert.equal((await h.conversation()).bot_paused, true);
+  const e = await h.pg.query<{ status: string }>('select status from escalations limit 1');
+  assert.equal(e.rows[0]!.status, 'resolved_by_owner');
+  assert.equal(await observeOwnerOutgoing(h.db, h.tenant, { ...body, payload: { ...body.payload, id: 'api-1', source: 'api' } }, new Date()), false);
+});
+
+test('automatic resume is disabled by default and enabled after configured inactivity', async () => {
+  const h = await pgHarness();
+  await h.pg.query("update conversations set bot_paused=true,owner_last_activity_at='2026-09-08T10:00:00Z' where id=$1", [h.conversationId]);
+  assert.equal(await conversationPaused(h.db, h.tenant, h.conversationId, h.settings, new Date('2026-09-09T10:00:00Z')), true);
+  assert.equal(await conversationPaused(h.db, h.tenant, h.conversationId, { ...h.settings, behavior: { auto_resume_hours: 12 } }, new Date('2026-09-09T10:00:00Z')), false);
+  assert.equal((await h.conversation()).bot_paused, false);
+});
+
+test('quiet queue uses Jerusalem time, delivers each once across concurrent schedulers', async () => {
+  const h = await pgHarness();
+  const night = { ...h.settings, quiet_hours_start: '20:00', quiet_hours_end: '09:00' };
+  assert.equal(isWithinQuietHours(night, new Date('2026-09-08T18:00:00Z')), true);
+  assert.equal(nextQuietHoursEnd(night, new Date('2026-09-08T18:00:00Z'))!.toISOString(), '2026-09-09T06:00:00.000Z');
+  assert.equal(nextQuietHoursEnd(night, new Date('2026-10-24T18:00:00Z'))!.toISOString(), '2026-10-25T07:00:00.000Z');
+  await h.pg.query('update notification_settings set quiet_hours_start=$2,quiet_hours_end=$3 where tenant_id=$1', [h.tenant, '20:00:00', '09:00:00']);
+  const escalationId = await seedEscalation(h);
+  await h.pg.query("update escalations set status='queued' where id=$1", [escalationId]);
+  await h.pg.query("insert into scheduled_jobs(tenant_id,job_type,payload,status,scheduled_at) values($1,'owner_escalation',$2,'pending','2026-09-08T00:00:00Z')", [h.tenant, JSON.stringify({ escalation_id: escalationId })]);
+  await runDueScheduledEscalations(h.db, () => h.provider, new Date('2026-09-08T18:00:00Z'));
+  assert.equal(h.sent.length, 0);
+  await Promise.all([runDueScheduledEscalations(h.db, () => h.provider, new Date('2026-09-09T06:00:00Z')), runDueScheduledEscalations(h.db, () => h.provider, new Date('2026-09-09T06:00:00Z'))]);
+  assert.equal(h.sent.length, 1);
+  assert.equal((await h.escalation(escalationId)).status, 'pending');
+});
+
+test('due escalation is cancelled after owner activity and expires after maximum age', async () => {
+  for (const kind of ['owner', 'expired']) {
+    const h = await pgHarness();
+    const created = '2026-09-08T00:00:00Z';
+    await h.pg.query("update notification_settings set behavior=$2 where tenant_id=$1", [h.tenant, JSON.stringify({ deferred_max_age_hours: 12 })]);
+    if (kind === 'owner') await h.pg.query('update conversations set owner_last_activity_at=$2 where id=$1', [h.conversationId, '2026-09-08T01:00:00Z']);
+    const escalationId = await seedEscalation(h, { created_at: created });
+    await h.pg.query("update escalations set status='queued',created_at=$2 where id=$1", [escalationId, created]);
+    await h.pg.query("insert into scheduled_jobs(tenant_id,job_type,payload,status,scheduled_at) values($1,'owner_escalation',$2,'pending',$3)", [h.tenant, JSON.stringify({ escalation_id: escalationId }), created]);
+    await runDueScheduledEscalations(h.db, () => h.provider, new Date('2026-09-08T13:00:00Z'));
+    assert.equal(h.sent.length, 0);
+    assert.equal((await h.escalation(escalationId)).status, kind === 'owner' ? 'resolved_by_owner' : 'expired');
+  }
+});
+
+test('owner phone must differ from session; one-time code binds LID and never guesses digits', async () => {
+  const h = await pgHarness();
+  await assert.rejects(saveOwnerSettings(h.db, h.tenant, { phone: '972500000009' }, { id: '972500000009@c.us' }), /отличаться/);
+  const result = await saveOwnerSettings(h.db, h.tenant, { phone: '972500000002', timeZone: 'Asia/Jerusalem' }, { id: '972500000009@c.us' });
+  const settings = { ...h.settings, ...(await h.notificationSettings()) } as unknown as OwnerSettings;
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', '88888888@lid', result.pairingCommand, null, settings);
+  let row = await h.notificationSettings();
+  assert.equal(row.owner_chat_id, '88888888@lid'); assert.equal(row.owner_pairing_hash, null);
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', '77777777@lid', result.pairingCommand, null, settings);
+  row = await h.notificationSettings();
+  assert.equal(row.owner_chat_id, '88888888@lid');
+});
+
+test('complete real GOWS client and owner reply payloads traverse worker filters through delivery', async () => {
+  const { handleWebhookEvent } = await import('../workers/webhook.worker.js');
+  const h = await pgHarness();
+  const body = JSON.parse(readFileSync('src/services/fixtures/gows-incoming-lid.json', 'utf8'));
+  body.payload.from = customer; body.payload._data.Info.Chat = customer; body.payload.body = 'Неизвестный вопрос';
+  await handleWebhookEvent(h.tenant, body, h.db, h.provider, null);
+  await handleWebhookEvent(h.tenant, body, h.db, h.provider, null);
+  let e = (await h.pg.query<{ id: string; status: string; client_name: string }>('select id,status,client_name from escalations limit 1')).rows[0]!;
+  assert.equal(e.status, 'pending'); assert.equal(e.client_name, body.payload._data.Info.PushName);
+  await h.pg.query('update notification_settings set owner_chat_id=$2 where tenant_id=$1', [h.tenant, '88888888@lid']);
+  const full = await h.escalation(e.id);
+  const reply = structuredClone(body);
+  reply.payload.from = '88888888@lid'; reply.payload._data.Info.Chat = reply.payload.from; reply.payload.body = 'Ответ владельца'; reply.payload.replyTo = { id: full.owner_message_ids[0] };
+  await handleWebhookEvent(h.tenant, reply, h.db, h.provider, null);
+  assert.equal((await h.escalation(e.id)).status, 'delivered');
+  await h.pg.query('update notification_settings set auto_replies_paused=true where tenant_id=$1', [h.tenant]);
+  const count = h.sent.length;
+  await handleWebhookEvent(h.tenant, body, h.db, h.provider, { async generateReply() { throw new Error('must not call AI'); } });
+  assert.equal(h.sent.length, count);
+});
+
+test('observeOwnerOutgoing guard #1 is idempotent on a re-delivered waha_msg_id', async () => {
+  const h = await pgHarness();
+  await seedEscalation(h, { created_at: '2026-09-08T10:00:00Z' });
+  const body = { event: 'message', payload: { id: 'manual-7', from: '972500000009@c.us', to: customer, fromMe: true, source: 'app', body: 'Ответ владельца', _data: { Info: { IsFromMe: true, Chat: customer } } } };
+  assert.equal(await observeOwnerOutgoing(h.db, h.tenant, body, new Date('2026-09-08T20:00:00Z')), true);
+  const rows = Number((await h.pg.query<{ count: string }>('select count(*)::text as count from messages')).rows[0]!.count);
+  await h.pg.query('update conversations set bot_paused=false where id=$1', [h.conversationId]);
+  assert.equal(await observeOwnerOutgoing(h.db, h.tenant, body, new Date('2026-09-08T20:05:00Z')), false);
+  assert.equal(Number((await h.pg.query<{ count: string }>('select count(*)::text as count from messages')).rows[0]!.count), rows, 'no duplicate stored message');
+  assert.equal((await h.conversation()).bot_paused, false, 'no repeated pause/close side effects');
+});
+
+test('returning contact with assistant_introduced_at gets no repeated greeting', async () => {
+  const { handleWebhookEvent } = await import('../workers/webhook.worker.js');
+  const intro = 'Я ассистент владельца. Открыто с 9 до 18.';
+  const ai = { async generateReply(i: { systemPrompt: string }) { return { text: i.systemPrompt.includes('классификатор намерений') ? '{"agent":"SALE","confidence":0.9}' : intro }; } };
+  const run = async (introduced: boolean) => {
+    const h = await pgHarness();
+    await h.pg.query("insert into knowledge_items(tenant_id,type,question,answer,active) values($1,'faq','Есть ли доставка в Хайфу?','Да, доставка есть.',true)", [h.tenant]);
+    await h.pg.query('update conversations set assistant_introduced_at=$2 where id=$1', [h.conversationId, introduced ? '2026-09-01T00:00:00Z' : null]);
+    const body = { event: 'message', payload: { from: customer, fromMe: false, hasMedia: false, body: 'Сколько стоит доставка?', author: null, replyTo: null, _data: { Info: { Chat: customer, PushName: 'Клиент' } } } };
+    await handleWebhookEvent(h.tenant, body, h.db, h.provider, ai as never);
+    return h.sent.at(-1)?.text;
+  };
+  assert.equal(await run(true), 'Открыто с 9 до 18.');
+  assert.equal(await run(false), intro);
+});
+
+test('assistant formatting strips placeholders and defer detection does not reject substantive tomorrow answer', () => {
+  assert.equal(clientText('Ответ <имя> без > скобок'), 'Ответ  без  скобок');
+  assert.equal(isDeferredAnswer('Завтра доставка с 9 до 18'), false);
+  assert.equal(isDeferredAnswer('позже'), true);
+});
+
+test('owner can pause any dialogue without an escalation; foreign dialogue cannot be changed', async () => {
+  const h = await pgHarness();
+  // A second real tenant in the SAME database (not a second PGlite instance): the point of
+  // this test is that owner-workflow scopes every write by tenant_id even when it's handed
+  // someone else's real, valid tenant id — a separate database would make the "foreign"
+  // lookup fail on the tenants FK instead of on the intended tenant_id predicate, and mask
+  // the thing being tested.
+  const otherTenant = (await h.db.from('tenants').insert({ name: 'Other', business_name: 'Other', phone: '972500000099', language: 'ru', tier: 'basic', status: 'active' }).select('id').single()).data as { id: string };
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, `Беру на себя ${h.conversationId}`, null, h.settings);
+  assert.equal((await h.conversation()).bot_paused, true);
+  await handleOwnerMessage(h.db, h.provider, otherTenant.id, 'session', owner, `Продолжить диалог ${h.conversationId}`, null, h.settings);
+  assert.equal((await h.conversation()).bot_paused, true, 'a different tenant id cannot touch this conversation');
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, `Продолжить диалог ${h.conversationId}`, null, h.settings);
+  assert.equal((await h.conversation()).bot_paused, false);
+});
+
+test('owner timezone changes quiet hours and client time converts across calendar days', async () => {
+  const { waitingText } = await import('../utils/assistant-text.js');
+  const { clientTimeZoneCommand } = await import('../utils/time-zone.js');
+  const settings = { ...defaultsFor('t'), time_zone: 'America/New_York', quiet_hours_start: '20:00', quiet_hours_end: '09:00' };
+  const now = new Date('2026-09-09T02:00:00Z');
+  assert.equal(isWithinQuietHours(settings, now), true);
+  const end = nextQuietHoursEnd(settings, now);
   assert.ok(end);
-  assert.equal(end.toISOString(),'2026-09-09T13:00:00.000Z');
-  const message=waitingText('Вопрос',{at:end,ownerZone:settings.time_zone,clientZone:'Asia/Tokyo'});
-  assert.match(message,/22:00/);assert.match(message,/ваше местное время/);
-  assert.match(waitingText('Вопрос',{at:end,ownerZone:settings.time_zone}),/09:00.*время владельца/);
-  assert.equal(clientTimeZoneCommand('Часовой пояс Europe/Berlin'),'Europe/Berlin');
-  assert.equal(clientTimeZoneCommand('Часовой пояс invented/Place'),null);
+  assert.equal(end.toISOString(), '2026-09-09T13:00:00.000Z');
+  const message = waitingText('Вопрос', { at: end, ownerZone: settings.time_zone, clientZone: 'Asia/Tokyo' });
+  assert.match(message, /22:00/); assert.match(message, /ваше местное время/);
+  assert.match(waitingText('Вопрос', { at: end, ownerZone: settings.time_zone }), /09:00.*время владельца/);
+  assert.equal(clientTimeZoneCommand('Часовой пояс Europe/Berlin'), 'Europe/Berlin');
+  assert.equal(clientTimeZoneCommand('Часовой пояс invented/Place'), null);
 });
 
-test('owner answer translation preserves original for learning and falls back safely',async()=>{
-  const {translateOwnerAnswer}=await import('./ai-fallback.service.js');let calls=0;
-  const ai={async generateReply(input:{systemPrompt:string;userMessage:string}){calls++;assert.equal(JSON.parse(input.userMessage).ownerAnswer,'Доставка завтра');return {text:'Delivery is tomorrow.'};}};
-  assert.equal(await translateOwnerAnswer('When is delivery?','Доставка завтра',ai),'Delivery is tomorrow.');
-  assert.equal(await translateOwnerAnswer('Когда доставка?','Доставка завтра',ai),'Доставка завтра');assert.equal(calls,1);
-  assert.equal(await translateOwnerAnswer('When?','Доставка завтра',null),'Доставка завтра');
+test('owner answer translation preserves original for learning and falls back safely', async () => {
+  const { translateOwnerAnswer } = await import('./ai-fallback.service.js');
+  let calls = 0;
+  const ai = { async generateReply(input: { systemPrompt: string; userMessage: string }) { calls++; assert.equal(JSON.parse(input.userMessage).ownerAnswer, 'Доставка завтра'); return { text: 'Delivery is tomorrow.' }; } };
+  assert.equal(await translateOwnerAnswer('When is delivery?', 'Доставка завтра', ai), 'Delivery is tomorrow.');
+  assert.equal(await translateOwnerAnswer('Когда доставка?', 'Доставка завтра', ai), 'Доставка завтра'); assert.equal(calls, 1);
+  assert.equal(await translateOwnerAnswer('When?', 'Доставка завтра', null), 'Доставка завтра');
 });
 
-test('owner translation is opt-in: disabled makes zero model calls',async()=>{
- for(const enabled of [false,true]){
-  const h=harness();const settings={...defaults,translate_owner_answer:enabled};await createEscalation(h.db,h.provider,input,settings);const e=h.tables.escalations![0]!;let calls=0;
-  await handleOwnerMessage(h.db,h.provider,tenant,'session',owner,'Yes, available',e.owner_message_ids[0],settings,{async generateReply(){calls++;return{text:'Да, доступно'};}});
-  assert.equal(calls,enabled?1:0);assert.match(h.sent.at(-2)!.text,enabled?/Да, доступно/:/Yes, available/);
- }
-});
-test('timeout reminder is once, quoted reply matches it, quiet hours do not count, closure follows delivery',async()=>{
- const {runEscalationTimeouts}=await import('./owner-workflow.service.js');
- const h=harness();const settings={...defaults,quiet_hours_start:'20:00',quiet_hours_end:'09:00',behavior:{escalation_remind_minutes:60,escalation_close_minutes:120}};
- h.tables.notification_settings![0]={tenant_id:tenant,...settings};
- h.tables.escalations!.push({id:'e',...input,status:'pending',owner_message_ids:['initial'],pending_since:'2026-09-08T16:30:00Z',learning_state:'none'});
- await runEscalationTimeouts(h.db,()=>h.provider,new Date('2026-09-09T06:29:00Z'));assert.equal(h.sent.length,0);
- await runEscalationTimeouts(h.db,()=>h.provider,new Date('2026-09-09T06:30:00Z'));assert.equal(h.sent.length,1);assert.equal(h.tables.escalations![0]!.owner_message_ids.length,2);
- await runEscalationTimeouts(h.db,()=>h.provider,new Date('2026-09-09T06:40:00Z'));assert.equal(h.sent.length,1);
- await runEscalationTimeouts(h.db,()=>h.provider,new Date('2026-09-09T07:30:00Z'));assert.equal(h.sent.length,2);assert.equal(h.tables.escalations![0]!.status,'closed_unanswered');assert.match(h.sent[1]!.text,/свяжется/);
+test('owner translation is opt-in: disabled makes zero model calls', async () => {
+  for (const enabled of [false, true]) {
+    const h = await pgHarness();
+    const settings = { ...h.settings, translate_owner_answer: enabled };
+    const input = { tenant_id: h.tenant, conversation_id: h.conversationId, client_chat_id: customer, client_name: 'Тестовый клиент', question: 'Можно завтра?', session: 'session', inbound_id: 'incoming' };
+    await createEscalation(h.db, h.provider, input, settings);
+    const e = await h.escalation((await h.pg.query<{ id: string }>('select id from escalations limit 1')).rows[0]!.id);
+    let calls = 0;
+    await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'Yes, available', e.owner_message_ids[0]!, settings, { async generateReply() { calls++; return { text: 'Да, доступно' }; } });
+    assert.equal(calls, enabled ? 1 : 0);
+    assert.match(h.sent.at(-2)!.text, enabled ? /Да, доступно/ : /Yes, available/);
+  }
 });
 
-function wav(){const bytes=Buffer.alloc(44+32000);bytes.write('RIFF');bytes.writeUInt32LE(bytes.length-8,4);bytes.write('WAVEfmt ',8);bytes.writeUInt32LE(16,16);bytes.writeUInt16LE(1,20);bytes.writeUInt16LE(1,22);bytes.writeUInt32LE(16000,24);bytes.writeUInt32LE(32000,28);bytes.writeUInt16LE(2,32);bytes.writeUInt16LE(16,34);bytes.write('data',36);bytes.writeUInt32LE(32000,40);return bytes;}
-test('voice runs full GOWS identity, quota, transcription, agent, FAQ pipeline and wipes buffer',async()=>{
- const {handleVoiceUsage}=await import('./voice-usage.service.js');
- const h=harness();h.tables.knowledge_items!.push({id:'faq',tenant_id:tenant,type:'faq',question:'Какая цена?',answer:'Цена 100',active:true});
- const body=JSON.parse(readFileSync('src/services/fixtures/gows-incoming-lid.json','utf8'));body.payload.from=customer;body.payload._data.Info.Chat=customer;body.payload.body=null;body.payload.hasMedia=true;body.payload.media={mimetype:'audio/wav',url:'http://internal/api/files/session/id.wav'};
- const bytes=wav();let calls=0;
- await handleVoiceUsage(h.db,{tenant:h.tables.tenants![0],instance:h.tables.whatsapp_instances![0]} as any,body,h.provider,{async transcribe(){calls++;return{text:'Какая цена?',confidence:0.99,ambiguous:false,language:'ru'};}},{async download(){return bytes;}});
- assert.equal(calls,1);assert.equal(h.admissions(),1);assert.equal(h.sent.at(-1)?.text,'Цена 100');assert.ok(bytes.every(b=>b===0));
- for(const type of ['message_received','message_sent','stt_call','voice_received']){const rows=h.tables.usage_events!.filter(r=>r.event_type===type);assert.ok(rows.length);assert.ok(rows.every(r=>typeof r.agent==='string'&&r.agent.length>0));}
- assert.equal(h.tables.messages![0]!.body,'Какая цена?');assert.equal(h.tables.messages![0]!.raw_payload.payload.media,null);
+test('timeout reminder is once, quoted reply matches it, quiet hours do not count, closure follows delivery', async () => {
+  const { runEscalationTimeouts } = await import('./owner-workflow.service.js');
+  const h = await pgHarness();
+  await h.pg.query('update notification_settings set quiet_hours_start=$2,quiet_hours_end=$3,behavior=$4 where tenant_id=$1', [h.tenant, '20:00:00', '09:00:00', JSON.stringify({ escalation_remind_minutes: 60, escalation_close_minutes: 120 })]);
+  const escalationId = await seedEscalation(h);
+  await h.pg.query("update escalations set status='pending',owner_message_ids=array['initial'],pending_since='2026-09-08T16:30:00Z' where id=$1", [escalationId]);
+  await runEscalationTimeouts(h.db, () => h.provider, new Date('2026-09-09T06:29:00Z')); assert.equal(h.sent.length, 0);
+  await runEscalationTimeouts(h.db, () => h.provider, new Date('2026-09-09T06:30:00Z')); assert.equal(h.sent.length, 1);
+  assert.equal((await h.escalation(escalationId)).owner_message_ids.length, 2);
+  await runEscalationTimeouts(h.db, () => h.provider, new Date('2026-09-09T06:40:00Z')); assert.equal(h.sent.length, 1);
+  await runEscalationTimeouts(h.db, () => h.provider, new Date('2026-09-09T07:30:00Z')); assert.equal(h.sent.length, 2);
+  assert.equal((await h.escalation(escalationId)).status, 'closed_unanswered');
+  assert.match(h.sent[1]!.text, /свяжется/);
 });
-test('voice pause and quota stop STT; uncertainty asks for clarification without FAQ',async()=>{
- const {handleVoiceUsage}=await import('./voice-usage.service.js');
- for(const mode of ['paused','denied','uncertain','disabled']){
-  const h=harness();if(mode==='paused')h.tables.conversations![0]!.bot_paused=true;if(mode==='denied')h.deny();let calls=0,downloads=0;
-  const body=JSON.parse(readFileSync('src/services/fixtures/gows-incoming-lid.json','utf8'));body.payload.from=customer;body.payload._data.Info.Chat=customer;body.payload.body=null;body.payload.hasMedia=true;body.payload.media={mimetype:'audio/wav',url:'http://internal/api/files/session/id.wav'};
-  await handleVoiceUsage(h.db,{tenant:h.tables.tenants![0],instance:h.tables.whatsapp_instances![0]} as any,body,h.provider,mode==='disabled'?null:{async transcribe(){calls++;return{text:'Неясно завтра',confidence:0.4,ambiguous:true,language:'ru'};}},{async download(){downloads++;return wav();}});
-  assert.equal(calls,mode==='uncertain'?1:0);
-  if(mode==='paused'){assert.equal(downloads,0);assert.equal(h.admissions(),0);assert.equal(h.sent.length,0);assert.equal(h.tables.usage_events![0]!.event_type,'message_observed');}
-  else assert.match(h.sent.at(-1)!.text,mode==='uncertain'?/уточните/:mode==='denied'?/недоступны/:/не удалось распознать/);
- }
+
+function wav() {
+  const bytes = Buffer.alloc(44 + 32000); bytes.write('RIFF'); bytes.writeUInt32LE(bytes.length - 8, 4); bytes.write('WAVEfmt ', 8);
+  bytes.writeUInt32LE(16, 16); bytes.writeUInt16LE(1, 20); bytes.writeUInt16LE(1, 22); bytes.writeUInt32LE(16000, 24); bytes.writeUInt32LE(32000, 28);
+  bytes.writeUInt16LE(2, 32); bytes.writeUInt16LE(16, 34); bytes.write('data', 36); bytes.writeUInt32LE(32000, 40); return bytes;
+}
+function voiceRouting(h: Awaited<ReturnType<typeof pgHarness>>) {
+  return { tenant: { id: h.tenant, name: 'Business', phone: '972500000001', status: 'active', language: 'ru' }, instance: { tenant_id: h.tenant, session_name: 'session' } } as never;
+}
+
+test('voice runs full GOWS identity, quota, transcription, agent, FAQ pipeline and wipes buffer', async () => {
+  const { handleVoiceUsage } = await import('./voice-usage.service.js');
+  const h = await pgHarness();
+  await h.pg.query("insert into knowledge_items(tenant_id,type,question,answer,active) values($1,'faq','Какая цена?','Цена 100',true)", [h.tenant]);
+  const body = JSON.parse(readFileSync('src/services/fixtures/gows-incoming-lid.json', 'utf8'));
+  body.payload.from = customer; body.payload._data.Info.Chat = customer; body.payload.body = null; body.payload.hasMedia = true; body.payload.media = { mimetype: 'audio/wav', url: 'http://internal/api/files/session/id.wav' };
+  const bytes = wav(); let calls = 0;
+  await handleVoiceUsage(h.db, voiceRouting(h), body, h.provider, { async transcribe() { calls++; return { text: 'Какая цена?', confidence: 0.99, ambiguous: false, language: 'ru' }; } }, { async download() { return bytes; } });
+  assert.equal(calls, 1); assert.equal(await h.admissions(), 1); assert.equal(h.sent.at(-1)?.text, 'Цена 100'); assert.ok(bytes.every(b => b === 0));
+  for (const type of ['message_received', 'message_sent', 'stt_call', 'voice_received']) {
+    const rows = (await h.pg.query<{ agent: string }>('select agent from usage_events where tenant_id=$1 and event_type=$2', [h.tenant, type])).rows;
+    assert.ok(rows.length, `expected at least one ${type} event`);
+    assert.ok(rows.every(r => typeof r.agent === 'string' && r.agent.length > 0));
+  }
+  const message = (await h.pg.query<{ body: string; raw_payload: { payload: { media: unknown } } }>('select body,raw_payload from messages limit 1')).rows[0]!;
+  assert.equal(message.body, 'Какая цена?'); assert.equal(message.raw_payload.payload.media, null);
 });
-test('voice opt-out exits before download, STT, admission or client response',async()=>{
- const {handleVoiceUsage}=await import('./voice-usage.service.js');const h=harness();h.tables.clients![0]!.auto_reply_allowed=false;
- const body=JSON.parse(readFileSync('src/services/fixtures/gows-incoming-lid.json','utf8'));body.payload.from=customer;body.payload._data.Info.Chat=customer;body.payload.body=null;body.payload.hasMedia=true;body.payload.media={mimetype:'audio/wav',url:'http://internal/api/files/session/id.wav'};
- let transcriptions=0,downloads=0;await handleVoiceUsage(h.db,{tenant:h.tables.tenants![0],instance:h.tables.whatsapp_instances![0]} as any,body,h.provider,{async transcribe(){transcriptions++;return{text:'Текст',confidence:1,ambiguous:false,language:'ru'};}},{async download(){downloads++;return wav();}});
- assert.equal(downloads,0);assert.equal(transcriptions,0);assert.equal(h.admissions(),0);assert.equal(h.sent.length,0);assert.equal(h.tables.usage_events![0]!.metadata.reason,'client_opt_out');
+
+test('voice pause and quota stop STT; uncertainty asks for clarification without FAQ', async () => {
+  const { handleVoiceUsage } = await import('./voice-usage.service.js');
+  for (const mode of ['paused', 'denied', 'uncertain', 'disabled']) {
+    const h = await pgHarness();
+    if (mode === 'paused') await h.pg.query('update conversations set bot_paused=true where id=$1', [h.conversationId]);
+    if (mode === 'denied') await h.deny();
+    let calls = 0, downloads = 0;
+    const body = JSON.parse(readFileSync('src/services/fixtures/gows-incoming-lid.json', 'utf8'));
+    body.payload.from = customer; body.payload._data.Info.Chat = customer; body.payload.body = null; body.payload.hasMedia = true; body.payload.media = { mimetype: 'audio/wav', url: 'http://internal/api/files/session/id.wav' };
+    await handleVoiceUsage(h.db, voiceRouting(h), body, h.provider, mode === 'disabled' ? null : { async transcribe() { calls++; return { text: 'Неясно завтра', confidence: 0.4, ambiguous: true, language: 'ru' }; } }, { async download() { downloads++; return wav(); } });
+    assert.equal(calls, mode === 'uncertain' ? 1 : 0);
+    if (mode === 'paused') {
+      assert.equal(downloads, 0); assert.equal(await h.admissions(), 0); assert.equal(h.sent.length, 0);
+      const first = (await h.pg.query<{ event_type: string }>('select event_type from usage_events limit 1')).rows[0];
+      assert.equal(first?.event_type, 'message_observed');
+    } else {
+      assert.match(h.sent.at(-1)!.text, mode === 'uncertain' ? /уточните/ : mode === 'denied' ? /недоступны/ : /не удалось распознать/);
+    }
+  }
+});
+
+test('voice opt-out exits before download, STT, admission or client response', async () => {
+  const { handleVoiceUsage } = await import('./voice-usage.service.js');
+  const h = await pgHarness();
+  await h.pg.query('update clients set auto_reply_allowed=false where id=$1', [h.clientId]);
+  const body = JSON.parse(readFileSync('src/services/fixtures/gows-incoming-lid.json', 'utf8'));
+  body.payload.from = customer; body.payload._data.Info.Chat = customer; body.payload.body = null; body.payload.hasMedia = true; body.payload.media = { mimetype: 'audio/wav', url: 'http://internal/api/files/session/id.wav' };
+  let transcriptions = 0, downloads = 0;
+  await handleVoiceUsage(h.db, voiceRouting(h), body, h.provider, { async transcribe() { transcriptions++; return { text: 'Текст', confidence: 1, ambiguous: false, language: 'ru' }; } }, { async download() { downloads++; return wav(); } });
+  assert.equal(downloads, 0); assert.equal(transcriptions, 0); assert.equal(await h.admissions(), 0); assert.equal(h.sent.length, 0);
+  const first = (await h.pg.query<{ metadata: { reason: string } }>('select metadata from usage_events limit 1')).rows[0]!;
+  assert.equal(first.metadata.reason, 'client_opt_out');
 });

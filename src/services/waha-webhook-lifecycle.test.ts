@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { DatabaseClient } from "../db/supabase.js";
+// Deliberately kept on a hand-rolled DatabaseClient mock, not PGlite (see review that
+// moved context.service/conversation-routing/owner-workflow/webhook-worker/
+// message-retention to PGlite): this file's assertions are about WAHA provider error
+// branches and session lifecycle, not about database schema/types/constraints. A mock
+// is the right tool here. Do not convert without a concrete reason.
 import { SessionNotFoundError } from "../providers/whatsapp/whatsapp-provider.interface.js";
 import type { WhatsAppSessionProvider, StartSessionInput } from "../providers/whatsapp/whatsapp-provider.interface.js";
 import { decryptCredential } from "../utils/crypto.js";

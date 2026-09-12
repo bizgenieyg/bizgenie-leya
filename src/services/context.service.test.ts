@@ -1,55 +1,50 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { DatabaseClient } from '../db/supabase.js';
 import { loadConversationMemory } from './context.service.js';
+import { createTestDatabase, pgliteDatabaseClient } from './test-support/pglite-harness.js';
 
-interface Row { from_me: boolean; body: string; created_at: string; msg_type: string }
-
+// Converted to PGlite (real migrations, real Postgres types) per review: a hand-rolled
+// mock DB cannot enforce column types/constraints and previously let a schema-breaking
+// bug (simulator's non-UUID conversation id) ship as "tested". See git history of
+// simulator.service.test.ts for the concrete incident this guards against here too.
+//
 // Mandatory review test: the model context is a read-only window. After processing a
 // message, rows older than context_retention_hours must still exist in `messages`
 // (weekly report, raw_payload audit, owner-takeover history) and must not reach the model.
 test('loadConversationMemory never deletes and only returns rows inside the retention window', async () => {
-  const hoursAgo = (h: number) => new Date(Date.now() - h * 3600000).toISOString();
-  const store: Row[] = [
-    { from_me: false, body: 'old question', created_at: hoursAgo(72), msg_type: 'text' },
-    { from_me: true, body: 'old answer', created_at: hoursAgo(71), msg_type: 'text' },
-    { from_me: false, body: 'recent question', created_at: hoursAgo(2), msg_type: 'text' },
-    { from_me: true, body: 'recent answer', created_at: hoursAgo(1), msg_type: 'text' },
-    { from_me: true, body: 'owner took over', created_at: hoursAgo(1), msg_type: 'owner_text' },
-  ];
-  let deleteCalled = false;
+  const pg = await createTestDatabase();
+  try {
+    const db = pgliteDatabaseClient(pg);
+    const tenant = await db.from('tenants').insert({ name: 'T', business_name: 'B', language: 'ru', tier: 'basic', status: 'active' }).select('id').single();
+    assert.equal(tenant.error, null);
+    const tenantId = (tenant.data as { id: string }).id;
+    const conversation = await db.from('conversations').insert({ tenant_id: tenantId, status: 'active' }).select('id').single();
+    assert.equal(conversation.error, null);
+    const conversationId = (conversation.data as { id: string }).id;
 
-  const db = {
-    from(table: string) {
-      const filters: { gte?: string; msgType?: string } = {};
-      let limitN = Infinity;
-      const chain: Record<string, unknown> = {
-        select() { return chain; },
-        eq(column: string, value: unknown) { if (column === 'msg_type') filters.msgType = String(value); return chain; },
-        gte(_column: string, value: string) { filters.gte = value; return chain; },
-        order() { return chain; },
-        limit(n: number) { limitN = n; return chain; },
-        delete() { deleteCalled = true; return chain; },
-        lt() { return chain; },
-        async maybeSingle() { return { data: { assistant_introduced_at: null }, error: null }; },
-        then(resolve: (value: unknown) => unknown) {
-          if (table !== 'messages') return Promise.resolve(resolve({ data: [], error: null }));
-          const rows = store
-            .filter(r => (!filters.msgType || r.msg_type === filters.msgType) && (!filters.gte || r.created_at >= filters.gte))
-            .sort((a, b) => b.created_at.localeCompare(a.created_at))
-            .slice(0, limitN)
-            .map(r => ({ from_me: r.from_me, body: r.body, created_at: r.created_at }));
-          return Promise.resolve(resolve({ data: rows, error: null }));
-        },
-      };
-      return chain;
-    },
-  } as unknown as DatabaseClient;
+    const hoursAgo = (h: number) => new Date(Date.now() - h * 3600000).toISOString();
+    const rows = [
+      { from_me: false, body: 'old question', created_at: hoursAgo(72), msg_type: 'text' },
+      { from_me: true, body: 'old answer', created_at: hoursAgo(71), msg_type: 'text' },
+      { from_me: false, body: 'recent question', created_at: hoursAgo(2), msg_type: 'text' },
+      { from_me: true, body: 'recent answer', created_at: hoursAgo(1), msg_type: 'text' },
+      { from_me: true, body: 'owner took over', created_at: hoursAgo(1), msg_type: 'owner_text' },
+    ];
+    for (const row of rows) {
+      const inserted = await db.from('messages').insert({ tenant_id: tenantId, conversation_id: conversationId, ...row }).select('id').single();
+      assert.equal(inserted.error, null);
+    }
 
-  const memory = await loadConversationMemory(db, 'tenant', 'conversation', 10, 48);
+    const before = await pg.query<{ count: string }>('select count(*)::text as count from messages where conversation_id=$1', [conversationId]);
+    assert.equal(before.rows[0]!.count, '5');
 
-  assert.equal(deleteCalled, false, 'must not delete message rows on the hot path');
-  assert.equal(store.length, 5, 'stored history is untouched');
-  assert.deepEqual(memory.messages.map(m => m.text), ['recent question', 'recent answer']);
-  assert.equal(memory.introduced, false);
+    const memory = await loadConversationMemory(db, tenantId, conversationId, 10, 48);
+
+    const after = await pg.query<{ count: string }>('select count(*)::text as count from messages where conversation_id=$1', [conversationId]);
+    assert.equal(after.rows[0]!.count, '5', 'must not delete message rows on the hot path — real DELETE would show here');
+    assert.deepEqual(memory.messages.map(m => m.text), ['recent question', 'recent answer'], 'owner_text rows are excluded and the retention window is respected');
+    assert.equal(memory.introduced, false);
+  } finally {
+    await pg.close();
+  }
 });

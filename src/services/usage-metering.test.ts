@@ -2,6 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import type { DatabaseClient } from '../db/supabase.js';
+// Deliberately kept on a hand-rolled DatabaseClient mock, not PGlite (see review that
+// moved context.service/conversation-routing/owner-workflow/webhook-worker/
+// message-retention to PGlite): these tests are about the provider-error/fail-open
+// branches in metered-providers.ts and usage.service.ts (e.g. what happens when the RPC
+// call itself throws), which a mock can simulate directly and a real Postgres schema
+// cannot easily force into. Do not convert without a concrete reason.
 import { recordUsageEvent,admitUsage } from './usage.service.js';
 import { meterAI,meterWhatsApp } from './metered-providers.js';
 import { voiceUsage } from './voice-usage.service.js';
