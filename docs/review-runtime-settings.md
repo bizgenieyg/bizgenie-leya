@@ -27,6 +27,8 @@ All newly introduced behavioral defaults are in `src/config/behavior.ts`, `usage
 | STT confidence threshold | behavior.stt_confidence_threshold | 0.85 | API |
 | STT/download timeout, seconds | behavior.stt_timeout_seconds | 30 | API |
 | Download maximum bytes | behavior.media_max_bytes | 10485760 | API |
+| Simulator calls per tenant per hour | behavior.simulator_hourly_limit | 30 | API |
+| Simulator calls per tenant per UTC day | behavior.simulator_daily_limit | 100 | API |
 | Owner notification language | behavior.owner_language | ru (he/en supported) | API |
 | Enabled agents | behavior.enabled_agents | SALE, SUPPORT | Yes |
 | Intent confidence threshold | behavior.intent_confidence_threshold | 0.75 | Yes |

@@ -24,6 +24,8 @@ export const BEHAVIOR_DEFAULTS = {
   intent_confidence_threshold: 0.75,
   route_stickiness_hours: 24,
   reception_max_messages: 0,
+  simulator_hourly_limit: 30,
+  simulator_daily_limit: 100,
   summary_frequency: 'weekly' as 'off'|'daily'|'weekly',
   summary_time: '09:00',
   summary_weekday: 1,
@@ -36,6 +38,7 @@ export const MESSAGE_RETENTION_SWEEP_MS = 60 * 60 * 1000;
 export const STT_DEFAULT_MODEL = 'gemini-2.5-flash-lite';
 // Local operational storage, shared by workers on the supported single VPS.
 export const ALERT_STATE_DIR = '.runtime/usage-alerts';
+export const SIMULATOR_LIMIT_STATE_DIR = '.runtime/simulator-limits';
 export const ALERT_LOCK_STALE_MS = 60_000;
 export const MAX_SCHEDULE_LOOKAHEAD_MINUTES = 370 * 24 * 60;
 

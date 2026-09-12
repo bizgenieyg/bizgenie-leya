@@ -12,15 +12,20 @@ import { enabledAgentNames, routeConversation } from './conversation-routing.ser
 import { languageOf, renderText } from './templates.service.js';
 import { recordUsageEvent } from './usage.service.js';
 import type { ConversationRow } from './tenant.service.js';
+import { reserveSimulatorCall } from './simulator-rate-limit.js';
+import { HttpError } from '../utils/http-error.js';
+import { behavior } from './runtime-settings.service.js';
 
 export interface SimulationResult { reply:string; agent:string; source:'faq'|'model'|'reception'|'fallback'; }
 
-export async function simulateCustomerMessage(db:DatabaseClient,tenantId:string,text:string,ai:AIProvider|null=createAIProvider()):Promise<SimulationResult>{
+export async function simulateCustomerMessage(db:DatabaseClient,tenantId:string,text:string,ai:AIProvider|null=createAIProvider(),limitOptions?:{now?:Date;root?:string}):Promise<SimulationResult>{
   const [settings,context]=await Promise.all([loadOwnerSettings(db,tenantId),loadContext(db,tenantId)]);
+  const config=behavior(settings),reservation=await reserveSimulatorCall(tenantId,config.simulator_hourly_limit,config.simulator_daily_limit,limitOptions?.now??new Date(),limitOptions?.root);
+  if(!reservation.allowed)throw new HttpError(429,reservation.period==='hour'?'Simulator hourly limit reached':'Simulator daily limit reached');
   const exact=findExactKnowledgeAnswer(text,context.knowledge);
   if(exact.matched)return{reply:exact.answer,agent:'CORE',source:'faq'};
 
-  const conversation={id:`simulation-${randomUUID()}`,tenant_id:tenantId,client_id:'simulation',status:'active',routed_agent:null,route_selected_at:null,source_label:null,reception_message_count:0,last_message_at:null} as ConversationRow;
+  const conversation={id:randomUUID(),tenant_id:tenantId,client_id:randomUUID(),status:'active',routed_agent:null,route_selected_at:null,source_label:null,reception_message_count:0,last_message_at:null} as ConversationRow;
   const classificationUsage:Record<string,unknown>[]=[];
   const route=await routeConversation(db,tenantId,conversation,text,settings,ai,usage=>classificationUsage.push(usage),true,false);
   for(const metadata of classificationUsage)await agentContext.run({agent:'RECEPTION'},()=>recordUsageEvent(db,{tenantId,eventType:'model_call',eventKey:randomUUID(),metadata:{...metadata,purpose:'intent_classification',simulation:true}}));

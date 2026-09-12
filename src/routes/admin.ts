@@ -110,7 +110,7 @@ adminRouter.delete('/schedule-exceptions',async(request,response)=>{await delete
 adminRouter.get('/tenant-settings',async(request,response)=>{
  response.setHeader('Cache-Control','no-store');response.json(await readRuntimeSettings(supabase,queryTenantId(request.query.tenantId)));
 });
-adminRouter.get('/clients',async(request,response)=>{response.setHeader('Cache-Control','no-store');response.json(await listClientCards(supabase,queryTenantId(request.query.tenantId),typeof request.query.search==='string'?request.query.search:''));});
+adminRouter.get('/clients',async(request,response)=>{response.setHeader('Cache-Control','no-store');response.json(await listClientCards(supabase,queryTenantId(request.query.tenantId),typeof request.query.search==='string'?request.query.search:'',Number(request.query.page)||1,Number(request.query.limit)||20,typeof request.query.status==='string'?request.query.status:''));});
 adminRouter.get('/clients/:id',async(request,response)=>{response.setHeader('Cache-Control','no-store');response.json(await getClientCard(supabase,queryTenantId(request.query.tenantId),String(request.params.id)));});
 adminRouter.patch('/clients/:id',async(request,response)=>response.json(await updateClientCard(supabase,queryTenantId(request.query.tenantId),String(request.params.id),objectBody(request.body))));
 adminRouter.delete('/clients/:id',async(request,response)=>{await deleteClientCard(supabase,queryTenantId(request.query.tenantId),String(request.params.id),request.query.permanent==='true');response.status(204).send();});

@@ -464,3 +464,7 @@ See [usage accounting, limits API, SQL and rollout](docs/tenant-usage.md). Month
 ### Runtime settings, agents and voice (review fixes)
 
 See [review report, defaults, STT choice, SQL and rollout](docs/review-runtime-settings.md). Configure tenant behavior in `/admin/settings`; templates and advanced runtime settings are also available through the backend API. Speech recognition requires server `STT_API_KEY`; `STT_MODEL` is optional.
+
+### Cabinet response simulator
+
+`POST /api/admin/simulator?tenantId=UUID` accepts `{ "text": "..." }` under the existing admin bearer authentication. It uses exact FAQ matching, agent routing and the configured AI provider, but does not create clients or conversations, send WhatsApp messages, or consume the tenant message quota. Model usage remains recorded with `simulation=true`. Independent operator settings `simulator_hourly_limit` and `simulator_daily_limit` default to 30 and 100; they are stored in `notification_settings.behavior` and can be changed through the admin tenant-settings API. The durable counter is stored under `.runtime/simulator-limits` on the supported single VPS.

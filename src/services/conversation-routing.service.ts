@@ -22,7 +22,7 @@ export async function routeConversation(db:DatabaseClient,tenantId:string,conver
  const campaign=config.campaign_routes.find((r:{keyword:string;agent:string})=>text.toLowerCase().includes(r.keyword.toLowerCase()))?.agent;
  const saveRoute=(agent:string)=>persist?assign(db,tenantId,conversation.id,agent,source):Promise.resolve();
  const forced=registry.byName(campaign??configuredSource??'',settings);if(forced){await saveRoute(forced.name);return{kind:'agent',agent:forced,method:campaign?'campaign':'source'};}
- const open=await db.from('escalations').select('id').eq('tenant_id',tenantId).eq('conversation_id',conversation.id).in('status',openStatuses).limit(1);if(open.error)throw new Error('Open case lookup failed');
+ const open=persist?await db.from('escalations').select('id').eq('tenant_id',tenantId).eq('conversation_id',conversation.id).in('status',openStatuses).limit(1):{data:[],error:null};if(open.error)throw new Error('Open case lookup failed');
  const support=open.data?.length?registry.byName('SUPPORT',settings):null;if(support){await saveRoute(support.name);return{kind:'agent',agent:support,method:'open_case'};}
  const cheap=await registry.classify(text,settings,null);if(cheap.agent&&cheap.method==='signal'&&cheap.agent.name!==conversation.routed_agent){await saveRoute(cheap.agent.name);return{kind:'agent',agent:cheap.agent,method:'signal_switch'};}
  const lastMessageAt=conversation.last_message_at?new Date(conversation.last_message_at).getTime():0;

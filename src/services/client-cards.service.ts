@@ -12,10 +12,14 @@ async function stats(db:DatabaseClient,tenantId:string,clientId:string|null=null
 }
 function card(row:any,stat?:CardStat){return{...row,phone:row.whatsapp_jid,inquiry_count:stat?.inquiry_count??0,status:stat?.current_status??'new',current_agent:stat?.current_agent??null,current_conversation_id:stat?.current_conversation_id??null};}
 
-export async function listClientCards(db:DatabaseClient,tenantId:string,search=''){
- let query=db.from('clients').select(CLIENT_COLUMNS).eq('tenant_id',tenantId).is('deleted_at',null).order('last_seen_at',{ascending:false});
+export async function listClientCards(db:DatabaseClient,tenantId:string,search='',page=1,limit=20,status=''){
+ const safePage=Math.max(1,page),safeLimit=Math.min(50,Math.max(1,limit)),from=(safePage-1)*safeLimit;
+ const byClient=await stats(db,tenantId),matchingIds=status?[...byClient.values()].filter(row=>row.current_status===status).map(row=>row.client_id):[];
+ if(status&&!matchingIds.length)return{clients:[],page:safePage,total:0,hasMore:false};
+ let query=db.from('clients').select(CLIENT_COLUMNS,{count:'exact'}).eq('tenant_id',tenantId).is('deleted_at',null).order('last_seen_at',{ascending:false}).range(from,from+safeLimit-1);
+ if(status)query=query.in('id',matchingIds);
  const term=search.trim().replace(/[,%()]/g,'');if(term)query=query.or(`name.ilike.%${term}%,phone.ilike.%${term}%,whatsapp_jid.ilike.%${term}%`);
- const clients=await query;if(clients.error)fail();const byClient=await stats(db,tenantId);return(clients.data??[]).map(row=>card(row,byClient.get(String(row.id))));
+ const clients=await query;if(clients.error)fail();const rows=(clients.data??[]).map(row=>card(row,byClient.get(String(row.id))));return{clients:rows,page:safePage,total:Number(clients.count??0),hasMore:from+rows.length<Number(clients.count??0)};
 }
 
 export async function getClientCard(db:DatabaseClient,tenantId:string,clientId:string,messageLimit=20){
