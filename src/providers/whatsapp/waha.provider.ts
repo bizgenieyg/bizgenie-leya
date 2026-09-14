@@ -55,7 +55,7 @@ export class WahaProvider implements WhatsAppProvider, WhatsAppSessionProvider {
     };
     if (result.status === "FAILED" && gows.error) {
       // WAHA exposes a technical gRPC error, not a safe user-facing message.
-      result.reason = "WAHA не удалось получить состояние подключения.";
+      result.reason = "waha_status_unavailable";
     }
     if (typeof gows.connected === "boolean") {
       result.connected = gows.connected;

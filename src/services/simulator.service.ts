@@ -21,7 +21,7 @@ export interface SimulationResult { reply:string; agent:string; source:'faq'|'mo
 export async function simulateCustomerMessage(db:DatabaseClient,tenantId:string,text:string,ai:AIProvider|null=createAIProvider(),limitOptions?:{now?:Date;root?:string}):Promise<SimulationResult>{
   const [settings,context]=await Promise.all([loadOwnerSettings(db,tenantId),loadContext(db,tenantId)]);
   const config=behavior(settings),reservation=await reserveSimulatorCall(tenantId,config.simulator_hourly_limit,config.simulator_daily_limit,limitOptions?.now??new Date(),limitOptions?.root);
-  if(!reservation.allowed)throw new HttpError(429,reservation.period==='hour'?'Simulator hourly limit reached':'Simulator daily limit reached');
+  if(!reservation.allowed)throw new HttpError(429,reservation.period==='hour'?'Simulator hourly limit reached':'Simulator daily limit reached',{code:reservation.period==='hour'?'simulator_hourly_limit':'simulator_daily_limit'});
   const exact=findExactKnowledgeAnswer(text,context.knowledge);
   if(exact.matched)return{reply:exact.answer,agent:'CORE',source:'faq'};
 

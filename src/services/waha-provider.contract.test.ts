@@ -112,7 +112,7 @@ test("FAILED exposes a safe explanation for WAHA engine errors without raw detai
   globalThis.fetch = async () => Response.json({ status: "FAILED", engine: { gows: { error: { message: "private-key-url" } } } });
   try {
     const result = await new WahaProvider("http://waha.internal").getSessionStatus("tenant");
-    assert.equal(result.reason, "WAHA не удалось получить состояние подключения.");
+    assert.equal(result.reason, "waha_status_unavailable");
     assert.equal(JSON.stringify(result).includes("private-key"), false);
   } finally { globalThis.fetch = originalFetch; }
 });

@@ -10,11 +10,13 @@ export type SimulatorReservation={allowed:boolean;period?:'hour'|'day'};
 export async function reserveSimulatorCall(tenantId:string,hourlyLimit:number,dailyLimit:number,now=new Date(),root=SIMULATOR_LIMIT_STATE_DIR):Promise<SimulatorReservation>{
  const key=createHash('sha256').update(tenantId).digest('hex'),lock=join(root,key+'.lock'),statePath=join(root,key+'.json');
  await mkdir(root,{recursive:true});
- for(let attempt=0;attempt<3;attempt++){
+ const maximumAttempts=12;
+ for(let attempt=0;attempt<maximumAttempts;attempt++){
   try{await mkdir(lock);break;}catch{
    try{if(now.getTime()-(await stat(lock)).mtimeMs>ALERT_LOCK_STALE_MS)await rm(lock,{recursive:true,force:true});}catch{}
-   if(attempt===2)return{allowed:false,period:'hour'};
-   await new Promise(resolve=>setTimeout(resolve,10*(attempt+1)));
+   if(attempt===maximumAttempts-1)throw new Error('Simulator rate-limit lock unavailable');
+   const delay=Math.min(10*2**attempt,100)+Math.floor(Math.random()*10);
+   await new Promise(resolve=>setTimeout(resolve,delay));
   }
  }
  try{
