@@ -5,7 +5,7 @@ import type { WhatsAppProvider } from '../providers/whatsapp/whatsapp-provider.i
 import type { STTProvider } from '../providers/stt/stt-provider.interface.js';
 import { createSTTProvider } from '../providers/stt/index.js';
 import { WahaMedia,type MediaProvider } from '../providers/media/waha-media.js';
-import { isTenantServiceable,type TenantRouting } from './tenant.service.js';
+import { findOrCreateClient,findOrCreateConversation,isTenantServiceable,type TenantRouting } from './tenant.service.js';
 import { filterIncoming,allowedRecipient,ownerIdentityField,readSessionIdentity } from '../utils/incoming-policy.js';
 import { loadOwnerSettings,isBusinessOwner } from './owner-settings.service.js';
 import { recordUsageEvent,admitUsage } from './usage.service.js';
@@ -16,6 +16,7 @@ import { renderText } from './templates.service.js';
 import { agentContext } from '../agents/registry.js';
 import { withoutRepeatedIntroduction } from '../utils/assistant-text.js';
 import { conversationPaused } from './owner-workflow.service.js';
+import { senderKey } from '../utils/whatsapp-id.js';
 const object=(value:unknown):Record<string,unknown>=>value!==null&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:{};
 export function voiceUsage(body:Record<string,unknown>):{from:string;seconds:number|null;id:string|null;mime:string;url:string}|null {
  const decision=filterIncoming(body);
@@ -37,7 +38,11 @@ export async function handleVoiceUsage(db:DatabaseClient,routing:TenantRouting,b
  if(client.data?.auto_reply_allowed===false){await recordUsageEvent(db,{tenantId,eventType:'message_observed',eventKey:key,metadata:{reason:'client_opt_out',billable:false,media:'voice'}});return;}
  let paused=settings.auto_replies_paused,conversationId:string|undefined,introduced=false;
  if(client.data){const c=await db.from('conversations').select('id,bot_paused,assistant_introduced_at').eq('tenant_id',tenantId).eq('client_id',client.data.id).eq('status','active').order('created_at',{ascending:false}).limit(1).maybeSingle();if(c.error)return;conversationId=c.data?.id;introduced=!!c.data?.assistant_introduced_at;if(conversationId)paused=paused||await conversationPaused(db,tenantId,conversationId,settings);}
- if(paused){await recordUsageEvent(db,{tenantId,eventType:'message_observed',eventKey:key,metadata:{reason:'paused',billable:false,media:'voice'}});return;}
+ if(paused){
+  if(!conversationId){const info=object(object(object(body.payload)._data).Info),name=typeof info.PushName==='string'?info.PushName:null;const row=await findOrCreateClient(db,tenantId,senderKey(voice.from),name,voice.from);conversationId=(await findOrCreateConversation(db,tenantId,row.id)).id;}
+  const saved=await db.from('messages').insert({conversation_id:conversationId,tenant_id:tenantId,from_me:false,body:null,msg_type:'voice',waha_msg_id:voice.id,raw_payload:body});if(saved.error&&saved.error.code!=='23505')console.error('paused_voice_persist_failed',{tenantId});
+  await recordUsageEvent(db,{tenantId,eventType:'message_observed',eventKey:key,metadata:{reason:'paused',billable:false,media:'voice',classified:true}});return;
+ }
  return agentContext.run({agent:'RECEPTION'},async()=>{
   const transport=meterWhatsApp(db,tenantId,provider),language=routing.tenant.language??'ru';
   const explain=async(template:string)=>{await transport.sendMessage({session,chatId:voice.from,text:withoutRepeatedIntroduction(renderText(settings,template,language),introduced)});if(conversationId&&!introduced){await db.from('conversations').update({assistant_introduced_at:new Date().toISOString()}).eq('tenant_id',tenantId).eq('id',conversationId).is('assistant_introduced_at',null);introduced=true;}};

@@ -224,8 +224,12 @@ test('complete real GOWS client and owner reply payloads traverse worker filters
   assert.equal((await h.escalation(e.id)).status, 'delivered');
   await h.pg.query('update notification_settings set auto_replies_paused=true where tenant_id=$1', [h.tenant]);
   const count = h.sent.length;
-  await handleWebhookEvent(h.tenant, body, h.db, h.provider, { async generateReply() { throw new Error('must not call AI'); } });
+  const pausedBody=structuredClone(body);pausedBody.payload.id='paused-incoming-1';pausedBody.payload.from='55555555@lid';pausedBody.payload._data.Info.Chat='55555555@lid';pausedBody.payload.body='Хочу заказать новую услугу';
+  const storedBefore=Number((await h.pg.query<{count:string}>('select count(*)::text count from messages')).rows[0]!.count);
+  await handleWebhookEvent(h.tenant, pausedBody, h.db, h.provider, { async generateReply(input) {return input.systemPrompt.includes('классификатор')?{text:'{"agent":"SALE","confidence":0.95}'}:{text:'must not be delivered'};} });
   assert.equal(h.sent.length, count);
+  assert.equal(Number((await h.pg.query<{count:string}>('select count(*)::text count from messages')).rows[0]!.count),storedBefore+1,'paused inbound is retained');
+  assert.equal((await h.pg.query<{routed_agent:string}>('select c.routed_agent from conversations c join clients cl on cl.id=c.client_id where cl.whatsapp_jid=$1',['55555555@lid'])).rows[0]!.routed_agent,'SALE','paused inbound is classified');
 });
 
 test('observeOwnerOutgoing guard #1 is idempotent on a re-delivered waha_msg_id', async () => {
@@ -372,6 +376,7 @@ test('voice pause and quota stop STT; uncertainty asks for clarification without
     assert.equal(calls, mode === 'uncertain' ? 1 : 0);
     if (mode === 'paused') {
       assert.equal(downloads, 0); assert.equal(await h.admissions(), 0); assert.equal(h.sent.length, 0);
+      assert.equal(Number((await h.pg.query<{count:string}>("select count(*)::text count from messages where msg_type='voice'")).rows[0]!.count),1);
       const first = (await h.pg.query<{ event_type: string }>('select event_type from usage_events limit 1')).rows[0];
       assert.equal(first?.event_type, 'message_observed');
     } else {

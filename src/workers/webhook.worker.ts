@@ -153,7 +153,21 @@ export async function handleWebhookEvent(
   const clientReply=(value:string)=>withoutRepeatedIntroduction(value,memory.introduced);
   const markIntroduced=async()=>{if(memory.introduced)return;await db.from('conversations').update({assistant_introduced_at:new Date().toISOString()}).eq('tenant_id',tenantId).eq('id',conversation.id).is('assistant_introduced_at',null);memory.introduced=true;};
 
-  if (settings.auto_replies_paused || await conversationPaused(db, tenantId, conversation.id,settings)) {await recordUsageEvent(db,{tenantId,eventType:'message_observed',eventKey:usageKey,metadata:{reason:'paused',billable:false}});return;}
+  if (settings.auto_replies_paused || await conversationPaused(db, tenantId, conversation.id,settings)) {
+    // Pausing customer replies must not make the inbox blind. Keep the inbound
+    // message and its route, but stop before admission, escalation, or delivery.
+    const context=await loadContext(db,tenantId);
+    const exact=findExactKnowledgeAnswer(text,context.knowledge);
+    let routedAgent=exact.matched?'FAQ':conversation.routed_agent;
+    if(!exact.matched){
+      const classification:Record<string,unknown>[]=[];
+      const outcome=await routeConversation(db,tenantId,conversation,text,settings,ai===undefined?createAIProvider():ai,usage=>classification.push(usage),memory.messages.length===1);
+      for(const metadata of classification)await agentContext.run({agent:'RECEPTION'},()=>recordUsageEvent(db,{tenantId,eventType:'model_call',eventKey:randomUUID(),metadata:{...metadata,purpose:'intent_classification',replies_paused:true}}));
+      routedAgent=outcome.kind==='agent'?outcome.agent.name:'RECEPTION';
+    }
+    await agentContext.run({agent:routedAgent??'RECEPTION'},()=>recordUsageEvent(db,{tenantId,eventType:'message_observed',eventKey:usageKey,metadata:{reason:'paused',billable:false,classified:true}}));
+    return;
+  }
 
   const admission=voiceAdmission ? {allowed:true,duplicate:false,unavailable:voiceAdmission.unavailable} : await admitUsage(db,tenantId,usageKey);
   if(admission.duplicate)return;
