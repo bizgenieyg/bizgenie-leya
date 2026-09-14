@@ -9,8 +9,9 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit",
-    "test": "node --test dist/services/*.test.js",
-    "start": "node dist/server.js"
+    "test": "node scripts/run-tests.mjs fast",
+    "start": "node dist/server.js",
+    "test:integration": "node scripts/run-tests.mjs full"
   },
   "engines": {
     "node": ">=20"

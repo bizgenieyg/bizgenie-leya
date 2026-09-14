@@ -51,7 +51,10 @@ Phase 1 Express and TypeScript backend skeleton with Supabase migrations.
 npm run build
 npm run typecheck
 npm test
+npm run test:integration
 ```
+
+`npm test` runs the fast unit suite. `npm run test:integration` runs the complete suite, including PGlite tests named `*.integration.test.ts`.
 
 RLS is enabled on every Phase 1 table. No public policies are created in this phase; database access is backend-only through the service-role client.
 
