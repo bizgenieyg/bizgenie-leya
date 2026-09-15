@@ -15,6 +15,7 @@ export interface AssistantContext {
 export interface TenantContext {
   assistant: AssistantContext | null;
   knowledge: KnowledgeCandidate[];
+  materials?: Array<{content:string;file_name:string;similarity:number}>;
 }
 
 export interface ConversationMemory { fromMe:boolean; text:string; createdAt:string; }

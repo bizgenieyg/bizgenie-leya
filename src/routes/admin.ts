@@ -7,7 +7,7 @@ import { loadOwnerSettings, saveOwnerSettings } from '../services/owner-settings
 import { getTenantRouting } from '../services/tenant.service.js';
 import { createWhatsAppProvider } from '../providers/whatsapp/index.js';
 import { readSessionIdentity } from '../utils/incoming-policy.js';
-import { Router } from "express";
+import express, { Router } from "express";
 
 import { WahaAdminService } from "../services/waha-admin.service.js";
 import { isUuid } from "../services/tenant.service.js";
@@ -18,6 +18,7 @@ import { DEFAULT_TIME_ZONE } from '../config/time-zones.js';
 import { deleteClientCard,getClientCard,listClientCards,updateClientCard } from '../services/client-cards.service.js';
 import { buildOwnerSummary } from '../services/owner-summary.service.js';
 import { simulateCustomerMessage } from '../services/simulator.service.js';
+import {deleteKnowledgeDocument,indexKnowledgeDocument,listKnowledgeDocuments,reindexKnowledgeDocument} from '../services/knowledge-documents.service.js';
 
 const waha = new WahaAdminService();
 
@@ -114,6 +115,10 @@ adminRouter.get('/clients',async(request,response)=>{response.setHeader('Cache-C
 adminRouter.get('/clients/:id',async(request,response)=>{response.setHeader('Cache-Control','no-store');response.json(await getClientCard(supabase,queryTenantId(request.query.tenantId),String(request.params.id)));});
 adminRouter.patch('/clients/:id',async(request,response)=>response.json(await updateClientCard(supabase,queryTenantId(request.query.tenantId),String(request.params.id),objectBody(request.body))));
 adminRouter.delete('/clients/:id',async(request,response)=>{await deleteClientCard(supabase,queryTenantId(request.query.tenantId),String(request.params.id),request.query.permanent==='true');response.status(204).send();});
+adminRouter.get('/knowledge-documents',async(request,response)=>{response.setHeader('Cache-Control','no-store');response.json(await listKnowledgeDocuments(supabase,queryTenantId(request.query.tenantId)))});
+adminRouter.post('/knowledge-documents',express.raw({type:'application/octet-stream',limit:'10mb'}),async(request,response)=>{const tenantId=queryTenantId(request.query.tenantId),encoded=request.header('x-file-name')??'',name=decodeURIComponent(encoded),type=request.header('x-file-type')??'';if(!name||name.length>255||!Buffer.isBuffer(request.body)||!request.body.length)throw new HttpError(400,'Invalid knowledge file',{code:'knowledge_invalid_file'});response.status(201).json(await indexKnowledgeDocument(supabase,tenantId,{name,type,data:request.body}))});
+adminRouter.delete('/knowledge-documents/:id',async(request,response)=>{await deleteKnowledgeDocument(supabase,queryTenantId(request.query.tenantId),String(request.params.id));response.status(204).send()});
+adminRouter.post('/knowledge-documents/:id/reindex',async(request,response)=>response.json(await reindexKnowledgeDocument(supabase,queryTenantId(request.query.tenantId),String(request.params.id))));
 adminRouter.get('/owner-summary',async(request,response)=>{const tenantId=queryTenantId(request.query.tenantId),to=request.query.to?new Date(String(request.query.to)):new Date(),from=request.query.from?new Date(String(request.query.from)):new Date(to.getTime()-7*86400000);if(!Number.isFinite(from.getTime())||!Number.isFinite(to.getTime())||from>=to||to.getTime()-from.getTime()>366*86400000)throw new HttpError(400,'Invalid summary period');response.setHeader('Cache-Control','no-store');response.json(await buildOwnerSummary(supabase,tenantId,from,to));});
 adminRouter.post('/simulator',async(request,response)=>{const tenantId=queryTenantId(request.query.tenantId),text=requiredString(objectBody(request.body),'text').trim();if(!text||text.length>2000)throw new HttpError(400,'Message must contain 1 to 2000 characters',{code:'simulator_invalid_message'});response.setHeader('Cache-Control','no-store');try{response.json(await simulateCustomerMessage(supabase,tenantId,text));}catch(error){console.error('simulator_request_failed',{tenantId,errorName:error instanceof Error?error.name:'unknown',errorMessage:error instanceof Error?error.message:String(error),stack:error instanceof Error?error.stack:undefined});if(error instanceof HttpError)throw error;throw new HttpError(503,'Simulator unavailable',{code:'simulator_processing_unavailable'});}});
 // This endpoint is reachable only with ADMIN_SECRET (requireAdmin). There is no separate

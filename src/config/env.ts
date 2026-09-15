@@ -25,6 +25,7 @@ export const env = Object.freeze({
   sttModel: process.env.STT_MODEL,
   geminiApiKey: process.env.GEMINI_API_KEY,
   geminiModel: process.env.GEMINI_MODEL,
+  geminiEmbeddingModel: process.env.GEMINI_EMBEDDING_MODEL,
   supabaseUrl: process.env.SUPABASE_URL,
   supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
   adminSecret: leyaEnvironment.adminApiKey ?? process.env.ADMIN_SECRET,

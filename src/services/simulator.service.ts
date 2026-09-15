@@ -13,6 +13,7 @@ import { languageOf, renderText } from './templates.service.js';
 import { recordUsageEvent } from './usage.service.js';
 import type { ConversationRow } from './tenant.service.js';
 import { reserveSimulatorCall } from './simulator-rate-limit.js';
+import {findSemanticKnowledge} from './semantic-knowledge.service.js';
 import { HttpError } from '../utils/http-error.js';
 import { behavior } from './runtime-settings.service.js';
 
@@ -24,6 +25,7 @@ export async function simulateCustomerMessage(db:DatabaseClient,tenantId:string,
   if(!reservation.allowed)throw new HttpError(429,reservation.period==='hour'?'Simulator hourly limit reached':'Simulator daily limit reached',{code:reservation.period==='hour'?'simulator_hourly_limit':'simulator_daily_limit'});
   const exact=findExactKnowledgeAnswer(text,context.knowledge);
   if(exact.matched)return{reply:exact.answer,agent:'CORE',source:'faq'};
+  context.materials=await findSemanticKnowledge(db,tenantId,text);
 
   const conversation={id:randomUUID(),tenant_id:tenantId,client_id:randomUUID(),status:'active',routed_agent:null,route_selected_at:null,source_label:null,reception_message_count:0,last_message_at:null} as ConversationRow;
   const classificationUsage:Record<string,unknown>[]=[];

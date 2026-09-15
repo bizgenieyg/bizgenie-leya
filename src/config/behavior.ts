@@ -29,6 +29,15 @@ export const BEHAVIOR_DEFAULTS = {
   summary_frequency: 'weekly' as 'off'|'daily'|'weekly',
   summary_time: '09:00',
   summary_weekday: 1,
+  knowledge_max_files: 10,
+  knowledge_max_file_bytes: 10 * 1024 * 1024,
+  knowledge_max_total_bytes: 50 * 1024 * 1024,
+  knowledge_max_pdf_pages: 200,
+  knowledge_max_characters: 500_000,
+  knowledge_search_results: 5,
+  knowledge_similarity_threshold: 0.72,
+  knowledge_indexing_hourly_limit: 10,
+  knowledge_indexing_daily_limit: 20,
 };
 export const SCHEDULER_POLL_MS = 1000;
 // Message storage retention: floor for behavior.message_retention_days, and how often

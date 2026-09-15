@@ -54,7 +54,9 @@ export function validateRuntimePatch(input:Record<string,unknown>) {
   if(SYSTEM_FIELDS.has(key))throw new HttpError(403,'System settings cannot be changed by tenant');
   if(['translate_owner_answer','auto_replies_paused'].includes(key)){if(typeof value!=='boolean')throw new HttpError(400,'Expected boolean');notification[key]=value;}
   else if(['auto_resume_hours','reception_max_messages'].includes(key))behaviorPatch[key]=integer(key,value,0,8760);
-  else if(['simulator_hourly_limit','simulator_daily_limit'].includes(key))behaviorPatch[key]=integer(key,value,1,100000);
+  else if(['simulator_hourly_limit','simulator_daily_limit','knowledge_max_files','knowledge_max_pdf_pages','knowledge_max_characters','knowledge_search_results','knowledge_indexing_hourly_limit','knowledge_indexing_daily_limit'].includes(key))behaviorPatch[key]=integer(key,value,1,1000000);
+  else if(['knowledge_max_file_bytes','knowledge_max_total_bytes'].includes(key))behaviorPatch[key]=integer(key,value,1024,1073741824);
+  else if(key==='knowledge_similarity_threshold'){if(typeof value!=='number'||value<0||value>1)throw new HttpError(400,'Invalid knowledge threshold');behaviorPatch[key]=value;}
   else if(key==='message_retention_days')behaviorPatch[key]=integer(key,value,MESSAGE_RETENTION_MIN_DAYS,3650);
   else if(['escalation_remind_minutes','escalation_close_minutes','usage_failure_alert_minutes','pairing_ttl_minutes','scheduler_interval_seconds','stt_timeout_seconds','media_max_bytes','deferred_max_age_hours','context_message_count','context_retention_hours'].includes(key))behaviorPatch[key]=integer(key,value,1,2147483647);
   else if(['stt_confidence_threshold','intent_confidence_threshold'].includes(key)){if(typeof value!=='number'||value<0||value>1)throw new HttpError(400,'Invalid confidence');behaviorPatch[key]=value;}

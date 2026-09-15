@@ -35,6 +35,7 @@ import {
 import { admitUsage, recordUsageEvent } from "../services/usage.service.js";
 import { routeConversation } from '../services/conversation-routing.service.js';
 import { inferredLanguage,requestsNoAutomaticReplies } from '../services/client-cards.service.js';
+import {findSemanticKnowledge} from '../services/semantic-knowledge.service.js';
 
 /**
  * Process one already-authenticated webhook body for `tenantId`.
@@ -190,6 +191,7 @@ export async function handleWebhookEvent(
       await recordUsageEvent(db,{tenantId,eventType:'faq_answer_exact',metadata:{knowledge_item_id:exact.knowledgeItemId}});
     });
   }
+  context.materials=await findSemanticKnowledge(db,tenantId,text);
   const classification:Record<string,unknown>[]=[];
   const outcome=await routeConversation(db,tenantId,conversation,text,settings,ai===undefined?createAIProvider():ai,usage=>classification.push(usage),memory.messages.length===1);
   for(const metadata of classification)await agentContext.run({agent:'RECEPTION'},()=>recordUsageEvent(db,{tenantId,eventType:'model_call',eventKey:randomUUID(),metadata:{...metadata,purpose:'intent_classification'}}));

@@ -20,12 +20,15 @@
     "@supabase/postgrest-js": "2.108.2",
     "dotenv": "^17.2.2",
     "express": "^5.1.0",
-    "music-metadata": "11.15.0"
+    "mammoth": "1.11.0",
+    "music-metadata": "11.15.0",
+    "pdf-parse": "1.1.1"
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.8",
     "@types/express": "^5.0.3",
     "@types/node": "^24.5.2",
+    "@types/pdf-parse": "1.1.5",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2"
   }

@@ -471,3 +471,11 @@ See [review report, defaults, STT choice, SQL and rollout](docs/review-runtime-s
 ### Cabinet response simulator
 
 `POST /api/admin/simulator?tenantId=UUID` accepts `{ "text": "..." }` under the existing admin bearer authentication. It uses exact FAQ matching, agent routing and the configured AI provider, but does not create clients or conversations, send WhatsApp messages, or consume the tenant message quota. Model usage remains recorded with `simulation=true`. Independent operator settings `simulator_hourly_limit` and `simulator_daily_limit` default to 30 and 100; they are stored in `notification_settings.behavior` and can be changed through the admin tenant-settings API. The durable counter is stored under `.runtime/simulator-limits` on the supported single VPS.
+
+### Uploaded knowledge materials
+
+Migration 045 enables `extensions.vector` and adds tenant-scoped documents and chunks. Text files, Markdown, PDF and DOCX are extracted, split into overlapping fragments, embedded with `gemini-embedding-001` at 768 dimensions, and searched with cosine similarity after exact FAQ matching. Each document stores its model and dimension. Changing `GEMINI_EMBEDDING_MODEL` affects new/query embeddings; existing documents must be reindexed explicitly, because embedding spaces are not mixed.
+
+Operator runtime defaults are 10 files, 10 MB per file, 50 MB per tenant, 200 PDF pages, 500,000 characters, 5 search results and similarity `0.72`. The threshold is an initial assumption: tune it from real labelled question→relevant-fragment pairs, measuring recall below the threshold and false matches above it before changing the operator setting. Indexing and query embedding usage is recorded with purposes `knowledge_embedding_index` and `knowledge_embedding_query`; neither consumes the monthly customer-message limit. Indexing has separate hourly/daily safeguards.
+
+Indexing uses the synchronous `batchEmbedContents` endpoint in batches of up to 100 fragments. The asynchronous Gemini Batch API can halve embedding price but needs queued jobs, polling and retry persistence; it is deferred to keep the first ingestion stage reliable and reviewable.

@@ -1,0 +1,2 @@
+import{env}from'../../config/env.js';import{embeddingConfig}from'../../config/knowledge.js';import{GeminiEmbeddingProvider}from'./gemini-embedding.provider.js';import type{EmbeddingProvider}from'./embedding-provider.interface.js';
+export function createEmbeddingProvider():EmbeddingProvider|null{if(!env.geminiApiKey){console.warn('knowledge_embedding_disabled_missing_key');return null}const c=embeddingConfig();return new GeminiEmbeddingProvider(env.geminiApiKey,c.model,c.dimensions)}
