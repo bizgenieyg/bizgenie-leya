@@ -38,6 +38,8 @@ export const BEHAVIOR_DEFAULTS = {
   knowledge_similarity_threshold: 0.72,
   knowledge_indexing_hourly_limit: 10,
   knowledge_indexing_daily_limit: 20,
+  knowledge_chunk_characters: 1500,
+  knowledge_chunk_overlap: 225,
 };
 export const SCHEDULER_POLL_MS = 1000;
 // Message storage retention: floor for behavior.message_retention_days, and how often

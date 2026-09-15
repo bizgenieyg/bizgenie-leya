@@ -262,6 +262,7 @@ test('returning contact with assistant_introduced_at gets no repeated greeting',
 
 test('assistant formatting strips placeholders and defer detection does not reject substantive tomorrow answer', () => {
   assert.equal(clientText('Ответ <имя> без > скобок'), 'Ответ без скобок');
+  assert.equal(clientText('Передаю в SUPPORT / SALE для уточнения'), 'Передаю в для уточнения');
   assert.equal(isDeferredAnswer('Завтра доставка с 9 до 18'), false);
   assert.equal(isDeferredAnswer('позже'), true);
 });

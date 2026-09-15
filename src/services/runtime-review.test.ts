@@ -50,11 +50,13 @@ test('conversation behavior settings validate tenant overrides',()=>{
  assert.throws(()=>validateRuntimePatch({cabinet_language:'de'}));
 });
 test('operator runtime settings remain accepted by the ADMIN_SECRET API validator',()=>{
- const patch=validateRuntimePatch({translate_owner_answer:true,escalation_remind_minutes:120,escalation_close_minutes:1440,auto_resume_hours:0,deferred_max_age_hours:12,context_message_count:10,context_retention_hours:48,intent_confidence_threshold:.75,route_stickiness_hours:24,reception_max_messages:0,simulator_hourly_limit:30,simulator_daily_limit:100,campaign_routes:[],source_routes:[],templates:{'client.waiting':{ru:'Я уточню и вернусь с ответом.'}}});
+ const patch=validateRuntimePatch({translate_owner_answer:true,escalation_remind_minutes:120,escalation_close_minutes:1440,auto_resume_hours:0,deferred_max_age_hours:12,context_message_count:10,context_retention_hours:48,intent_confidence_threshold:.75,route_stickiness_hours:24,reception_max_messages:0,simulator_hourly_limit:30,simulator_daily_limit:100,knowledge_chunk_characters:1500,knowledge_chunk_overlap:225,campaign_routes:[],source_routes:[],templates:{'client.waiting':{ru:'Я уточню и вернусь с ответом.'}}});
  assert.equal(patch.notification.translate_owner_answer,true);
  assert.equal((patch.notification.templates as any)['client.waiting'].ru,'Я уточню и вернусь с ответом.');
  assert.equal(patch.behaviorPatch.escalation_remind_minutes,120);
  assert.equal(patch.behaviorPatch.simulator_hourly_limit,30);
+ assert.equal(patch.behaviorPatch.knowledge_chunk_characters,1500);
+ assert.equal(patch.behaviorPatch.knowledge_chunk_overlap,225);
  assert.deepEqual(patch.behaviorPatch.campaign_routes,[]);
 });
 test('legacy tenants receive every behavior and template default at runtime',()=>{

@@ -45,6 +45,7 @@ test('reception chats naturally without exposing internal agent codes or asking 
  const chat=await generateReceptionReply(context,'Просто привет',clarification,ai,[],true);
  assert.equal(chat.reply,'Рад помочь. Чем вы сегодня заняты?');assert.equal(chat.escalate,false);assert.match(prompt,/не приветствуй и не представляйся снова/);assert.match(prompt,/не повторяй один вопрос в каждой реплике/i);
  assert.match(prompt,/не проси клиента выбирать отдел/i);assert.doesNotMatch(prompt,/\b(?:SALE|SUPPORT|RECEPTION|CORE)\b/);
+ assert.match(prompt,/Пиши тепло и по делу/);
  const leaked=await generateReceptionReply(context,'Привет',clarification,{async generateReply(){return{text:'Выберите SUPPORT / SALE?'};}},[],false);
  assert.equal(leaked.reply,clarification);assert.doesNotMatch(leaked.reply!,/\b(?:SALE|SUPPORT|RECEPTION|CORE)\b/);
  const escalate=await generateReceptionReply(context,'Позовите владельца','уточнение',{async generateReply(){return{text:'ESCALATE_OWNER'};}},[],false);assert.equal(escalate.escalate,true);
