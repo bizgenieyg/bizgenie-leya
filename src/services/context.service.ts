@@ -9,6 +9,7 @@ export interface AssistantContext {
   tone: string | null;
   mode: string | null;
   system_rules: string | null;
+  style_profile_md?: string | null;
 }
 
 export interface TenantContext {
@@ -44,7 +45,7 @@ export async function loadContext(
   const [assistantResult, knowledgeResult] = await Promise.all([
     db
       .from("assistant_profiles")
-      .select("assistant_name, allowed_languages, tone, mode, system_rules")
+      .select("assistant_name, allowed_languages, tone, mode, system_rules, style_profile_md")
       .eq("tenant_id", tenantId)
       .maybeSingle(),
     db

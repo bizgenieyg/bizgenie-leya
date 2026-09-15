@@ -5,7 +5,7 @@ import { createAIProvider } from "../providers/ai/index.js";
 import { generateKnowledgeReply,generateReceptionReply } from "./ai-fallback.service.js";
 import { replyLanguage } from './templates.service.js';
 
-const context = { assistant: { assistant_name: "Лея", allowed_languages: ["he", "ru", "en"], tone: "friendly", mode: null, system_rules: null }, knowledge: [{ id: "a", question: "Часы?", answer: "9–18" }] };
+const context = { assistant: { assistant_name: "Лея", allowed_languages: ["he", "ru", "en"], tone: "friendly", mode: null, system_rules: null, style_profile_md: "Пиши тепло и по делу." }, knowledge: [{ id: "a", question: "Часы?", answer: "9–18" }] };
 
 test("absent key disables fallback without an API call", async () => {
   assert.equal(createAIProvider(""), null);
@@ -24,6 +24,7 @@ test("Gemini receives tenant knowledge/settings and hard rules, returns only fin
     const input = JSON.parse(body.contents[0].parts[0].text);
     assert.deepEqual(input.knowledge, [{ question: "Часы?", answer: "9–18" }]);
     assert.deepEqual(input.assistant.languages, ["he", "ru", "en"]);
+    assert.equal(input.assistant.style, "Пиши тепло и по делу.");
     assert.equal(input.customerMessage, "Когда?");
     return Response.json({ candidates: [{ finishReason: "STOP", content: { parts: [{ thought: true, text: "private thinking" }, { text: "С 9 до 18." }] } }] });
   };
