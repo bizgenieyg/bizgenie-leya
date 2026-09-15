@@ -5,7 +5,7 @@ import { createAIProvider } from "../providers/ai/index.js";
 import { generateKnowledgeReply,generateReceptionReply } from "./ai-fallback.service.js";
 import { replyLanguage } from './templates.service.js';
 
-const context = { assistant: { assistant_name: "Лея", allowed_languages: ["he", "ru", "en"], tone: "friendly", mode: null, system_rules: null, style_profile_md: "Пиши тепло и по делу." }, knowledge: [{ id: "a", question: "Часы?", answer: "9–18" }] };
+const context = { business:{owner_name:"Даниэль",business_name:"BizGenie",language:"ru"}, assistant: { assistant_name: "Лея", allowed_languages: ["he", "ru", "en"], tone: "friendly", mode: null, system_rules: null, style_profile_md: "Пиши тепло и по делу." }, knowledge: [{ id: "a", question: "Часы?", answer: "9–18" }] };
 
 test("absent key disables fallback without an API call", async () => {
   assert.equal(createAIProvider(""), null);
@@ -21,7 +21,9 @@ test("Gemini receives tenant knowledge/settings and hard rules, returns only fin
     const body = JSON.parse(String(init?.body));
     assert.match(body.systemInstruction.parts[0].text, /ТОЛЬКО на основе/);
     assert.match(body.systemInstruction.parts[0].text, /Никогда не выдумывай/);
+    assert.match(body.systemInstruction.parts[0].text, /businessIdentity/);
     const input = JSON.parse(body.contents[0].parts[0].text);
+    assert.deepEqual(input.businessIdentity,{owner_name:"Даниэль",business_name:"BizGenie",language:"ru"});
     assert.deepEqual(input.knowledge, [{ question: "Часы?", answer: "9–18" }]);
     assert.deepEqual(input.assistant.languages, ["he", "ru", "en"]);
     assert.equal(input.assistant.style, "Пиши тепло и по делу.");
@@ -40,12 +42,13 @@ test('dialogue memory is passed in order and repeated greeting is forbidden',asy
  assert.match(prompt,/не приветствуй клиента и не представляйся снова/);
 });
 test('reception chats naturally without exposing internal agent codes or asking for a department',async()=>{
- let prompt='';const ai={async generateReply(input:{systemPrompt:string}){prompt=input.systemPrompt;return{text:'Рад помочь. Чем вы сегодня заняты?'};}};
+ let prompt='',payload:any;const ai={async generateReply(input:{systemPrompt:string;userMessage:string}){prompt=input.systemPrompt;payload=JSON.parse(input.userMessage);return{text:'Рад помочь. Чем вы сегодня заняты?'};}};
  const clarification='Я ассистент владельца. Расскажите, пожалуйста, что вам нужно — постараюсь помочь.';
  const chat=await generateReceptionReply(context,'Просто привет',clarification,ai,[],true);
  assert.equal(chat.reply,'Рад помочь. Чем вы сегодня заняты?');assert.equal(chat.escalate,false);assert.match(prompt,/не приветствуй и не представляйся снова/);assert.match(prompt,/не повторяй один вопрос в каждой реплике/i);
  assert.match(prompt,/не проси клиента выбирать отдел/i);assert.doesNotMatch(prompt,/\b(?:SALE|SUPPORT|RECEPTION|CORE)\b/);
- assert.match(prompt,/Пиши тепло и по делу/);
+ assert.match(prompt,/Пиши тепло и по делу/);assert.match(prompt,/businessIdentity/);
+ assert.deepEqual(payload.businessIdentity,{owner_name:'Даниэль',business_name:'BizGenie',language:'ru'});
  const leaked=await generateReceptionReply(context,'Привет',clarification,{async generateReply(){return{text:'Выберите SUPPORT / SALE?'};}},[],false);
  assert.equal(leaked.reply,clarification);assert.doesNotMatch(leaked.reply!,/\b(?:SALE|SUPPORT|RECEPTION|CORE)\b/);
  const escalate=await generateReceptionReply(context,'Позовите владельца','уточнение',{async generateReply(){return{text:'ESCALATE_OWNER'};}},[],false);assert.equal(escalate.escalate,true);

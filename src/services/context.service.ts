@@ -14,6 +14,7 @@ export interface AssistantContext {
 
 export interface TenantContext {
   assistant: AssistantContext | null;
+  business?: { owner_name:string; business_name:string; language:string | null } | null;
   knowledge: KnowledgeCandidate[];
   materials?: Array<{content:string;file_name:string;similarity:number}>;
 }
@@ -43,11 +44,16 @@ export async function loadContext(
   db: DatabaseClient,
   tenantId: string,
 ): Promise<TenantContext> {
-  const [assistantResult, knowledgeResult] = await Promise.all([
+  const [assistantResult, tenantResult, knowledgeResult] = await Promise.all([
     db
       .from("assistant_profiles")
       .select("assistant_name, allowed_languages, tone, mode, system_rules, style_profile_md")
       .eq("tenant_id", tenantId)
+      .maybeSingle(),
+    db
+      .from("tenants")
+      .select("name, business_name, language")
+      .eq("id", tenantId)
       .maybeSingle(),
     db
       .from("knowledge_items")
@@ -60,6 +66,9 @@ export async function loadContext(
 
   if (assistantResult.error) {
     throw new HttpError(500, "Could not load assistant profile");
+  }
+  if (tenantResult.error) {
+    throw new HttpError(500, "Could not load tenant identity");
   }
   if (knowledgeResult.error) {
     throw new HttpError(500, "Could not load knowledge items");
@@ -75,6 +84,11 @@ export async function loadContext(
 
   return {
     assistant: (assistantResult.data as AssistantContext | null) ?? null,
+    business: tenantResult.data ? {
+      owner_name: String(tenantResult.data.name),
+      business_name: String(tenantResult.data.business_name ?? tenantResult.data.name),
+      language: typeof tenantResult.data.language === "string" ? tenantResult.data.language : null,
+    } : null,
     knowledge,
   };
 }
