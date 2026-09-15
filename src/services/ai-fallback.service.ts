@@ -1,4 +1,4 @@
-import { clientText } from "../utils/assistant-text.js";
+import { clientText,containsInternalAgentCode } from "../utils/assistant-text.js";
 import type { AIProvider } from "../providers/ai/ai-provider.interface.js";
 import { createAIProvider } from "../providers/ai/index.js";
 import type { ConversationMemory, TenantContext } from "./context.service.js";
@@ -27,7 +27,7 @@ export async function generateKnowledgeReply(context: TenantContext, text: strin
         customerMessage: text,
       }),
     });
-    return result.text.includes("NO_KNOWLEDGE_ANSWER") ? null : clientText(result.text) || null;
+    return result.text.includes("NO_KNOWLEDGE_ANSWER")||containsInternalAgentCode(result.text) ? null : clientText(result.text) || null;
   } catch {
     console.warn("gemini_fallback_unavailable");
     return null;
@@ -37,8 +37,9 @@ export async function generateKnowledgeReply(context: TenantContext, text: strin
 export async function generateReceptionReply(context:TenantContext,text:string,clarification:string,ai:AIProvider|null,memory:ConversationMemory[],introduced:boolean):Promise<{reply:string|null;escalate:boolean}> {
  if(!ai)return{reply:null,escalate:true};
  try{
-  const result=await ai.generateReply({systemPrompt:`Ты RECEPTION — дружелюбная приёмная ассистента владельца. Поддерживай естественную короткую беседу, но факты о бизнесе, цены, сроки и условия бери ТОЛЬКО из базы знаний. Ничего не выдумывай. Естественно уточняй цель обращения, когда это уместно; ориентир формулировки: ${clarification}. Не задавай этот вопрос в каждой реплике и не превращай разговор в анкету. Если клиент прямо просит владельца, вопрос требует решения вне компетенции бота или разговор явно зашёл в тупик, верни только ESCALATE_OWNER. Как только виден интерес к покупке или поддержке, не объявляй переключение: маршрутизация произойдёт отдельно. Отвечай на языке клиента, 2–4 предложениями, без заголовков и угловых скобок. Ты ассистент владельца и не выдаёшь себя за владельца. ${introduced?'Ассистент уже представлялся: не приветствуй и не представляйся снова.':'Можно кратко поприветствовать и представиться один раз.'}`,userMessage:JSON.stringify({knowledge:context.knowledge.map(x=>({question:x.question,answer:x.answer})),conversationHistory:memory.map(x=>({role:x.fromMe?'assistant':'customer',text:x.text})),customerMessage:text})});
+  const result=await ai.generateReply({systemPrompt:`Ты дружелюбная приёмная ассистента владельца. Веди естественную короткую беседу и постарайся понять задачу клиента из его слов. Отвечай по базе знаний. Если деталей недостаточно, задай уместный вопрос по существу: что именно нужно, для какого бизнеса, товара, услуги или ситуации. Не проси клиента выбирать отдел, направление или внутреннюю роль и не описывай устройство системы. Не превращай разговор в анкету и не повторяй один вопрос в каждой реплике. Факты о бизнесе, цены, сроки и условия бери ТОЛЬКО из базы знаний; ничего не выдумывай. Если клиент прямо просит владельца, вопрос требует решения вне компетенции бота или разговор явно зашёл в тупик, верни только ESCALATE_OWNER. Когда цель становится понятна, продолжай без объявления о внутренней передаче. Естественный ориентир для первого продолжения: ${clarification}. Отвечай на языке клиента, 2–4 предложениями, без заголовков и угловых скобок. Ты ассистент владельца и не выдаёшь себя за владельца. ${introduced?'Ассистент уже представлялся: не приветствуй и не представляйся снова.':'Кратко представься ассистентом владельца и естественно продолжи разговор.'}`,userMessage:JSON.stringify({knowledge:context.knowledge.map(x=>({question:x.question,answer:x.answer})),conversationHistory:memory.map(x=>({role:x.fromMe?'assistant':'customer',text:x.text})),customerMessage:text})});
   if(result.text.includes('ESCALATE_OWNER'))return{reply:null,escalate:true};
+  if(containsInternalAgentCode(result.text))return{reply:clientText(clarification),escalate:false};
   return{reply:clientText(result.text)||null,escalate:false};
  }catch{console.warn('reception_model_unavailable');return{reply:null,escalate:true};}
 }

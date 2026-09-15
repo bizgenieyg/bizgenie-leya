@@ -37,10 +37,14 @@ test('dialogue memory is passed in order and repeated greeting is forbidden',asy
  assert.deepEqual(payload.conversationHistory,[{role:'customer',text:'Первый вопрос'},{role:'assistant',text:'Первый ответ'}]);
  assert.match(prompt,/не приветствуй клиента и не представляйся снова/);
 });
-test('RECEPTION chats freely, preserves one-time introduction, and can request escalation',async()=>{
+test('reception chats naturally without exposing internal agent codes or asking for a department',async()=>{
  let prompt='';const ai={async generateReply(input:{systemPrompt:string}){prompt=input.systemPrompt;return{text:'Рад помочь. Чем вы сегодня заняты?'};}};
- const chat=await generateReceptionReply(context,'Просто привет','Вас интересуют SALE / SUPPORT?',ai,[],true);
- assert.equal(chat.reply,'Рад помочь. Чем вы сегодня заняты?');assert.equal(chat.escalate,false);assert.match(prompt,/не приветствуй и не представляйся снова/);assert.match(prompt,/не задавай этот вопрос в каждой реплике/i);
+ const clarification='Я ассистент владельца. Расскажите, пожалуйста, что вам нужно — постараюсь помочь.';
+ const chat=await generateReceptionReply(context,'Просто привет',clarification,ai,[],true);
+ assert.equal(chat.reply,'Рад помочь. Чем вы сегодня заняты?');assert.equal(chat.escalate,false);assert.match(prompt,/не приветствуй и не представляйся снова/);assert.match(prompt,/не повторяй один вопрос в каждой реплике/i);
+ assert.match(prompt,/не проси клиента выбирать отдел/i);assert.doesNotMatch(prompt,/\b(?:SALE|SUPPORT|RECEPTION|CORE)\b/);
+ const leaked=await generateReceptionReply(context,'Привет',clarification,{async generateReply(){return{text:'Выберите SUPPORT / SALE?'};}},[],false);
+ assert.equal(leaked.reply,clarification);assert.doesNotMatch(leaked.reply!,/\b(?:SALE|SUPPORT|RECEPTION|CORE)\b/);
  const escalate=await generateReceptionReply(context,'Позовите владельца','уточнение',{async generateReply(){return{text:'ESCALATE_OWNER'};}},[],false);assert.equal(escalate.escalate,true);
 });
 test("HTTP failures, blocked/empty/partial output and timeout retain old fallback behavior", async () => {

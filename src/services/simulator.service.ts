@@ -8,7 +8,7 @@ import { generateKnowledgeReply, generateReceptionReply } from './ai-fallback.se
 import { findExactKnowledgeAnswer } from './knowledge.service.js';
 import { meterAI } from './metered-providers.js';
 import { loadOwnerSettings } from './owner-settings.service.js';
-import { enabledAgentNames, routeConversation } from './conversation-routing.service.js';
+import { routeConversation } from './conversation-routing.service.js';
 import { languageOf, renderText } from './templates.service.js';
 import { recordUsageEvent } from './usage.service.js';
 import type { ConversationRow } from './tenant.service.js';
@@ -30,14 +30,14 @@ export async function simulateCustomerMessage(db:DatabaseClient,tenantId:string,
   const route=await routeConversation(db,tenantId,conversation,text,settings,ai,usage=>classificationUsage.push(usage),true,false);
   for(const metadata of classificationUsage)await agentContext.run({agent:'RECEPTION'},()=>recordUsageEvent(db,{tenantId,eventType:'model_call',eventKey:randomUUID(),metadata:{...metadata,purpose:'intent_classification',simulation:true}}));
 
-  if(route.kind==='escalate')return{reply:renderText(settings,'client.reception_question',languageOf(text),{agents:enabledAgentNames(settings)}),agent:'RECEPTION',source:'fallback'};
+  if(route.kind==='escalate')return{reply:renderText(settings,'client.reception_question',languageOf(text)),agent:'RECEPTION',source:'fallback'};
   const agent=route.kind==='agent'?route.agent.name:'RECEPTION';
   const model=meterAI(db,tenantId,ai,{simulation:true,purpose:'simulator_reply'});
   if(route.kind==='reception'){
-    const prompt=renderText(settings,'client.reception_question',languageOf(text),{agents:enabledAgentNames(settings)});
+    const prompt=renderText(settings,'client.reception_question',languageOf(text));
     const result=await agentContext.run({agent},()=>generateReceptionReply(context,text,prompt,model,[],false));
     return{reply:result.reply||prompt,agent,source:result.reply?'reception':'fallback'};
   }
   const reply=await agentContext.run({agent},()=>generateKnowledgeReply(context,text,model,route.agent.systemPrompt,[],false));
-  return{reply:reply||renderText(settings,'client.reception_question',languageOf(text),{agents:enabledAgentNames(settings)}),agent,source:reply?'model':'fallback'};
+  return{reply:reply||renderText(settings,'client.reception_question',languageOf(text)),agent,source:reply?'model':'fallback'};
 }

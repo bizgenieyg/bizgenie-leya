@@ -5,9 +5,9 @@ export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
     "en": "Leya summary: inquiries — {inquiries}, new clients — {new_clients}, closed by Leya — {closed_by_bot}, sent to owner — {escalated}, awaiting reply — {unanswered}. Missing knowledge: {missing_knowledge}."
   },
   "client.reception_question": {
-    "ru": "Я ассистент владельца. Подскажите, пожалуйста, вас интересует {agents}?",
-    "he": "אני העוזרת של בעל העסק. אפשר להבהיר אם מעניין אותך {agents}?",
-    "en": "I'm the owner's assistant. Could you clarify whether you need {agents}?"
+    "ru": "Я ассистент владельца. Расскажите, пожалуйста, что вам нужно — постараюсь помочь.",
+    "he": "אני העוזרת של בעל העסק. ספרו לי בבקשה במה אוכל לעזור.",
+    "en": "I'm the owner's assistant. Please tell me what you need, and I'll do my best to help."
   },
   "client.waiting": {
     "ru": "Я ассистент владельца. Уточню у владельца и напишу, когда получу ответ.",

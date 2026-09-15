@@ -11,6 +11,7 @@ import { activeElapsedMs,isWithinQuietHours } from './escalation.service.js';
 import { reserveFailureAlert } from './alert-throttle.js';
 import type { OwnerSettings } from './owner-settings.service.js';
 import { BEHAVIOR_DEFAULTS } from '../config/behavior.js';
+import { TEMPLATE_DEFAULTS } from '../config/templates.js';
 const settings:OwnerSettings={owner_phone:null,owner_chat_id:null,mode:'mute_all',quiet_hours_start:null,quiet_hours_end:null,auto_replies_paused:false};
 test('cheap intent classification, model confidence, disabled agents and runtime overrides',async()=>{
  let calls=0;const ai={async generateReply(){calls++;return{text:'{"agent":"SALE","confidence":0.82}'};}};
@@ -32,6 +33,11 @@ test('templates reject unknown placeholders, runtime rendering removes unsafe ma
  assert.throws(()=>validateRuntimePatch({tenantId:'other'}));
  const text=renderText({...settings,templates:{'client.owner_answer':{ru:'Ассистент: {answer}'}}},'client.owner_answer','ru',{answer:'<secret>{placeholder} да'});
  assert.doesNotMatch(text,/[<>{}]/);assert.match(text,/Ассистент/);
+ const legacyReception=renderText({...settings,templates:{'client.reception_question':{ru:'Вас интересует {agents}?'}}},'client.reception_question','ru',{agents:'SUPPORT / SALE'});
+ assert.doesNotMatch(legacyReception,/\b(?:SALE|SUPPORT|RECEPTION|CORE)\b|продаж|поддерж/i);assert.match(legacyReception,/что вам нужно/i);
+});
+test('no customer-facing default template exposes internal routing codes',()=>{
+ for(const[key,languages]of Object.entries(TEMPLATE_DEFAULTS).filter(([key])=>key.startsWith('client.')))for(const text of Object.values(languages))assert.doesNotMatch(text,/\b(?:SALE|SUPPORT|RECEPTION|CORE)\b/,key);
 });
 test('conversation behavior settings validate tenant overrides',()=>{
  const patch=validateRuntimePatch({auto_resume_hours:0,deferred_max_age_hours:12,context_message_count:10,context_retention_hours:48,intent_confidence_threshold:.8,route_stickiness_hours:24,reception_max_messages:0,campaign_routes:[{keyword:'AUDIT',agent:'SALE'}],source_routes:[{source:'catalog',agent:'SALE'}]});

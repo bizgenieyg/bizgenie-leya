@@ -33,7 +33,7 @@ import {
   isTenantServiceable,
 } from "../services/tenant.service.js";
 import { admitUsage, recordUsageEvent } from "../services/usage.service.js";
-import { enabledAgentNames, routeConversation } from '../services/conversation-routing.service.js';
+import { routeConversation } from '../services/conversation-routing.service.js';
 import { inferredLanguage,requestsNoAutomaticReplies } from '../services/client-cards.service.js';
 
 /**
@@ -194,7 +194,7 @@ export async function handleWebhookEvent(
   for(const metadata of classification)await agentContext.run({agent:'RECEPTION'},()=>recordUsageEvent(db,{tenantId,eventType:'model_call',eventKey:randomUUID(),metadata:{...metadata,purpose:'intent_classification'}}));
   if(outcome.kind==='reception')return agentContext.run({agent:'RECEPTION'},async()=>{
     await recordUsageEvent(db,{tenantId,eventType:'message_received',eventKey:usageKey});
-    const clarification=renderText(settings,'client.reception_question',languageOf(text),{agents:enabledAgentNames(settings)});
+    const clarification=renderText(settings,'client.reception_question',languageOf(text));
     const reception=await generateReceptionReply(context,text,clarification,model,memory.messages,memory.introduced);
     if(reception.escalate||!reception.reply){await createEscalation(db,provider,{tenant_id:tenantId,session,conversation_id:conversation.id,client_chat_id:from,client_name:pushName||client.name||clientPhone,question:text,inbound_id:incomingMsgId},settings,client.time_zone);await recordUsageEvent(db,{tenantId,eventType:'escalation_created'});return;}
     const sent=await provider.sendMessage({session,chatId:from,text:clientReply(reception.reply)});

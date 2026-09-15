@@ -35,4 +35,3 @@ export async function routeConversation(db:DatabaseClient,tenantId:string,conver
  await saveRoute('RECEPTION');
  return{kind:'reception',method:'low_confidence'};
 }
-export function enabledAgentNames(settings:OwnerSettings){return registry.enabled(settings).map(a=>a.name).join(' / ');}
