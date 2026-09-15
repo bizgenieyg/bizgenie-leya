@@ -302,9 +302,9 @@ test('owner answer translation preserves original for learning and falls back sa
   const { translateOwnerAnswer } = await import('./ai-fallback.service.js');
   let calls = 0;
   const ai = { async generateReply(input: { systemPrompt: string; userMessage: string }) { calls++; assert.equal(JSON.parse(input.userMessage).ownerAnswer, 'Доставка завтра'); return { text: 'Delivery is tomorrow.' }; } };
-  assert.equal(await translateOwnerAnswer('When is delivery?', 'Доставка завтра', ai), 'Delivery is tomorrow.');
-  assert.equal(await translateOwnerAnswer('Когда доставка?', 'Доставка завтра', ai), 'Доставка завтра'); assert.equal(calls, 1);
-  assert.equal(await translateOwnerAnswer('When?', 'Доставка завтра', null), 'Доставка завтра');
+  assert.equal(await translateOwnerAnswer('en', 'Доставка завтра', ai), 'Delivery is tomorrow.');
+  assert.equal(await translateOwnerAnswer('ru', 'Доставка завтра', ai), 'Доставка завтра'); assert.equal(calls, 1);
+  assert.equal(await translateOwnerAnswer('en', 'Доставка завтра', null), 'Доставка завтра');
 });
 
 test('owner translation is opt-in: disabled makes zero model calls', async () => {

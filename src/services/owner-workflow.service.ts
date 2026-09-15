@@ -2,6 +2,7 @@ import { BEHAVIOR_DEFAULTS } from '../config/behavior.js';
 import { behavior } from './runtime-settings.service.js';
 import { activeElapsedMs } from './escalation.service.js';
 import { renderText } from "./templates.service.js";
+import { languageOf } from "./templates.service.js";
 import { meterWhatsApp } from "./metered-providers.js";
 import type { AIProvider } from "../providers/ai/ai-provider.interface.js";
 import { translateOwnerAnswer } from "./ai-fallback.service.js";
@@ -14,6 +15,7 @@ import { isBusinessOwner, loadOwnerSettings, ownerDestination, pairOwner, type O
 
 export interface Escalation {
   id:string;tenant_id:string;conversation_id:string;client_chat_id:string;client_name:string;question:string;session:string;
+  response_language?:string|null;
   pending_since?:string|null;reminded_at?:string|null;created_at?:string;
   inbound_id:string|null;status:string;owner_message_ids:string[];answer:string|null;learning_state:string;learning_message_ids:string[];
 }
@@ -90,7 +92,7 @@ export async function createEscalation(db:DatabaseClient,provider:WhatsAppProvid
   // Quiet with no working window ahead: schedule and notify now, promise a callback — never a far-future date.
   const scheduledAt=quietEnd??now;
   const {error:jobError}=await db.from('scheduled_jobs').insert({tenant_id:e.tenant_id,job_type:JOB,payload:{escalation_id:e.id},scheduled_at:scheduledAt.toISOString(),status:'pending'});check(jobError);
-  await sendClient(db,provider,e,waitingText(e.question,quiet?{at:quietEnd,ownerZone:settings.time_zone??'UTC',clientZone:clientZone??null}:undefined,settings));
+  await sendClient(db,provider,e,waitingText(e.question,quiet?{at:quietEnd,ownerZone:settings.time_zone??'UTC',clientZone:clientZone??null}:undefined,settings,e.response_language??languageOf(e.question)));
   if(!quiet||!quietEnd) await notifyOwner(db,provider,e,settings);
 }
 async function requestLearning(db:DatabaseClient,provider:WhatsAppProvider,e:Escalation,from:string,settings:OwnerSettings) {
@@ -155,7 +157,8 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
   if(!await claim(db,e,'pending','delivering')) return true;
   await patch(db,e,{answer});
   try {
-    const id=await sendClient(db,provider,e,ownerAnswerText(e.question,(settings.translate_owner_answer ?? BEHAVIOR_DEFAULTS.translate_owner_answer) ? await translateOwnerAnswer(e.question,answer,ai) : answer,settings));
+    const responseLanguage=e.response_language??languageOf(e.question);
+    const id=await sendClient(db,provider,e,ownerAnswerText(e.question,(settings.translate_owner_answer ?? BEHAVIOR_DEFAULTS.translate_owner_answer) ? await translateOwnerAnswer(responseLanguage,answer,ai) : answer,settings,responseLanguage));
     await patch(db,e,{status:'delivered',client_message_id:id,delivered_at:new Date().toISOString()});
     const route=await db.from('conversations').update({routed_agent:null,route_selected_at:null}).eq('tenant_id',tenantId).eq('id',e.conversation_id);check(route.error);
   } catch {
@@ -198,7 +201,7 @@ export async function runEscalationTimeouts(db:DatabaseClient,providerFor:()=>Wh
    const provider=meterWhatsApp(db,e.tenant_id,providerFor());
    if(elapsed>=config.escalation_close_minutes*60000){
     if(!await claim(db,e,'pending','closing'))continue;
-    try{const id=await sendClient(db,provider,e,renderText(settings,'client.owner_timeout',/[א-ת]/.test(e.question)?'he':/[а-яё]/i.test(e.question)?'ru':'en'));
+    try{const id=await sendClient(db,provider,e,renderText(settings,'client.owner_timeout',e.response_language??languageOf(e.question)));
      await patch(db,e,{status:'closed_unanswered',closed_at:now.toISOString(),client_message_id:id});
      const route=await db.from('conversations').update({routed_agent:null,route_selected_at:null}).eq('tenant_id',e.tenant_id).eq('id',e.conversation_id);check(route.error);
     }catch{await patch(db,e,{status:'delivery_uncertain'});console.error('escalation_timeout_delivery_uncertain',{tenantId:e.tenant_id,escalationId:e.id});}

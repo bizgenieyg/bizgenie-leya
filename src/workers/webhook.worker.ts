@@ -1,4 +1,4 @@
-import { renderText,languageOf } from '../services/templates.service.js';
+import { renderText,replyLanguage } from '../services/templates.service.js';
 import { registry,agentContext } from '../agents/index.js';
 import { behavior } from '../services/runtime-settings.service.js';
 import { notifyUsageFailure } from '../services/usage-notifications.service.js';
@@ -129,6 +129,7 @@ export async function handleWebhookEvent(
   const optedOut=requestsNoAutomaticReplies(text);
   const clientPatch:Record<string,unknown>={};if(!client.language_overridden)clientPatch.language=inferredLanguage(text);if(optedOut){clientPatch.auto_reply_allowed=false;clientPatch.auto_reply_opted_out_at=new Date().toISOString();client.auto_reply_allowed=false;}
   if(Object.keys(clientPatch).length){const preference=await db.from('clients').update(clientPatch).eq('tenant_id',tenantId).eq('id',client.id);if(preference.error)console.error('client_preferences_update_failed',{tenantId,clientId:client.id});}
+  const responseLanguage=replyLanguage(text,client);
 
   const { error: insertError } = await db.from("messages").insert({
     conversation_id: conversation.id,
@@ -174,7 +175,7 @@ export async function handleWebhookEvent(
   if(admission.unavailable)await notifyUsageFailure(db,tenantId,session,provider,settings);
   await deliverUsageNotices(db,tenantId,session,provider);
   if(!admission.allowed){
-    await provider.sendMessage({session,chatId:from,text:clientReply(limitClientText(text,settings))});await markIntroduced();
+    await provider.sendMessage({session,chatId:from,text:clientReply(limitClientText(text,settings,responseLanguage))});await markIntroduced();
     return;
   }
 
@@ -194,16 +195,16 @@ export async function handleWebhookEvent(
   for(const metadata of classification)await agentContext.run({agent:'RECEPTION'},()=>recordUsageEvent(db,{tenantId,eventType:'model_call',eventKey:randomUUID(),metadata:{...metadata,purpose:'intent_classification'}}));
   if(outcome.kind==='reception')return agentContext.run({agent:'RECEPTION'},async()=>{
     await recordUsageEvent(db,{tenantId,eventType:'message_received',eventKey:usageKey});
-    const clarification=renderText(settings,'client.reception_question',languageOf(text));
-    const reception=await generateReceptionReply(context,text,clarification,model,memory.messages,memory.introduced);
-    if(reception.escalate||!reception.reply){await createEscalation(db,provider,{tenant_id:tenantId,session,conversation_id:conversation.id,client_chat_id:from,client_name:pushName||client.name||clientPhone,question:text,inbound_id:incomingMsgId},settings,client.time_zone);await recordUsageEvent(db,{tenantId,eventType:'escalation_created'});return;}
+    const clarification=renderText(settings,'client.reception_question',responseLanguage);
+    const reception=await generateReceptionReply(context,text,clarification,model,memory.messages,memory.introduced,responseLanguage);
+    if(reception.escalate||!reception.reply){await createEscalation(db,provider,{tenant_id:tenantId,session,conversation_id:conversation.id,client_chat_id:from,client_name:pushName||client.name||clientPhone,question:text,response_language:responseLanguage,inbound_id:incomingMsgId},settings,client.time_zone);await recordUsageEvent(db,{tenantId,eventType:'escalation_created'});return;}
     const sent=await provider.sendMessage({session,chatId:from,text:clientReply(reception.reply)});
     await db.from('messages').insert({conversation_id:conversation.id,tenant_id:tenantId,from_me:true,body:reception.reply,msg_type:'text',waha_msg_id:sent.id||null});
     const counted=await db.from('conversations').update({reception_message_count:Number(conversation.reception_message_count??0)+1}).eq('tenant_id',tenantId).eq('id',conversation.id);if(counted.error)console.error('reception_counter_update_failed',{tenantId,conversationId:conversation.id});await markIntroduced();
   });
   if(outcome.kind==='escalate')return agentContext.run({agent:'RECEPTION'},async()=>{
     await recordUsageEvent(db,{tenantId,eventType:'message_received',eventKey:usageKey});
-    await createEscalation(db,provider,{tenant_id:tenantId,session,conversation_id:conversation.id,client_chat_id:from,client_name:pushName||client.name||clientPhone,question:text,inbound_id:incomingMsgId},settings,client.time_zone);
+    await createEscalation(db,provider,{tenant_id:tenantId,session,conversation_id:conversation.id,client_chat_id:from,client_name:pushName||client.name||clientPhone,question:text,response_language:responseLanguage,inbound_id:incomingMsgId},settings,client.time_zone);
     await recordUsageEvent(db,{tenantId,eventType:'escalation_created'});
   });
   const agent=outcome.agent;
@@ -217,16 +218,16 @@ export async function handleWebhookEvent(
   if (clientZone) {
     const { error } = await db.from("clients").update({ time_zone: clientZone }).eq("tenant_id", tenantId).eq("id", client.id);
     if (error) throw new Error("Client timezone update failed");
-    const confirmation = renderText(settings,'client.timezone_saved',languageOf(text),{zone:clientZone});
+    const confirmation = renderText(settings,'client.timezone_saved',responseLanguage,{zone:clientZone});
     const now = new Date();
     const quiet = isWithinQuietHours(settings, now);
-    await provider.sendMessage({ session, chatId: from, text: clientReply(confirmation + (quiet ? ' ' + waitingText(text, { at: nextQuietHoursEnd(settings, now), ownerZone: settings.time_zone ?? 'UTC', clientZone },settings) : '')) });await markIntroduced();
+    await provider.sendMessage({ session, chatId: from, text: clientReply(confirmation + (quiet ? ' ' + waitingText(text, { at: nextQuietHoursEnd(settings, now), ownerZone: settings.time_zone ?? 'UTC', clientZone },settings,responseLanguage) : '')) });await markIntroduced();
     return;
   }
 
   return agent.execute({answerFromKnowledge:async()=>{
   const clientName = client.name && client.name.trim() !== "" ? client.name : clientPhone;
-  const generatedReply = await generateKnowledgeReply(context, text, model,agent.systemPrompt,memory.messages,memory.introduced);
+  const generatedReply = await generateKnowledgeReply(context, text, model,agent.systemPrompt,memory.messages,memory.introduced,responseLanguage);
   if (generatedReply) {
     const sent = await provider.sendMessage({
       session, chatId: from, text: clientReply(generatedReply),
@@ -246,7 +247,7 @@ export async function handleWebhookEvent(
   await createEscalation(db, provider, {
     tenant_id: tenantId, session, conversation_id: conversation.id,
     client_chat_id: from, client_name: pushName || clientName,
-    question: text, inbound_id: incomingMsgId,
+    question: text, response_language:responseLanguage, inbound_id: incomingMsgId,
   }, settings, client.time_zone);
   await recordUsageEvent(db, { tenantId, eventType: "escalation_created" });
   }});

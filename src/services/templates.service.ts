@@ -1,6 +1,11 @@
 import { TEMPLATE_DEFAULTS } from '../config/templates.js';
 import type { OwnerSettings } from './owner-settings.service.js';
 export const languageOf=(text:string):string=>/[א-ת]/.test(text)?'he':/[а-яё]/i.test(text)?'ru':'en';
+export type ClientLanguage='he'|'ru'|'en';
+export function replyLanguage(text:string,client?:{language?:string|null;language_overridden?:boolean}):ClientLanguage {
+  if(client?.language_overridden&&['he','ru','en'].includes(String(client.language)))return client.language as ClientLanguage;
+  return languageOf(text) as ClientLanguage;
+}
 export function renderText(settings:OwnerSettings|undefined,key:string,language:string,values:Record<string,string|number>={}):string {
   const defaults=TEMPLATE_DEFAULTS[key];
   if(!defaults)throw new Error('Unknown template');

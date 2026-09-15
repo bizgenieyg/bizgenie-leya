@@ -3,6 +3,7 @@ import test from "node:test";
 import { GeminiProvider, DEFAULT_GEMINI_MODEL } from "../providers/ai/gemini.provider.js";
 import { createAIProvider } from "../providers/ai/index.js";
 import { generateKnowledgeReply,generateReceptionReply } from "./ai-fallback.service.js";
+import { replyLanguage } from './templates.service.js';
 
 const context = { assistant: { assistant_name: "Лея", allowed_languages: ["he", "ru", "en"], tone: "friendly", mode: null, system_rules: null }, knowledge: [{ id: "a", question: "Часы?", answer: "9–18" }] };
 
@@ -46,6 +47,24 @@ test('reception chats naturally without exposing internal agent codes or asking 
  const leaked=await generateReceptionReply(context,'Привет',clarification,{async generateReply(){return{text:'Выберите SUPPORT / SALE?'};}},[],false);
  assert.equal(leaked.reply,clarification);assert.doesNotMatch(leaked.reply!,/\b(?:SALE|SUPPORT|RECEPTION|CORE)\b/);
  const escalate=await generateReceptionReply(context,'Позовите владельца','уточнение',{async generateReply(){return{text:'ESCALATE_OWNER'};}},[],false);assert.equal(escalate.escalate,true);
+});
+test('the detected language is an explicit model constraint for every turn',async()=>{
+ const prompts:string[]=[];const ai={async generateReply(input:{systemPrompt:string}){prompts.push(input.systemPrompt);return{text:'ok'};}};
+ await generateKnowledgeReply(context,'שלום',ai,'',[],false,'he');
+ await generateKnowledgeReply(context,'Привет',ai,'',[],true,'ru');
+ await generateKnowledgeReply(context,'Hello',ai,'',[],true,'en');
+ await generateReceptionReply(context,'שלום','אפשר לעזור?',ai,[],false,'he');
+ assert.match(prompts[0]!,/Язык этого ответа: he/);
+ assert.match(prompts[1]!,/Язык этого ответа: ru/);
+ assert.match(prompts[2]!,/Язык этого ответа: en/);
+ assert.match(prompts[3]!,/Язык этого ответа: he/);
+});
+test('reply language follows every incoming turn unless the owner overrode it',()=>{
+ assert.equal(replyLanguage('שואלת עבור חברה'),'he');
+ assert.equal(replyLanguage('Нужна консультация'),'ru');
+ assert.equal(replyLanguage('I need help'),'en');
+ assert.equal(replyLanguage('Снова по-русски',{language:'he',language_overridden:false}),'ru');
+ assert.equal(replyLanguage('Теперь на русском',{language:'he',language_overridden:true}),'he');
 });
 test("HTTP failures, blocked/empty/partial output and timeout retain old fallback behavior", async () => {
   const originalFetch = globalThis.fetch;

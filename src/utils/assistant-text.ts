@@ -8,16 +8,16 @@ export function withoutRepeatedIntroduction(text:string,introduced:boolean):stri
  if(!introduced)return clientText(text);
  return clientText(text).replace(/^(?:Я ассистент владельца\.|I'm the owner's assistant\.|אני העוזרת של בעל העסק\.)\s*/i,'').trim();
 }
-export function waitingText(question:string,quiet?:{at:Date|null;ownerZone:string;clientZone?:string|null},settings?:OwnerSettings):string {
- const language=languageOf(question);
+export function waitingText(question:string,quiet?:{at:Date|null;ownerZone:string;clientZone?:string|null},settings?:OwnerSettings,replyLanguage?:string):string {
+ const language=replyLanguage??languageOf(question);
  if(!quiet)return renderText(settings,'client.waiting',language);
  // Quiet, but the schedule never reopens: promise a callback, don't name a date.
  if(!quiet.at)return renderText(settings,'client.waiting_no_schedule',language);
  const zone=quiet.clientZone&&validTimeZone(quiet.clientZone)?quiet.clientZone:quiet.ownerZone;
  return renderText(settings,quiet.clientZone&&validTimeZone(quiet.clientZone)?'client.waiting_quiet_client':'client.waiting_quiet',language,{time:localTime(quiet.at,zone,language),zone});
 }
-export function ownerAnswerText(question:string,answer:string,settings?:OwnerSettings):string {
- return renderText(settings,'client.owner_answer',languageOf(question),{answer:clientText(answer)});
+export function ownerAnswerText(question:string,answer:string,settings?:OwnerSettings,replyLanguage?:string):string {
+ return renderText(settings,'client.owner_answer',replyLanguage??languageOf(question),{answer:clientText(answer)});
 }
 export function isDeferredAnswer(text:string):boolean {
   if (/(?:отвечу|скажу|уточню|напишу|проверю).{0,20}(?:позже|потом|завтра|утром)|(?:позже|потом|завтра|утром).{0,20}(?:отвечу|скажу|уточню|напишу|проверю)|^занят[а]?(?: сейчас)?[.!\s]*$/i.test(text.trim())) return true;

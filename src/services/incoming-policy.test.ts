@@ -9,6 +9,8 @@ test("documented GOWS private text is accepted", () => {
 for (const [name, patch] of Object.entries({
   group: { from: "120363000000@g.us", participant: "972500000001@c.us" },
   rawGroup: { _data: { Info: { Chat: "120363000000@g.us", IsGroup: true } } },
+  normalizedGroupFlag: { from: "972500000001@c.us", isGroup: true },
+  malformedGowsGroupJid: { from: "120363400030260280@c.us", _data: { Info: { Chat: "120363400030260280@c.us", IsGroup: true } } },
   outgoing: { fromMe: true },
   rawOutgoing: { _data: { Info: { IsFromMe: true } } },
   status: { from: "status@broadcast" }, broadcast: { from: "123456789@broadcast" },

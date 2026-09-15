@@ -85,6 +85,30 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
       const realClient = await pg.query<{ count: string }>("select count(*)::text as count from clients where tenant_id=$1 and whatsapp_jid=$2", [tenantId, realPayload.payload.from]);
       assert.equal(realClient.rows[0]!.count, "1");
 
+      const multilingualAi={async generateReply(input:{systemPrompt:string}){
+        if(input.systemPrompt.includes('классификатор намерений'))return{text:'{"agent":"SUPPORT","confidence":0.95}'};
+        if(input.systemPrompt.includes('Язык этого ответа: he'))return{text:'תשובה בעברית.'};
+        if(input.systemPrompt.includes('Язык этого ответа: ru'))return{text:'Ответ по-русски.'};
+        return{text:'Answer in English.'};
+      }};
+      const languageClient='972500000006@c.us';
+      for(const [question,expected] of [['שלום, אפשר עזרה?','תשובה בעברית.'],['Нужна помощь','Ответ по-русски.'],['Can you help?','Answer in English.'],['שוב בעברית','תשובה בעברית.']] as const){
+        await handleWebhookEvent(tenantId,{...body,payload:{...body.payload,from:languageClient,body:question}},db,provider,multilingualAi as never);
+        assert.equal(sent.at(-1),expected);
+      }
+      const observed=await pg.query<{language:string}>("select language from clients where tenant_id=$1 and whatsapp_jid=$2",[tenantId,languageClient]);
+      assert.equal(observed.rows[0]!.language,'he','the card observes the latest incoming language');
+      await pg.query("update clients set language='ru',language_overridden=true where tenant_id=$1 and whatsapp_jid=$2",[tenantId,languageClient]);
+      await handleWebhookEvent(tenantId,{...body,payload:{...body.payload,from:languageClient,body:'עוד שאלה'}},db,provider,multilingualAi as never);
+      assert.equal(sent.at(-1),'Ответ по-русски.','an explicit owner override remains authoritative');
+
+      const groupJid='120363400030260280@c.us';
+      const sentBeforeGroup=sent.length;
+      await handleWebhookEvent(tenantId,{...body,payload:{...body.payload,from:groupJid,participant:'972500000007@lid',_data:{Info:{Chat:groupJid,IsGroup:true,IsFromMe:false}},body:'Сообщение группы'}},db,provider,ai as never);
+      assert.equal(sent.length,sentBeforeGroup);
+      const groupClients=await pg.query<{count:string}>("select count(*)::text as count from clients where tenant_id=$1 and whatsapp_jid=$2",[tenantId,groupJid]);
+      assert.equal(groupClients.rows[0]!.count,'0','a GOWS group event cannot create a client card');
+
       for (const field of ["id", "lid"]) {
         const sentBefore: number = sent.length;
         const ownerPayload = structuredClone(realPayload);

@@ -38,6 +38,8 @@ export function incomingDiagnostics(body: Record<string, unknown>, sessionMe?: S
     "payload._data.Info.Chat": jid(info, "Chat"),
     "payload._data.Info.Sender": jid(info, "Sender"),
     "payload._data.Info.IsGroup": flag(info, "IsGroup"),
+    "payload.isGroup": flag(message, "isGroup"),
+    "payload.participant": jid(message, "participant"),
     "me.id": jid(record(body.me), "id"),
     "me.lid": jid(record(body.me), "lid"),
     ...(sessionMe ? { "session.me.id": jid(sessionMe, "id"), "session.me.lid": jid(sessionMe, "lid") } : {}),
@@ -57,7 +59,13 @@ export function filterIncoming(body: Record<string, unknown>, policy = currentAl
   const info = record(record(message._data).Info);
   const from = typeof message.from === "string" ? message.from : "";
   const rawChat = typeof info.Chat === "string" ? info.Chat : "";
-  const chatType = [from, rawChat].some(chat => chat.endsWith("@g.us")) || info.IsGroup === true ? "group"
+  const participant = typeof message.participant === "string" ? message.participant : "";
+  // GOWS exposes the authoritative raw flag in _data.Info.IsGroup. Some
+  // normalized payloads also expose isGroup; participant is present for group
+  // messages. The 120363 safeguard covers legacy/malformed group JIDs observed
+  // in production with an incorrect @c.us suffix.
+  const groupSignal=info.IsGroup===true||message.isGroup===true||!!participant||[from,rawChat].some(chat=>chat.endsWith("@g.us")||/^120363\d+@c\.us$/.test(chat));
+  const chatType = groupSignal ? "group"
     : [from, rawChat].some(chat => chat.endsWith("@broadcast")) ? "broadcast"
     : [from, rawChat].some(chat => chat.endsWith("@newsletter")) ? "newsletter"
     : (/^\d{7,15}@(c\.us|s\.whatsapp\.net)$/.test(from) || /^\d+@lid$/.test(from)) ? "private" : "unknown";
@@ -72,6 +80,9 @@ export function filterIncoming(body: Record<string, unknown>, policy = currentAl
     if (["@g.us", "@broadcast", "@newsletter"].includes(fromSuffix)) return reject("non_private_chat", "payload.from", fromSuffix);
     if (["@g.us", "@broadcast", "@newsletter"].includes(rawSuffix)) return reject("non_private_chat", "payload._data.Info.Chat", rawSuffix);
     if (info.IsGroup === true) return reject("non_private_chat", "payload._data.Info.IsGroup", true);
+    if (message.isGroup === true) return reject("non_private_chat", "payload.isGroup", true);
+    if (participant) return reject("non_private_chat", "payload.participant", participant.slice(participant.lastIndexOf("@")));
+    if (/^120363\d+@c\.us$/.test(from)||/^120363\d+@c\.us$/.test(rawChat)) return reject("non_private_chat", "group_jid_prefix", "120363");
     return reject("non_private_chat", "payload.from", safeSuffix);
   }
   if (rawChat && rawChat.replace(/@s\.whatsapp\.net$/, "@c.us") !== from.replace(/@s\.whatsapp\.net$/, "@c.us")) return reject("conflicting_chat", "payload.from / payload._data.Info.Chat", "mismatch");

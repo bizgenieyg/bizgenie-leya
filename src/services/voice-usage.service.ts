@@ -13,6 +13,7 @@ import { meterWhatsApp } from './metered-providers.js';
 import { deliverUsageNotices,limitClientText,notifyUsageFailure } from './usage-notifications.service.js';
 import { behavior } from './runtime-settings.service.js';
 import { renderText } from './templates.service.js';
+import { replyLanguage } from './templates.service.js';
 import { agentContext } from '../agents/registry.js';
 import { withoutRepeatedIntroduction } from '../utils/assistant-text.js';
 import { conversationPaused } from './owner-workflow.service.js';
@@ -34,7 +35,7 @@ export async function handleVoiceUsage(db:DatabaseClient,routing:TenantRouting,b
  if(!me.id||ownerIdentityField(voice.from,me))return;
  const settings=await loadOwnerSettings(db,tenantId);if(isBusinessOwner(voice.from,settings))return;
  const key=voice.id??randomUUID(),config=behavior(settings);
- const client=await db.from('clients').select('id,auto_reply_allowed').eq('tenant_id',tenantId).eq('whatsapp_jid',voice.from).maybeSingle();if(client.error)return;
+ const client=await db.from('clients').select('id,language,language_overridden,auto_reply_allowed').eq('tenant_id',tenantId).eq('whatsapp_jid',voice.from).maybeSingle();if(client.error)return;
  if(client.data?.auto_reply_allowed===false){await recordUsageEvent(db,{tenantId,eventType:'message_observed',eventKey:key,metadata:{reason:'client_opt_out',billable:false,media:'voice'}});return;}
  let paused=settings.auto_replies_paused,conversationId:string|undefined,introduced=false;
  if(client.data){const c=await db.from('conversations').select('id,bot_paused,assistant_introduced_at').eq('tenant_id',tenantId).eq('client_id',client.data.id).eq('status','active').order('created_at',{ascending:false}).limit(1).maybeSingle();if(c.error)return;conversationId=c.data?.id;introduced=!!c.data?.assistant_introduced_at;if(conversationId)paused=paused||await conversationPaused(db,tenantId,conversationId,settings);}
@@ -44,7 +45,7 @@ export async function handleVoiceUsage(db:DatabaseClient,routing:TenantRouting,b
   await recordUsageEvent(db,{tenantId,eventType:'message_observed',eventKey:key,metadata:{reason:'paused',billable:false,media:'voice',classified:true}});return;
  }
  return agentContext.run({agent:'RECEPTION'},async()=>{
-  const transport=meterWhatsApp(db,tenantId,provider),language=routing.tenant.language??'ru';
+  const transport=meterWhatsApp(db,tenantId,provider);let language=client.data?.language_overridden&&client.data.language?String(client.data.language):String(client.data?.language??routing.tenant.language??'ru');
   const explain=async(template:string)=>{await transport.sendMessage({session,chatId:voice.from,text:withoutRepeatedIntroduction(renderText(settings,template,language),introduced)});if(conversationId&&!introduced){await db.from('conversations').update({assistant_introduced_at:new Date().toISOString()}).eq('tenant_id',tenantId).eq('id',conversationId).is('assistant_introduced_at',null);introduced=true;}};
   if(!stt){console.warn('stt_disabled_missing_key');await explain('client.voice_unavailable');return;}
   let bytes:Buffer|undefined;
@@ -64,6 +65,7 @@ export async function handleVoiceUsage(db:DatabaseClient,routing:TenantRouting,b
    const sttMetadata={status:'success',...result.usage};
    await recordUsageEvent(db,{tenantId,eventType:'stt_call',eventKey:sttKey,metadata:sttMetadata});
    await recordUsageEvent(db,{tenantId,eventType:'voice_received',eventKey:key,quantity:seconds});
+   language=replyLanguage(result.text,{language:client.data?.language,language_overridden:client.data?.language_overridden});
    if(result.confidence<config.stt_confidence_threshold||result.ambiguous||!result.text.trim()){
     await recordUsageEvent(db,{tenantId,eventType:'message_received',eventKey:key});
     await explain('client.voice_clarify');return;

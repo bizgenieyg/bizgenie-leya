@@ -9,7 +9,7 @@ import { loadOwnerSettings,ownerDestination } from './owner-settings.service.js'
 import { meterWhatsApp } from './metered-providers.js';
 
 /** Service fallback is not a paid automatic answer; no Gemini call is needed. */
-export function limitClientText(message:string,settings?:OwnerSettings):string {return renderText(settings,'client.limit',languageOf(message));}
+export function limitClientText(message:string,settings?:OwnerSettings,replyLanguage?:string):string {return renderText(settings,'client.limit',replyLanguage??languageOf(message));}
 export async function deliverUsageNotices(db:DatabaseClient,tenantId:string,session:string,provider:WhatsAppProvider):Promise<void> {
   try {
     const {data:jobs,error}=await db.from('scheduled_jobs').select('id,payload').eq('tenant_id',tenantId).eq('job_type','usage_limit_notice').eq('status','pending').order('scheduled_at').limit(10);
