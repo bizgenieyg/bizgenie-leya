@@ -30,9 +30,14 @@ test('tenant time zones reach Intl only through the shared formatter',()=>{
 });
 test('summary delivery retries twice, then releases no further attempt',()=>{const now=new Date('2026-09-10T10:00:00Z');assert.deepEqual(summaryFailureState(1,now),{retry:true,status:'pending',scheduled_at:'2026-09-10T10:05:00.000Z'});assert.equal(summaryFailureState(3,now).status,'error');});
 test('owner summary never counts a manual owner message as a bot resolution',async()=>{
- const rows:any={messages:[{conversation_id:'bot',from_me:false,msg_type:'text'},{conversation_id:'bot',from_me:true,msg_type:'text'},{conversation_id:'owner',from_me:false,msg_type:'text'},{conversation_id:'owner',from_me:true,msg_type:'owner_text'}],clients:[{id:'client',first_seen_at:'2026-09-02T00:00:00Z'}],conversations:[{id:'bot'},{id:'owner'}],escalations:[],unrecognized_routes:[]};
- const riser:any={from(table:string){const q:any={select(){return q},eq(){return q},in(){return q},gte(){return q},lt(){return q},limit(){return q},then(resolve:any){return Promise.resolve(resolve({data:rows[table],error:null}))}};return q;}};
+ const rows:any={messages:[{conversation_id:'bot',from_me:false,msg_type:'text'},{conversation_id:'bot',from_me:true,msg_type:'text'},{conversation_id:'owner',from_me:false,msg_type:'text'},{conversation_id:'owner',from_me:true,msg_type:'owner_text'}],clients:[{id:'client',first_seen_at:'2026-09-02T00:00:00Z'}],conversations:[{id:'bot'},{id:'owner'}],escalations:[],agent_actions:[]};
+ const riser:any={from(table:string){const q:any={select(){return q},eq(){return q},in(){return q},gte(){return q},lt(){return q},not(){return q},limit(){return q},then(resolve:any){return Promise.resolve(resolve({data:rows[table],error:null}))}};return q;}};
  const result=await buildOwnerSummary(riser,'tenant',new Date('2026-09-01'),new Date('2026-09-08'));assert.equal(result.inquiries,2);assert.equal(result.closed_by_bot,1);
+});
+test('owner summary counts only explicit knowledge gaps, not unresolved routes',async()=>{
+ const rows:any={messages:[],clients:[{id:'client',first_seen_at:'2026-09-02T00:00:00Z'}],conversations:[{id:'conversation'}],escalations:[],agent_actions:[{input:'Сколько стоит доставка?'},{input:'Сколько стоит доставка?'}],unrecognized_routes:[{message_text:'👍'}]};
+ const riser:any={from(table:string){const q:any={select(){return q},eq(){return q},in(){return q},gte(){return q},lt(){return q},not(){return q},limit(){return q},then(resolve:any){return Promise.resolve(resolve({data:rows[table],error:null}))}};return q;}};
+ const result=await buildOwnerSummary(riser,'tenant',new Date('2026-09-01'),new Date('2026-09-08'));assert.deepEqual(result.missing_knowledge,[{question:'Сколько стоит доставка?',count:2}]);
 });
 test('041 soft-delete preserves attribution, aggregate count and hard-delete removes profile only',async()=>{
  const db=new PGlite();try{
@@ -65,5 +70,21 @@ test('046 backfills group chats and removes them from card aggregates',async()=>
   assert.deepEqual(types.rows.map(row=>row.chat_type),['group','individual']);
   const visible=await db.query('select * from client_card_stats($1,null)',[tenant]);
   assert.equal(visible.rows.length,1);
+ }finally{await db.close();}
+});
+test('047 merges c.us and lid duplicates with the same visible identity',async()=>{
+ const db=new PGlite();try{
+  await db.exec(readFileSync('supabase/migrations/001_phase1_schema.sql','utf8').replace('create extension if not exists pgcrypto;',''));
+  await db.exec(readFileSync('supabase/migrations/20260910120000_040_client_cards_and_owner_summaries.sql','utf8'));
+  await db.exec("create role anon; create role authenticated; create role service_role; alter table conversations add column routed_agent text; create table escalations(id uuid primary key default gen_random_uuid(),tenant_id uuid,conversation_id uuid,status text);");
+  await db.exec(readFileSync('supabase/migrations/20260910130000_041_client_soft_delete_and_job_contracts.sql','utf8'));
+  await db.exec(readFileSync('supabase/migrations/20260917090000_046_client_chat_type.sql','utf8'));
+  const tenant='10000000-0000-4000-8000-000000000003',first='20000000-0000-4000-8000-000000000001',second='20000000-0000-4000-8000-000000000002';
+  await db.query("insert into tenants(id,name,phone) values($1,'T','1')",[tenant]);
+  await db.query("insert into clients(id,tenant_id,phone,whatsapp_jid,name,first_seen_at) values($1,$3,'52377797296184','52377797296184@c.us','BNI Synergy','2026-09-06'),($2,$3,'52377797296184@lid','52377797296184@lid','BNI Synergy','2026-09-07')",[first,second,tenant]);
+  await db.query('insert into conversations(tenant_id,client_id) values($1,$2)',[tenant,second]);
+  await db.exec(readFileSync('supabase/migrations/20260917193000_047_merge_duplicate_client_jids.sql','utf8'));
+  assert.equal((await db.query<{count:number}>('select count(*)::int count from clients where tenant_id=$1',[tenant])).rows[0]!.count,1);
+  assert.equal((await db.query<{client_id:string}>('select client_id from conversations where tenant_id=$1',[tenant])).rows[0]!.client_id,first);
  }finally{await db.close();}
 });

@@ -76,6 +76,9 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
       assert.deepEqual(recipients.slice(-2), [lid, lid]);
       const lidClient = await pg.query<{ count: string }>("select count(*)::text as count from clients where tenant_id=$1 and whatsapp_jid=$2", [tenantId, lid]);
       assert.equal(lidClient.rows[0]!.count, "1", "the @lid contact resolves to exactly one client row across both messages");
+      await handleWebhookEvent(tenantId, { ...body, payload: { ...body.payload, from: "261885798707406@c.us", body: "Тот же контакт" } }, db, provider, ai as never);
+      const aliasedClient = await pg.query<{ count: string }>("select count(*)::text as count from clients where tenant_id=$1 and regexp_replace(whatsapp_jid,'@.*$','')='261885798707406'", [tenantId]);
+      assert.equal(aliasedClient.rows[0]!.count, "1", "matching @lid and @c.us identities do not create duplicate client cards");
       assert.ok(aiCalls >= 2);
 
       const realPayload = JSON.parse(readFileSync("src/services/fixtures/gows-incoming-lid.json", "utf8"));

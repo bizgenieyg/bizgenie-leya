@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { GeminiProvider, DEFAULT_GEMINI_MODEL } from "../providers/ai/gemini.provider.js";
 import { createAIProvider } from "../providers/ai/index.js";
-import { generateKnowledgeReply,generateReceptionReply } from "./ai-fallback.service.js";
+import { generateKnowledgeReply,generateKnowledgeReplyResult,generateReceptionReply } from "./ai-fallback.service.js";
 import { replyLanguage } from './templates.service.js';
 
 const context = { business:{owner_name:"Даниэль",business_name:"BizGenie",language:"ru"}, assistant: { assistant_name: "Лея", allowed_languages: ["he", "ru", "en"], tone: "friendly", mode: null, system_rules: null, style_profile_md: "Пиши тепло и по делу." }, knowledge: [{ id: "a", question: "Часы?", answer: "9–18" }] };
@@ -10,6 +10,11 @@ const context = { business:{owner_name:"Даниэль",business_name:"BizGenie"
 test("absent key disables fallback without an API call", async () => {
   assert.equal(createAIProvider(""), null);
   assert.equal(await generateKnowledgeReply(context, "Когда?", null), null);
+});
+test("explicit no-knowledge marker is distinguishable from provider failure",async()=>{
+ const missing=await generateKnowledgeReplyResult(context,'Гарантия?',{async generateReply(){return{text:'NO_KNOWLEDGE_ANSWER'}}});
+ assert.deepEqual(missing,{reply:null,missingKnowledge:true});
+ const warn=console.warn;console.warn=()=>undefined;try{const failure=await generateKnowledgeReplyResult(context,'Гарантия?',{async generateReply(){throw new Error('offline')}});assert.deepEqual(failure,{reply:null,missingKnowledge:false});}finally{console.warn=warn;}
 });
 test("Gemini receives tenant knowledge/settings and hard rules, returns only final text", async () => {
   const originalFetch = globalThis.fetch;

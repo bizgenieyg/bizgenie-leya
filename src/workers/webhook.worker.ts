@@ -8,7 +8,7 @@ import { meterAI, meterWhatsApp } from '../services/metered-providers.js';
 import { deliverUsageNotices,limitClientText } from '../services/usage-notifications.service.js';
 import { filterIncoming, incomingDiagnostics, logRejectedIncoming, ownerIdentityField, readSessionIdentity } from "../utils/incoming-policy.js";
 import type { AIProvider } from "../providers/ai/ai-provider.interface.js";
-import { generateKnowledgeReply,generateReceptionReply } from "../services/ai-fallback.service.js";
+import { generateKnowledgeReplyResult,generateReceptionReply } from "../services/ai-fallback.service.js";
 import { supabase, type DatabaseClient } from "../db/supabase.js";
 import { createWhatsAppProvider } from "../providers/whatsapp/index.js";
 import type { WhatsAppProvider } from "../providers/whatsapp/whatsapp-provider.interface.js";
@@ -229,8 +229,9 @@ export async function handleWebhookEvent(
 
   return agent.execute({answerFromKnowledge:async()=>{
   const clientName = client.name && client.name.trim() !== "" ? client.name : clientPhone;
-  const generatedReply = await generateKnowledgeReply(context, text, model,agent.systemPrompt,memory.messages,memory.introduced,responseLanguage);
-  if (generatedReply) {
+  const knowledgeResult = await generateKnowledgeReplyResult(context, text, model,agent.systemPrompt,memory.messages,memory.introduced,responseLanguage);
+  if (knowledgeResult.reply) {
+    const generatedReply=knowledgeResult.reply;
     const sent = await provider.sendMessage({
       session, chatId: from, text: clientReply(generatedReply),
     });
@@ -245,6 +246,8 @@ export async function handleWebhookEvent(
     await recordUsageEvent(db, { tenantId, eventType: "knowledge_ai_answer" });
     return;
   }
+
+  if(knowledgeResult.missingKnowledge)await recordAgentAction(db,{tenantId,conversationId:conversation.id,actionType:'knowledge_missing',input:text});
 
   await createEscalation(db, provider, {
     tenant_id: tenantId, session, conversation_id: conversation.id,
