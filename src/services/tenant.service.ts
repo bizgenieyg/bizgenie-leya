@@ -1,6 +1,7 @@
 import type { DatabaseClient } from "../db/supabase.js";
 
 import { HttpError } from "../utils/http-error.js";
+import { isGroupChatJid } from "../utils/incoming-policy.js";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -35,6 +36,7 @@ export interface ClientRow {
   whatsapp_jid?:string;
   name: string | null;
   language?:string|null;language_overridden?:boolean;auto_reply_allowed?:boolean;
+  chat_type?:'individual'|'group';
 }
 
 export interface ConversationRow {
@@ -103,7 +105,7 @@ export async function findOrCreateClient(
 
   const { data: existing, error: findError } = await db
     .from("clients")
-    .select("id, tenant_id, phone, whatsapp_jid, name, time_zone,language,language_overridden,auto_reply_allowed,deleted_at")
+    .select("id, tenant_id, phone, whatsapp_jid, name, time_zone,language,language_overridden,auto_reply_allowed,chat_type,deleted_at")
     .eq("tenant_id", tenantId)
     .eq("whatsapp_jid", whatsappJid)
     .maybeSingle();
@@ -112,7 +114,7 @@ export async function findOrCreateClient(
   }
 
   if (existing) {
-    const patch: Record<string, unknown> = { last_seen_at: nowIso,deleted_at:null };
+    const patch: Record<string, unknown> = { last_seen_at: nowIso,deleted_at:null,chat_type:isGroupChatJid(whatsappJid)?'group':'individual' };
     if (name && name !== existing.name) {
       patch.name = name;
     }
@@ -125,6 +127,7 @@ export async function findOrCreateClient(
       time_zone: existing.time_zone as string | null,
       name: name ?? (existing.name as string | null) ?? null,
       language:existing.language as string|null,language_overridden:existing.language_overridden===true,auto_reply_allowed:existing.auto_reply_allowed!==false,
+      chat_type:isGroupChatJid(whatsappJid)?'group':'individual',
     };
   }
 
@@ -134,11 +137,12 @@ export async function findOrCreateClient(
       tenant_id: tenantId,
       phone,
       whatsapp_jid:whatsappJid,
+      chat_type:isGroupChatJid(whatsappJid)?'group':'individual',
       name,
       first_seen_at: nowIso,
       last_seen_at: nowIso,
     })
-    .select("id, tenant_id, phone, whatsapp_jid, name, time_zone,language,language_overridden,auto_reply_allowed")
+    .select("id, tenant_id, phone, whatsapp_jid, name, time_zone,language,language_overridden,auto_reply_allowed,chat_type")
     .single();
   if (createError || !created) {
     throw new HttpError(500, "Could not create client");

@@ -52,6 +52,7 @@ const MIGRATIONS_IN_APPLICATION_ORDER = [
   '20260911181238_042_assistant_tone_values.sql',
   '20260914132216_043_pause_new_tenant_replies.sql',
   '20260915054310_044_client_reply_language_and_group_cleanup.sql',
+  '20260917090000_046_client_chat_type.sql',
 ];
 
 /** PGlite has no real `auth` schema/GoTrue; stub just enough for RLS-authoring

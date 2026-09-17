@@ -2,7 +2,7 @@ import type { DatabaseClient } from '../db/supabase.js';
 import { HttpError } from '../utils/http-error.js';
 import { isUuid } from './tenant.service.js';
 
-const CLIENT_COLUMNS='id,phone,whatsapp_jid,name,language,notes,first_seen_at,last_seen_at,auto_reply_allowed,auto_reply_opted_out_at';
+const CLIENT_COLUMNS='id,phone,whatsapp_jid,name,language,notes,first_seen_at,last_seen_at,auto_reply_allowed,auto_reply_opted_out_at,chat_type';
 const fail=()=>{throw new HttpError(500,'Could not load client cards');};
 type CardStat={client_id:string;inquiry_count:number;current_conversation_id:string|null;current_status:'new'|'in_dialogue'|'waiting_owner'|'closed';current_agent:string|null};
 
@@ -16,7 +16,7 @@ export async function listClientCards(db:DatabaseClient,tenantId:string,search='
  const safePage=Math.max(1,page),safeLimit=Math.min(50,Math.max(1,limit)),from=(safePage-1)*safeLimit;
  const byClient=await stats(db,tenantId),matchingIds=status?[...byClient.values()].filter(row=>row.current_status===status).map(row=>row.client_id):[];
  if(status&&!matchingIds.length)return{clients:[],page:safePage,total:0,hasMore:false};
- let query=db.from('clients').select(CLIENT_COLUMNS,{count:'exact'}).eq('tenant_id',tenantId).is('deleted_at',null).order('last_seen_at',{ascending:false}).range(from,from+safeLimit-1);
+ let query=db.from('clients').select(CLIENT_COLUMNS,{count:'exact'}).eq('tenant_id',tenantId).eq('chat_type','individual').is('deleted_at',null).order('last_seen_at',{ascending:false}).range(from,from+safeLimit-1);
  if(status)query=query.in('id',matchingIds);
  const term=search.trim().replace(/[,%()]/g,'');if(term)query=query.or(`name.ilike.%${term}%,phone.ilike.%${term}%,whatsapp_jid.ilike.%${term}%`);
  const clients=await query;if(clients.error)fail();const rows=(clients.data??[]).map(row=>card(row,byClient.get(String(row.id))));return{clients:rows,page:safePage,total:Number(clients.count??0),hasMore:from+rows.length<Number(clients.count??0)};
@@ -24,7 +24,7 @@ export async function listClientCards(db:DatabaseClient,tenantId:string,search='
 
 export async function getClientCard(db:DatabaseClient,tenantId:string,clientId:string,messageLimit=20){
  if(!isUuid(clientId))throw new HttpError(400,'Invalid client id');
- const [client,byClient,recent]=await Promise.all([db.from('clients').select(CLIENT_COLUMNS).eq('tenant_id',tenantId).eq('id',clientId).is('deleted_at',null).maybeSingle(),stats(db,tenantId,clientId),db.rpc('client_recent_messages',{p_tenant_id:tenantId,p_client_id:clientId,p_limit:messageLimit})]);if(client.error||recent.error)fail();if(!client.data)throw new HttpError(404,'Client not found');const messages=(recent.data??[]).reverse();
+ const [client,byClient,recent]=await Promise.all([db.from('clients').select(CLIENT_COLUMNS).eq('tenant_id',tenantId).eq('id',clientId).eq('chat_type','individual').is('deleted_at',null).maybeSingle(),stats(db,tenantId,clientId),db.rpc('client_recent_messages',{p_tenant_id:tenantId,p_client_id:clientId,p_limit:messageLimit})]);if(client.error||recent.error)fail();if(!client.data)throw new HttpError(404,'Client not found');const messages=(recent.data??[]).reverse();
  return{...card(client.data,byClient.get(clientId)),messages};
 }
 

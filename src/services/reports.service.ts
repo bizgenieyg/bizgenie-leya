@@ -70,6 +70,7 @@ export class ReportsService {
         .from("clients")
         .select("*", { count: "exact", head: true })
         .eq("tenant_id", tenantId)
+        .eq("chat_type", "individual")
         .gte("first_seen_at", startIso)
         .lte("first_seen_at", endIso),
       this.db

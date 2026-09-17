@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { parseBuffer } from 'music-metadata';
 import type { DatabaseClient } from '../db/supabase.js';
 import type { WhatsAppProvider } from '../providers/whatsapp/whatsapp-provider.interface.js';
 import type { STTProvider } from '../providers/stt/stt-provider.interface.js';
@@ -51,6 +50,9 @@ export async function handleVoiceUsage(db:DatabaseClient,routing:TenantRouting,b
   let bytes:Buffer|undefined;
   try{
    bytes=await media.download(voice.url,session,config.media_max_bytes,config.stt_timeout_seconds);
+   // music-metadata is ESM-only; keep the native dynamic import in our
+   // CommonJS build so requiring the webhook graph remains valid.
+   const {parseBuffer}=await import('music-metadata');
    const duration=(await parseBuffer(bytes,{mimeType:voice.mime},{duration:true})).format.duration;
    if(!duration||!Number.isFinite(duration))throw new Error('Audio duration unavailable');
    const seconds=Math.ceil(duration);

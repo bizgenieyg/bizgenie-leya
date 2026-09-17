@@ -64,7 +64,7 @@ export function filterIncoming(body: Record<string, unknown>, policy = currentAl
   // normalized payloads also expose isGroup; participant is present for group
   // messages. The 120363 safeguard covers legacy/malformed group JIDs observed
   // in production with an incorrect @c.us suffix.
-  const groupSignal=info.IsGroup===true||message.isGroup===true||!!participant||[from,rawChat].some(chat=>chat.endsWith("@g.us")||/^120363\d+@c\.us$/.test(chat));
+  const groupSignal=info.IsGroup===true||message.isGroup===true||!!participant||[from,rawChat].some(isGroupChatJid);
   const chatType = groupSignal ? "group"
     : [from, rawChat].some(chat => chat.endsWith("@broadcast")) ? "broadcast"
     : [from, rawChat].some(chat => chat.endsWith("@newsletter")) ? "newsletter"
@@ -82,7 +82,7 @@ export function filterIncoming(body: Record<string, unknown>, policy = currentAl
     if (info.IsGroup === true) return reject("non_private_chat", "payload._data.Info.IsGroup", true);
     if (message.isGroup === true) return reject("non_private_chat", "payload.isGroup", true);
     if (participant) return reject("non_private_chat", "payload.participant", participant.slice(participant.lastIndexOf("@")));
-    if (/^120363\d+@c\.us$/.test(from)||/^120363\d+@c\.us$/.test(rawChat)) return reject("non_private_chat", "group_jid_prefix", "120363");
+    if (isGroupChatJid(from)||isGroupChatJid(rawChat)) return reject("non_private_chat", "group_jid_prefix", "120363");
     return reject("non_private_chat", "payload.from", safeSuffix);
   }
   if (rawChat && rawChat.replace(/@s\.whatsapp\.net$/, "@c.us") !== from.replace(/@s\.whatsapp\.net$/, "@c.us")) return reject("conflicting_chat", "payload.from / payload._data.Info.Chat", "mismatch");
@@ -97,6 +97,12 @@ export function filterIncoming(body: Record<string, unknown>, policy = currentAl
   if (policy.enabled && from.endsWith("@lid")) return reject("allowlist_unresolved", "payload.from", "@lid");
   if (!allowedRecipient(from, policy)) return reject("not_allowlisted", "WHATSAPP_ALLOWLIST_NUMBERS", "no_match");
   return { allowed: true as const, chatType, event };
+}
+
+/** Classify persisted WhatsApp chat identifiers using the same production
+ * safeguards as the incoming-message policy. */
+export function isGroupChatJid(value:string):boolean{
+  return value.endsWith('@g.us')||/^120363\d+@c\.us$/.test(value);
 }
 export function logRejectedIncoming(result: ReturnType<typeof filterIncoming>) {
   console.info(`webhook_ignored ${JSON.stringify(result)}`);

@@ -4,10 +4,17 @@ import {readFileSync} from 'node:fs';
 import {PGlite} from '@electric-sql/pglite';
 import {inferredLanguage,requestsNoAutomaticReplies} from './client-cards.service.js';
 import {buildOwnerSummary,summaryDue,summaryFailureState} from './owner-summary.service.js';
+import {isGroupChatJid} from '../utils/incoming-policy.js';
 
 test('client preference detection is limited to language and explicit automation opt-out',()=>{
  assert.equal(inferredLanguage('שלום'),'he');assert.equal(inferredLanguage('Привет'),'ru');assert.equal(inferredLanguage('Hello'),'en');
  assert.equal(requestsNoAutomaticReplies('Не отвечай мне автоматически, пожалуйста'),true);assert.equal(requestsNoAutomaticReplies('Когда вы отвечаете?'),false);
+});
+test('group chat JIDs share one classifier with persistence and ingress',()=>{
+ assert.equal(isGroupChatJid('972501234567@g.us'),true);
+ assert.equal(isGroupChatJid('120363123456789@c.us'),true);
+ assert.equal(isGroupChatJid('972501234567@c.us'),false);
+ assert.equal(isGroupChatJid('123456@lid'),false);
 });
 test('summaryDue translates UTC labels and preserves IANA behavior',()=>{
  const base:any={behavior:{summary_frequency:'weekly',summary_time:'09:00',summary_weekday:1}};
@@ -23,8 +30,8 @@ test('tenant time zones reach Intl only through the shared formatter',()=>{
 });
 test('summary delivery retries twice, then releases no further attempt',()=>{const now=new Date('2026-09-10T10:00:00Z');assert.deepEqual(summaryFailureState(1,now),{retry:true,status:'pending',scheduled_at:'2026-09-10T10:05:00.000Z'});assert.equal(summaryFailureState(3,now).status,'error');});
 test('owner summary never counts a manual owner message as a bot resolution',async()=>{
- const rows:any={messages:[{conversation_id:'bot',from_me:false,msg_type:'text'},{conversation_id:'bot',from_me:true,msg_type:'text'},{conversation_id:'owner',from_me:false,msg_type:'text'},{conversation_id:'owner',from_me:true,msg_type:'owner_text'}],clients:[],escalations:[],unrecognized_routes:[]};
- const riser:any={from(table:string){const q:any={select(){return q},eq(){return q},gte(){return q},lt(){return q},limit(){return q},then(resolve:any){return Promise.resolve(resolve({data:rows[table],error:null}))}};return q;}};
+ const rows:any={messages:[{conversation_id:'bot',from_me:false,msg_type:'text'},{conversation_id:'bot',from_me:true,msg_type:'text'},{conversation_id:'owner',from_me:false,msg_type:'text'},{conversation_id:'owner',from_me:true,msg_type:'owner_text'}],clients:[{id:'client',first_seen_at:'2026-09-02T00:00:00Z'}],conversations:[{id:'bot'},{id:'owner'}],escalations:[],unrecognized_routes:[]};
+ const riser:any={from(table:string){const q:any={select(){return q},eq(){return q},in(){return q},gte(){return q},lt(){return q},limit(){return q},then(resolve:any){return Promise.resolve(resolve({data:rows[table],error:null}))}};return q;}};
  const result=await buildOwnerSummary(riser,'tenant',new Date('2026-09-01'),new Date('2026-09-08'));assert.equal(result.inquiries,2);assert.equal(result.closed_by_bot,1);
 });
 test('041 soft-delete preserves attribution, aggregate count and hard-delete removes profile only',async()=>{
@@ -33,6 +40,7 @@ test('041 soft-delete preserves attribution, aggregate count and hard-delete rem
   await db.exec(readFileSync('supabase/migrations/20260910120000_040_client_cards_and_owner_summaries.sql','utf8'));
   await db.exec("create role anon; create role authenticated; create role service_role; alter table conversations add column routed_agent text; create table escalations(id uuid primary key default gen_random_uuid(),tenant_id uuid,conversation_id uuid,status text);");
   await db.exec(readFileSync('supabase/migrations/20260910130000_041_client_soft_delete_and_job_contracts.sql','utf8'));
+  await db.exec(readFileSync('supabase/migrations/20260917090000_046_client_chat_type.sql','utf8'));
   const t='10000000-0000-4000-8000-000000000001',c='20000000-0000-4000-8000-000000000001';
   await db.query("insert into tenants(id,name,phone)values($1,'T','1')",[t]);await db.query("insert into clients(id,tenant_id,phone,whatsapp_jid)values($1,$2,'123@lid','123@lid')",[c,t]);await db.query("insert into client_profiles(tenant_id,client_id)values($1,$2)",[t,c]);
   const conv=await db.query<{id:string}>('insert into conversations(tenant_id,client_id)values($1,$2)returning id',[t,c]);await db.query("insert into messages(tenant_id,conversation_id,from_me,body)values($1,$2,false,'private')",[t,conv.rows[0]!.id]);
@@ -41,5 +49,21 @@ test('041 soft-delete preserves attribution, aggregate count and hard-delete rem
   await db.query('update clients set deleted_at=now() where id=$1',[c]);assert.equal((await db.query<{client_id:string}>('select client_id from conversations')).rows[0]!.client_id,c);
   await db.query('delete from clients where id=$1',[c]);assert.equal((await db.query('select id from messages')).rows.length,1);assert.equal((await db.query<{client_id:string|null}>('select client_id from conversations')).rows[0]!.client_id,null);assert.equal((await db.query('select id from client_profiles')).rows.length,0);
   await assert.rejects(db.query("insert into scheduled_jobs(tenant_id,job_type,scheduled_at,status)values($1,'invented',now(),'pending')",[t]));await assert.rejects(db.query("insert into scheduled_jobs(tenant_id,job_type,scheduled_at,status)values($1,'owner_summary',now(),'invented')",[t]));
+ }finally{await db.close();}
+});
+test('046 backfills group chats and removes them from card aggregates',async()=>{
+ const db=new PGlite();try{
+  await db.exec(readFileSync('supabase/migrations/001_phase1_schema.sql','utf8').replace('create extension if not exists pgcrypto;',''));
+  await db.exec(readFileSync('supabase/migrations/20260910120000_040_client_cards_and_owner_summaries.sql','utf8'));
+  await db.exec("create role anon; create role authenticated; create role service_role; alter table conversations add column routed_agent text; create table escalations(id uuid primary key default gen_random_uuid(),tenant_id uuid,conversation_id uuid,status text);");
+  await db.exec(readFileSync('supabase/migrations/20260910130000_041_client_soft_delete_and_job_contracts.sql','utf8'));
+  const tenant='10000000-0000-4000-8000-000000000002';
+  await db.query("insert into tenants(id,name,phone) values($1,'T','1')",[tenant]);
+  await db.query("insert into clients(tenant_id,phone,whatsapp_jid) values($1,'120363999@c.us','120363999@c.us'),($1,'972501234567@c.us','972501234567@c.us')",[tenant]);
+  await db.exec(readFileSync('supabase/migrations/20260917090000_046_client_chat_type.sql','utf8'));
+  const types=await db.query<{whatsapp_jid:string;chat_type:string}>('select whatsapp_jid,chat_type from clients order by whatsapp_jid');
+  assert.deepEqual(types.rows.map(row=>row.chat_type),['group','individual']);
+  const visible=await db.query('select * from client_card_stats($1,null)',[tenant]);
+  assert.equal(visible.rows.length,1);
  }finally{await db.close();}
 });
