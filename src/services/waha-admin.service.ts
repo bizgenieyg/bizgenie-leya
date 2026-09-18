@@ -9,6 +9,7 @@ import {
 } from "../providers/whatsapp/index.js";
 import type { QrImage, SessionStatus } from "../providers/whatsapp/whatsapp-provider.interface.js";
 import { HttpError } from "../utils/http-error.js";
+import { canonicalIdentity, readSessionIdentity } from "../utils/incoming-policy.js";
 import {
   disconnectWahaSession,
   reconnectWahaSession,
@@ -78,12 +79,22 @@ export class WahaAdminService {
   async status(tenantId: string) {
     await this.requireTenant(tenantId);
     const session = sessionNameForTenant(tenantId);
-    const status = await this.readStatus(session);
+    let raw: SessionStatus | undefined;
+    let status: { status: string; qrAvailable: boolean; reason?: string };
+    try {
+      raw = await this.provider.getSessionStatus(session);
+      status = normalizeSessionStatus(raw);
+    } catch (error) {
+      if (!(error instanceof SessionNotFoundError)) upstreamError();
+      status = { status: "NOT_CREATED", qrAvailable: false };
+    }
     await this.updateInstanceStatus(tenantId, status.status);
-    return { session, ...status };
+    if (status.status !== "WORKING") return { session, ...status };
+    const numberChanged = await this.checkNumberChange(tenantId, raw?.me);
+    return { session, ...status, ...(numberChanged ? { numberChanged: true } : {}) };
   }
 
-  private async readStatus(session: string) {
+  private async readStatus(session: string): Promise<{ status: string; qrAvailable: boolean; reason?: string }> {
     try {
       return normalizeSessionStatus(await this.provider.getSessionStatus(session));
     } catch (error) {
@@ -92,7 +103,55 @@ export class WahaAdminService {
     }
   }
 
-  async reconnect(tenantId: string): Promise<{ session: string; status: string; qrAvailable: boolean }> {
+  /**
+   * Compares the just-connected WhatsApp account against the last one this tenant
+   * acknowledged (see `acknowledgeNumberChange`). Never overwrites an existing
+   * `connected_identity` here — only `acknowledgeNumberChange` does — so a detected
+   * mismatch survives a page reload until the owner actually answers the "clear old
+   * data?" prompt. A first-ever connection has nothing to compare against, so it is
+   * recorded immediately instead of asked about.
+   */
+  private async checkNumberChange(tenantId: string, me: SessionStatus["me"]): Promise<boolean> {
+    const identity = canonicalIdentity(readSessionIdentity(me));
+    if (!identity) return false;
+    const { data, error } = await this.db.from("whatsapp_instances")
+      .select("connected_identity").eq("tenant_id", tenantId).maybeSingle();
+    if (error) throw new HttpError(500, "WhatsApp instance lookup failed");
+    const previous = (data as { connected_identity?: string | null } | null)?.connected_identity ?? null;
+    if (!previous) {
+      await this.recordConnectedIdentity(tenantId, identity);
+      return false;
+    }
+    return previous !== identity;
+  }
+
+  private async recordConnectedIdentity(tenantId: string, identity: string): Promise<void> {
+    const { error } = await this.db.from("whatsapp_instances")
+      .update({ connected_identity: identity }).eq("tenant_id", tenantId);
+    if (error) throw new HttpError(500, "Could not update WhatsApp session");
+  }
+
+  /**
+   * Called once the owner has answered the "different number, clear old data?"
+   * prompt (either way) so the same swap is not asked about again. Re-reads the
+   * session itself rather than trusting a client-supplied identity.
+   */
+  async acknowledgeNumberChange(tenantId: string): Promise<void> {
+    const session = await this.requireSession(tenantId);
+    let raw: SessionStatus;
+    try {
+      raw = await this.provider.getSessionStatus(session);
+    } catch {
+      throw new HttpError(409, "WhatsApp session is not connected");
+    }
+    const identity = canonicalIdentity(readSessionIdentity(raw.me));
+    if (normalizeSessionStatus(raw).status !== "WORKING" || !identity) {
+      throw new HttpError(409, "WhatsApp session is not connected");
+    }
+    await this.recordConnectedIdentity(tenantId, identity);
+  }
+
+  async reconnect(tenantId: string): Promise<{ session: string; status: string; qrAvailable: boolean; numberChanged?: boolean }> {
     const session = await this.requireSession(tenantId);
     const secret = await this.ensureWebhookSecret(tenantId);
     const config = sessionConfigForTenant(tenantId, this.publicBaseUrl, secret);
@@ -106,7 +165,10 @@ export class WahaAdminService {
       upstreamError();
     }
     await this.updateInstanceStatus(tenantId, status.status);
-    return { session, ...normalizeSessionStatus(status) };
+    const normalized = normalizeSessionStatus(status);
+    if (normalized.status !== "WORKING") return { session, ...normalized };
+    const numberChanged = await this.checkNumberChange(tenantId, status.me);
+    return { session, ...normalized, ...(numberChanged ? { numberChanged: true } : {}) };
   }
 
   async disconnect(tenantId: string): Promise<{ session: string; disconnected: true }> {

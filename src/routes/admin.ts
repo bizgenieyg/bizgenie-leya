@@ -61,6 +61,13 @@ adminRouter.post("/waha/disconnect", async (request, response) => {
   response.json(await waha.disconnect(queryTenantId(request.query.tenantId)));
 });
 
+// Called once the owner has answered the "different number, clear old data?" prompt
+// (whichever way), so the cabinet is not asked about the same swap again.
+adminRouter.post("/waha/ack-number-change", async (request, response) => {
+  await waha.acknowledgeNumberChange(queryTenantId(request.query.tenantId));
+  response.json({ acknowledged: true });
+});
+
 // Tenant selection and owner/admin authorization are performed by the Next.js proxy.
 adminRouter.get('/owner-settings', async (request,response) => {
   const settings=await loadOwnerSettings(supabase,queryTenantId(request.query.tenantId));

@@ -122,3 +122,11 @@ export function ownerIdentityField(from: string, me: SessionIdentity): string | 
   if (me.lid && from === me.lid) return "session.me.lid";
   return null;
 }
+/** A single stable key for "which WhatsApp account is this", canonicalized the same
+ * way as `ownerIdentityField` so a session reported once as `@s.whatsapp.net` and
+ * later as `@c.us` is never mistaken for an account swap. */
+export function canonicalIdentity(me: SessionIdentity): string | null {
+  if (me.id) return me.id.replace(/@s\.whatsapp\.net$/, "@c.us");
+  if (me.lid) return me.lid;
+  return null;
+}

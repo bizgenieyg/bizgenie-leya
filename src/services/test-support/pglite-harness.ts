@@ -61,6 +61,7 @@ const MIGRATIONS_IN_APPLICATION_ORDER = [
   // It was removed outright rather than reverted forward, and 047 was reassigned to
   // this unrelated reset function — no gap, no orphaned "revert" migration.
   '20260918101000_047_reset_tenant_customer_data.sql',
+  '20260918110000_048_whatsapp_connected_identity.sql',
 ];
 
 /** PGlite has no real `auth` schema/GoTrue; stub just enough for RLS-authoring

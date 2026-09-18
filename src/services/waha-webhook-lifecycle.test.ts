@@ -8,7 +8,7 @@ import type { DatabaseClient } from "../db/supabase.js";
 // is the right tool here. Do not convert without a concrete reason.
 import { SessionNotFoundError } from "../providers/whatsapp/whatsapp-provider.interface.js";
 import type { WhatsAppSessionProvider, StartSessionInput } from "../providers/whatsapp/whatsapp-provider.interface.js";
-import { decryptCredential } from "../utils/crypto.js";
+import { decryptCredential, encryptCredential } from "../utils/crypto.js";
 import { HttpError } from "../utils/http-error.js";
 
 process.env.SUPABASE_URL = "https://database.invalid";
@@ -114,4 +114,123 @@ test("create persists the matching encrypted secret before WAHA starts; reconnec
   failWrites = true;
   await assert.rejects(service.create(tenantId), /Could not prepare/);
   assert.equal(starts, 3);
+});
+
+// A single whatsapp_instances row per tenant, exercised through the same generic
+// query-builder shape as the mock above (a `.then()` on the query object stands in for
+// an update without a following `.select()`), but scoped to one row per call instead
+// of a shared closure variable, since these tests run several independent scenarios.
+function makeInstanceDb(tenantId: string) {
+  const row: Record<string, unknown> = {
+    tenant_id: tenantId,
+    session_name: `tenant-${tenantId}`,
+    webhook_secret_encrypted: encryptCredential("seed-secret", process.env.CREDENTIAL_ENCRYPTION_KEY!),
+  };
+  const db = {
+    from(table: string) {
+      let patch: Record<string, unknown> | undefined;
+      let onlyNull = false;
+      const query = {
+        select() { return query; },
+        eq(column: string, value: string) {
+          assert.equal(value, tenantId);
+          assert.ok(column === "id" || column === "tenant_id");
+          return query;
+        },
+        is(column: string, value: null) {
+          assert.equal(column, "webhook_secret_encrypted");
+          assert.equal(value, null);
+          onlyNull = true; return query;
+        },
+        update(values: Record<string, unknown>) { patch = values; return query; },
+        async upsert(values: Record<string, unknown>) {
+          if (table === "whatsapp_instances") Object.assign(row, values);
+          return { error: null };
+        },
+        async maybeSingle() { return { data: table === "tenants" ? { id: tenantId } : { ...row }, error: null }; },
+        async single() { return { data: { ...row }, error: null }; },
+        then(resolve: (value: unknown) => unknown) {
+          if (patch && (!onlyNull || row.webhook_secret_encrypted == null)) Object.assign(row, patch);
+          return Promise.resolve(resolve({ error: null }));
+        },
+      };
+      return query;
+    },
+  } as unknown as DatabaseClient;
+  return { db, row };
+}
+
+test("status() detects a WhatsApp number swap and defers recording it until acknowledged", async () => {
+  const { WahaAdminService } = await import("./waha-admin.service.js");
+  const tenantId = "223e4567-e89b-42d3-a456-426614174001";
+  const { db, row } = makeInstanceDb(tenantId);
+  let me: { id?: string } = { id: "972500000001@c.us" };
+  const provider: WhatsAppSessionProvider = {
+    startSession: async () => ({ status: "STARTING" }),
+    restartSession: async () => ({ status: "STARTING" }),
+    stopSession: async () => {}, logoutSession: async () => {}, deleteSession: async () => {},
+    getSessionStatus: async () => ({ status: "WORKING", me }),
+    getQrImage: async () => ({ data: Buffer.alloc(0), contentType: "image/png" }),
+  };
+  const service = new WahaAdminService(db, provider, "https://leya.example.com", "http://waha.internal");
+
+  // First-ever connection: nothing to compare against, recorded immediately, no prompt.
+  const first = await service.status(tenantId);
+  assert.equal(first.numberChanged, undefined);
+  assert.equal(row.connected_identity, "972500000001@c.us");
+
+  // Same account reconnecting: still no prompt.
+  const second = await service.status(tenantId);
+  assert.equal(second.numberChanged, undefined);
+
+  // A different account connects — this is the number swap the cabinet must ask about.
+  me = { id: "972500000002@c.us" };
+  const third = await service.status(tenantId);
+  assert.equal(third.numberChanged, true);
+  // Not recorded yet: a page reload before the owner answers must ask again, not
+  // silently forget the swap happened.
+  assert.equal(row.connected_identity, "972500000001@c.us");
+  const fourth = await service.status(tenantId);
+  assert.equal(fourth.numberChanged, true);
+
+  // The owner answers (reset or not) and the cabinet acknowledges the swap.
+  await service.acknowledgeNumberChange(tenantId);
+  assert.equal(row.connected_identity, "972500000002@c.us");
+  const fifth = await service.status(tenantId);
+  assert.equal(fifth.numberChanged, undefined);
+});
+
+test("acknowledgeNumberChange rejects when the session is not currently connected", async () => {
+  const { WahaAdminService } = await import("./waha-admin.service.js");
+  const tenantId = "323e4567-e89b-42d3-a456-426614174002";
+  const { db } = makeInstanceDb(tenantId);
+  const provider: WhatsAppSessionProvider = {
+    startSession: async () => ({ status: "STARTING" }), restartSession: async () => ({ status: "STARTING" }),
+    stopSession: async () => {}, logoutSession: async () => {}, deleteSession: async () => {},
+    getSessionStatus: async () => ({ status: "SCAN_QR_CODE" }),
+    getQrImage: async () => ({ data: Buffer.alloc(0), contentType: "image/png" }),
+  };
+  const service = new WahaAdminService(db, provider, "https://leya.example.com", "http://waha.internal");
+  await assert.rejects(service.acknowledgeNumberChange(tenantId),
+    (error: unknown) => error instanceof HttpError && error.status === 409);
+});
+
+test("reconnect() also flags a number swap when the retried session comes back WORKING", async () => {
+  const { WahaAdminService } = await import("./waha-admin.service.js");
+  const tenantId = "423e4567-e89b-42d3-a456-426614174003";
+  const { db, row } = makeInstanceDb(tenantId);
+  row.connected_identity = "972500000001@c.us";
+  const newAccount = { status: "WORKING", me: { id: "972500000009@c.us" } };
+  const provider: WhatsAppSessionProvider = {
+    startSession: async () => newAccount, restartSession: async () => newAccount,
+    stopSession: async () => {}, logoutSession: async () => {}, deleteSession: async () => {},
+    getSessionStatus: async () => newAccount,
+    getQrImage: async () => ({ data: Buffer.alloc(0), contentType: "image/png" }),
+  };
+  const service = new WahaAdminService(db, provider, "https://leya.example.com", "http://waha.internal");
+  const result = await service.reconnect(tenantId);
+  assert.equal(result.status, "WORKING");
+  assert.equal(result.numberChanged, true);
+  // Deferred here too, for the same reason as status().
+  assert.equal(row.connected_identity, "972500000001@c.us");
 });
