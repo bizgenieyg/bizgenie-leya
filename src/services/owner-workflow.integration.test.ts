@@ -194,17 +194,37 @@ test('due escalation is cancelled after owner activity and expires after maximum
   }
 });
 
-test('owner phone must differ from session; one-time code binds LID and never guesses digits', async () => {
+test('owner phone must differ from session; one-time numeric code binds LID and is single-use', async () => {
   const h = await pgHarness();
   await assert.rejects(saveOwnerSettings(h.db, h.tenant, { phone: '972500000009' }, { id: '972500000009@c.us' }), /отличаться/);
   const result = await saveOwnerSettings(h.db, h.tenant, { phone: '972500000002', timeZone: 'Asia/Jerusalem' }, { id: '972500000009@c.us' });
+  assert.match(result.code, /^\d{6}$/);
   const settings = { ...h.settings, ...(await h.notificationSettings()) } as unknown as OwnerSettings;
-  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', '88888888@lid', result.pairingCommand, null, settings);
+  // The owner just replies with the digits from the WhatsApp message we sent them —
+  // no command word required — and stray punctuation around the code is tolerated.
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', '88888888@lid', ` ${result.code}. `, null, settings);
   let row = await h.notificationSettings();
   assert.equal(row.owner_chat_id, '88888888@lid'); assert.equal(row.owner_pairing_hash, null);
-  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', '77777777@lid', result.pairingCommand, null, settings);
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', '77777777@lid', result.code, null, settings);
   row = await h.notificationSettings();
   assert.equal(row.owner_chat_id, '88888888@lid');
+});
+test('a customer\'s six-digit message is not swallowed as a pairing attempt when no pairing is pending', async () => {
+  const h = await pgHarness();
+  const settings = { ...h.settings, ...(await h.notificationSettings()) } as unknown as OwnerSettings;
+  assert.equal(settings.owner_pairing_hash ?? null, null);
+  const handled = await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', customer, '123456', null, settings);
+  assert.equal(handled, false);
+});
+test('a wrong code or the right code from an unrelated sender never binds pairing', async () => {
+  const h = await pgHarness();
+  const result = await saveOwnerSettings(h.db, h.tenant, { phone: '972500000002', timeZone: 'Asia/Jerusalem' }, { id: '972500000009@c.us' });
+  const settings = { ...h.settings, ...(await h.notificationSettings()) } as unknown as OwnerSettings;
+  const wrongCode = result.code === '000000' ? '111111' : '000000';
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', '55555555@c.us', wrongCode, null, settings);
+  assert.equal((await h.notificationSettings()).owner_chat_id, null);
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', '55555555@c.us', result.code, null, settings);
+  assert.equal((await h.notificationSettings()).owner_chat_id, null, 'a non-@lid sender must also match the owner phone');
 });
 
 test('complete real GOWS client and owner reply payloads traverse worker filters through delivery', async () => {

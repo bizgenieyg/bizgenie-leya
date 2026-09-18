@@ -2,7 +2,6 @@ import type { DatabaseClient } from "../db/supabase.js";
 
 import { HttpError } from "../utils/http-error.js";
 import { isGroupChatJid } from "../utils/incoming-policy.js";
-import { stripJidSuffix } from "../utils/whatsapp-id.js";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -104,23 +103,14 @@ export async function findOrCreateClient(
 ): Promise<ClientRow> {
   const nowIso = new Date().toISOString();
 
-  const columns="id, tenant_id, phone, whatsapp_jid, name, time_zone,language,language_overridden,auto_reply_allowed,chat_type,deleted_at";
-  const { data: exact, error: findError } = await db
+  const { data: existing, error: findError } = await db
     .from("clients")
-    .select(columns)
+    .select("id, tenant_id, phone, whatsapp_jid, name, time_zone,language,language_overridden,auto_reply_allowed,chat_type,deleted_at")
     .eq("tenant_id", tenantId)
     .eq("whatsapp_jid", whatsappJid)
     .maybeSingle();
   if (findError) {
     throw new HttpError(500, "Client lookup failed");
-  }
-  let existing=exact;
-  const contactKey=stripJidSuffix(whatsappJid),normalizedName=name?.trim().toLocaleLowerCase()??'';
-  if(!existing&&contactKey&&normalizedName){
-    const aliases=[contactKey,`${contactKey}@lid`];
-    const fallback=await db.from("clients").select(columns).eq("tenant_id",tenantId).in("phone",aliases).limit(5);
-    if(fallback.error)throw new HttpError(500,"Client lookup failed");
-    existing=(fallback.data??[]).find(row=>stripJidSuffix(String(row.whatsapp_jid??row.phone))===contactKey&&String(row.name??'').trim().toLocaleLowerCase()===normalizedName)??null;
   }
 
   if (existing) {

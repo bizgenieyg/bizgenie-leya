@@ -1,4 +1,4 @@
-import { readRuntimeSettings,saveRuntimeSettings } from '../services/runtime-settings.service.js';
+import { behavior,readRuntimeSettings,saveRuntimeSettings } from '../services/runtime-settings.service.js';
 import { createException,deleteException,listExceptions,updateException } from '../services/schedule-exceptions.service.js';
 import { registry } from '../agents/index.js';
 import { usageSummary } from "../services/usage.service.js";
@@ -7,6 +7,9 @@ import { loadOwnerSettings, saveOwnerSettings } from '../services/owner-settings
 import { getTenantRouting } from '../services/tenant.service.js';
 import { createWhatsAppProvider } from '../providers/whatsapp/index.js';
 import { readSessionIdentity } from '../utils/incoming-policy.js';
+import { renderText } from '../services/templates.service.js';
+import { toChatId } from '../utils/whatsapp-id.js';
+import { resetTenantCustomerData } from '../services/tenant-reset.service.js';
 import express, { Router } from "express";
 
 import { WahaAdminService } from "../services/waha-admin.service.js";
@@ -68,10 +71,22 @@ adminRouter.post('/owner-settings', async (request,response) => {
   const tenantId=queryTenantId(request.query.tenantId);
   const routing=await getTenantRouting(supabase,tenantId);
   if(!routing?.instance?.session_name) throw new HttpError(409,'Сначала подключите бизнес-номер WhatsApp.');
-  const status=await createWhatsAppProvider().getSessionStatus(routing.instance.session_name);
+  const session=routing.instance.session_name;
+  const provider=createWhatsAppProvider();
+  const status=await provider.getSessionStatus(session);
   if(status.status!=='WORKING') throw new HttpError(409,'Сначала подключите бизнес-номер WhatsApp.');
+  const saved=await saveOwnerSettings(supabase,tenantId,objectBody(request.body),readSessionIdentity(status.me));
+  // A service message, not client traffic: sent directly (no usage metering), so the
+  // owner only has to reply with the digits instead of typing a command themselves.
+  const settings=await loadOwnerSettings(supabase,tenantId);
+  const text=renderText(settings,'owner.pairing_code',behavior(settings).owner_language,{code:saved.code,minutes:String(saved.ttlMinutes)});
+  try{
+    await provider.sendMessage({session,chatId:toChatId(saved.phone),text});
+  }catch{
+    throw new HttpError(422,'Не удалось отправить код подтверждения владельцу.');
+  }
   response.setHeader('Cache-Control','no-store');
-  response.json(await saveOwnerSettings(supabase,tenantId,objectBody(request.body),readSessionIdentity(status.me)));
+  response.json({sent:true});
 });
 
 
@@ -110,6 +125,13 @@ adminRouter.delete('/schedule-exceptions',async(request,response)=>{await delete
 
 adminRouter.get('/tenant-settings',async(request,response)=>{
  response.setHeader('Cache-Control','no-store');response.json(await readRuntimeSettings(supabase,queryTenantId(request.query.tenantId)));
+});
+// Owner-triggered, e.g. after switching to a different business WhatsApp number: wipes
+// customer data (clients/conversations/messages/escalations/agent actions/owner-summary
+// jobs) for the tenant. Never automatic — settings, schedule and knowledge base stay.
+adminRouter.post('/reset-tenant-data',async(request,response)=>{
+ await resetTenantCustomerData(supabase,queryTenantId(request.query.tenantId));
+ response.json({reset:true});
 });
 adminRouter.get('/clients',async(request,response)=>{response.setHeader('Cache-Control','no-store');response.json(await listClientCards(supabase,queryTenantId(request.query.tenantId),typeof request.query.search==='string'?request.query.search:'',Number(request.query.page)||1,Number(request.query.limit)||20,typeof request.query.status==='string'?request.query.status:''));});
 adminRouter.get('/clients/:id',async(request,response)=>{response.setHeader('Cache-Control','no-store');response.json(await getClientCard(supabase,queryTenantId(request.query.tenantId),String(request.params.id)));});

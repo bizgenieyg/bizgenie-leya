@@ -1,6 +1,6 @@
 import { BEHAVIOR_DEFAULTS } from "../config/behavior.js";
 import { supportedTimeZone } from "../config/time-zones.js";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomInt } from "node:crypto";
 import type { DatabaseClient } from "../db/supabase.js";
 import type { SessionIdentity } from "../utils/incoming-policy.js";
 import { ownerIdentityField } from "../utils/incoming-policy.js";
@@ -32,7 +32,14 @@ export function isBusinessOwner(from: string, settings: OwnerSettings): boolean 
   return !!settings.owner_phone && [toChatId(settings.owner_phone),settings.owner_chat_id].some(id => id && canonical(id) === canonical(from));
 }
 const hash = (code: string) => createHash("sha256").update(code).digest("hex");
-export async function saveOwnerSettings(db: DatabaseClient, tenantId: string, input: Record<string,unknown>, me: SessionIdentity) {
+// Numeric so the owner can just reply with digits from the WhatsApp message we send them,
+// instead of typing a long hex command themselves (the earlier flow).
+export const PAIRING_CODE_LENGTH = 6;
+function generatePairingCode(): string {
+  return String(randomInt(0, 10 ** PAIRING_CODE_LENGTH)).padStart(PAIRING_CODE_LENGTH, "0");
+}
+export interface SavedOwnerSettings { phone: string; code: string; ttlMinutes: number }
+export async function saveOwnerSettings(db: DatabaseClient, tenantId: string, input: Record<string,unknown>, me: SessionIdentity): Promise<SavedOwnerSettings> {
   const phone = typeof input.phone === "string" ? input.phone.trim().replace(/[ +()-]/g,"") : "";
   if (!/^\d{7,15}$/.test(phone)) throw new HttpError(400,"Укажите номер владельца с кодом страны.");
   if (!me.id) throw new HttpError(409,"Сначала подключите бизнес-номер WhatsApp.");
@@ -43,17 +50,20 @@ export async function saveOwnerSettings(db: DatabaseClient, tenantId: string, in
   const timeZone=typeof input.timeZone==='string'?input.timeZone:'';
   if(!supportedTimeZone(timeZone)) throw new HttpError(400,"Выберите часовой пояс владельца из списка.");
   const settings = await loadOwnerSettings(db,tenantId);
-  const code = randomBytes(12).toString("hex");
+  const code = generatePairingCode();
+  const ttlMinutes = Number(settings.behavior?.pairing_ttl_minutes ?? BEHAVIOR_DEFAULTS.pairing_ttl_minutes);
   const { error } = await db.from("notification_settings").upsert({tenant_id:tenantId,owner_phone:phone,owner_chat_id:null,
-    time_zone:timeZone,owner_pairing_hash:hash(code),owner_pairing_expires_at:new Date(Date.now()+Number(settings.behavior?.pairing_ttl_minutes ?? BEHAVIOR_DEFAULTS.pairing_ttl_minutes)*60*1000).toISOString(),quiet_hours_start:start,quiet_hours_end:end,mode:"mute_all"},{onConflict:"tenant_id"});
+    time_zone:timeZone,owner_pairing_hash:hash(code),owner_pairing_expires_at:new Date(Date.now()+ttlMinutes*60*1000).toISOString(),quiet_hours_start:start,quiet_hours_end:end,mode:"mute_all"},{onConflict:"tenant_id"});
   if(error) throw new Error("Owner settings save failed");
-  return { pairingCommand:`ПОДТВЕРДИТЬ ${code}` };
+  return { phone, code, ttlMinutes };
 }
 export async function pairOwner(db: DatabaseClient,tenantId:string,from:string,text:string,settings:OwnerSettings):Promise<boolean> {
-  const match = /^ПОДТВЕРДИТЬ ([a-f0-9]{24})$/i.exec(text.trim());
+  // No pairing in progress: never intercept the message, so ordinary customer traffic
+  // (which may well contain a bare number) flows through untouched.
+  if(!settings.owner_pairing_hash || !settings.owner_pairing_expires_at || Date.parse(settings.owner_pairing_expires_at)<=Date.now()) return false;
+  const match = /^\D*(\d{6})\D*$/.exec(text.trim());
   if(!match) return false;
-  if(!settings.owner_pairing_hash || !settings.owner_pairing_expires_at || Date.parse(settings.owner_pairing_expires_at)<=Date.now()
-    || hash(match[1]!)!==settings.owner_pairing_hash || (!from.endsWith("@lid") && !isBusinessOwner(from,settings))) return true;
+  if(hash(match[1]!)!==settings.owner_pairing_hash || (!from.endsWith("@lid") && !isBusinessOwner(from,settings))) return true;
   const {error}=await db.from("notification_settings").update({owner_chat_id:from,owner_pairing_hash:null,owner_pairing_expires_at:null})
     .eq("tenant_id",tenantId).eq("owner_pairing_hash",settings.owner_pairing_hash);
   if(error) throw new Error("Owner pairing failed");

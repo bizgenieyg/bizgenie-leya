@@ -52,7 +52,15 @@ const MIGRATIONS_IN_APPLICATION_ORDER = [
   '20260911181238_042_assistant_tone_values.sql',
   '20260914132216_043_pause_new_tenant_replies.sql',
   '20260915054310_044_client_reply_language_and_group_cleanup.sql',
+  // 045 needs the pgvector extension, which this PGlite build does not have; its own
+  // integration tests boot a dedicated instance instead of using this shared harness.
   '20260917090000_046_client_chat_type.sql',
+  // 047's merge-by-name DML is applied once here, before any test inserts its own
+  // clients, so it is always a no-op against an empty table. Kept for order fidelity
+  // with the live database; see migration 048 for why it was not reverted in place.
+  '20260917193000_047_merge_duplicate_client_jids.sql',
+  '20260918100000_048_revert_client_merge_by_name.sql',
+  '20260918101000_049_reset_tenant_customer_data.sql',
 ];
 
 /** PGlite has no real `auth` schema/GoTrue; stub just enough for RLS-authoring

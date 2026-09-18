@@ -72,19 +72,49 @@ test('046 backfills group chats and removes them from card aggregates',async()=>
   assert.equal(visible.rows.length,1);
  }finally{await db.close();}
 });
-test('047 merges c.us and lid duplicates with the same visible identity',async()=>{
+test('048 no longer merges c.us and lid duplicates that share a display name',async()=>{
+ // Regression pin for the migration 047 revert: two clients with the same visible name
+ // but different WhatsApp JIDs (e.g. a personal account and an unrelated group/session
+ // sharing a name) must stay separate rows — see 20260918100000_048_revert_client_merge_by_name.sql.
  const db=new PGlite();try{
   await db.exec(readFileSync('supabase/migrations/001_phase1_schema.sql','utf8').replace('create extension if not exists pgcrypto;',''));
   await db.exec(readFileSync('supabase/migrations/20260910120000_040_client_cards_and_owner_summaries.sql','utf8'));
   await db.exec("create role anon; create role authenticated; create role service_role; alter table conversations add column routed_agent text; create table escalations(id uuid primary key default gen_random_uuid(),tenant_id uuid,conversation_id uuid,status text);");
   await db.exec(readFileSync('supabase/migrations/20260910130000_041_client_soft_delete_and_job_contracts.sql','utf8'));
   await db.exec(readFileSync('supabase/migrations/20260917090000_046_client_chat_type.sql','utf8'));
+  await db.exec(readFileSync('supabase/migrations/20260918100000_048_revert_client_merge_by_name.sql','utf8'));
   const tenant='10000000-0000-4000-8000-000000000003',first='20000000-0000-4000-8000-000000000001',second='20000000-0000-4000-8000-000000000002';
   await db.query("insert into tenants(id,name,phone) values($1,'T','1')",[tenant]);
   await db.query("insert into clients(id,tenant_id,phone,whatsapp_jid,name,first_seen_at) values($1,$3,'52377797296184','52377797296184@c.us','BNI Synergy','2026-09-06'),($2,$3,'52377797296184@lid','52377797296184@lid','BNI Synergy','2026-09-07')",[first,second,tenant]);
   await db.query('insert into conversations(tenant_id,client_id) values($1,$2)',[tenant,second]);
-  await db.exec(readFileSync('supabase/migrations/20260917193000_047_merge_duplicate_client_jids.sql','utf8'));
-  assert.equal((await db.query<{count:number}>('select count(*)::int count from clients where tenant_id=$1',[tenant])).rows[0]!.count,1);
-  assert.equal((await db.query<{client_id:string}>('select client_id from conversations where tenant_id=$1',[tenant])).rows[0]!.client_id,first);
+  assert.equal((await db.query<{count:number}>('select count(*)::int count from clients where tenant_id=$1',[tenant])).rows[0]!.count,2,'no automatic merge runs on insert');
+  assert.equal((await db.query<{client_id:string}>('select client_id from conversations where tenant_id=$1',[tenant])).rows[0]!.client_id,second,'conversation stays on the client it was created for');
+ }finally{await db.close();}
+});
+test('049 resets one tenant\'s customer data without touching settings or the knowledge base',async()=>{
+ const db=new PGlite();try{
+  await db.exec(readFileSync('supabase/migrations/001_phase1_schema.sql','utf8').replace('create extension if not exists pgcrypto;',''));
+  await db.exec(readFileSync('supabase/migrations/20260910120000_040_client_cards_and_owner_summaries.sql','utf8'));
+  await db.exec("create role anon; create role authenticated; create role service_role; alter table conversations add column routed_agent text; create table escalations(id uuid primary key default gen_random_uuid(),tenant_id uuid,conversation_id uuid,status text);");
+  await db.exec(readFileSync('supabase/migrations/20260910130000_041_client_soft_delete_and_job_contracts.sql','utf8'));
+  await db.exec(readFileSync('supabase/migrations/20260918101000_049_reset_tenant_customer_data.sql','utf8'));
+  const tenant='10000000-0000-4000-8000-000000000004',client='20000000-0000-4000-8000-000000000003';
+  await db.query("insert into tenants(id,name,phone) values($1,'T','1')",[tenant]);
+  await db.query("insert into notification_settings(tenant_id,mode) values($1,'mute_all')",[tenant]);
+  await db.query("insert into knowledge_items(tenant_id,type,answer) values($1,'faq','keep me')",[tenant]);
+  await db.query("insert into clients(id,tenant_id,phone,whatsapp_jid,name) values($1,$2,'111','111@c.us','Client')",[client,tenant]);
+  await db.query('insert into client_profiles(tenant_id,client_id,profile_md) values($1,$2,$3)',[tenant,client,'notes']);
+  const conversation=(await db.query<{id:string}>('insert into conversations(tenant_id,client_id) values($1,$2) returning id',[tenant,client])).rows[0]!.id;
+  await db.query("insert into messages(conversation_id,tenant_id,from_me,body) values($1,$2,false,'hi')",[conversation,tenant]);
+  await db.query("insert into escalations(tenant_id,conversation_id,status) values($1,$2,'queued')",[tenant,conversation]);
+  await db.query("insert into agent_actions(tenant_id,conversation_id,action_type) values($1,$2,'faq_answer_exact')",[tenant,conversation]);
+  await db.query("insert into scheduled_jobs(tenant_id,job_type,payload,scheduled_at,status) values($1,'owner_summary','{}','2026-09-01','pending'),($1,'weekly_report','{}','2026-09-01','pending')",[tenant]);
+  await db.query('select reset_tenant_customer_data($1)',[tenant]);
+  for(const table of ['clients','conversations','messages','escalations','agent_actions','client_profiles'])
+    assert.equal((await db.query<{count:number}>(`select count(*)::int count from ${table} where tenant_id=$1`,[tenant])).rows[0]!.count,0,table);
+  assert.equal((await db.query<{count:number}>("select count(*)::int count from scheduled_jobs where tenant_id=$1 and job_type='owner_summary'",[tenant])).rows[0]!.count,0,'owner_summary jobs are cleared');
+  assert.equal((await db.query<{count:number}>("select count(*)::int count from scheduled_jobs where tenant_id=$1 and job_type='weekly_report'",[tenant])).rows[0]!.count,1,'non-client scheduled jobs are untouched');
+  assert.equal((await db.query<{count:number}>('select count(*)::int count from notification_settings where tenant_id=$1',[tenant])).rows[0]!.count,1,'settings survive the reset');
+  assert.equal((await db.query<{count:number}>('select count(*)::int count from knowledge_items where tenant_id=$1',[tenant])).rows[0]!.count,1,'knowledge base survives the reset');
  }finally{await db.close();}
 });

@@ -4,6 +4,11 @@ export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
     "he": "סיכום ליה: פניות — {inquiries}, לקוחות חדשים — {new_clients}, נסגרו על ידי ליה — {closed_by_bot}, הועברו לבעל העסק — {escalated}, ממתינים לתשובה — {unanswered}. ידע חסר: {missing_knowledge}.",
     "en": "Leya summary: inquiries — {inquiries}, new clients — {new_clients}, closed by Leya — {closed_by_bot}, sent to owner — {escalated}, awaiting reply — {unanswered}. Missing knowledge: {missing_knowledge}."
   },
+  "owner.pairing_code": {
+    "ru": "Код подтверждения Leya: {code}. Ответьте на это сообщение цифрами кода, чтобы подтвердить, что это ваш номер. Код действует {minutes} минут.",
+    "he": "קוד האימות של Leya: {code}. השיבו להודעה הזו עם הספרות של הקוד כדי לאשר שזה המספר שלכם. הקוד בתוקף ל-{minutes} דקות.",
+    "en": "Your Leya confirmation code: {code}. Reply to this message with the digits to confirm this is your number. The code is valid for {minutes} minutes."
+  },
   "client.reception_question": {
     "ru": "Я ассистент владельца. Расскажите, пожалуйста, что вам нужно — постараюсь помочь.",
     "he": "אני העוזרת של בעל העסק. ספרו לי בבקשה במה אוכל לעזור.",
