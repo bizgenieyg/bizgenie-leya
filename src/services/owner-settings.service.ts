@@ -5,7 +5,7 @@ import type { DatabaseClient } from "../db/supabase.js";
 import type { SessionIdentity } from "../utils/incoming-policy.js";
 import { ownerIdentityField } from "../utils/incoming-policy.js";
 import { HttpError } from "../utils/http-error.js";
-import { toChatId } from "../utils/whatsapp-id.js";
+import { normalizeIsraeliPhone, toChatId } from "../utils/whatsapp-id.js";
 
 export interface OwnerSettings {
   translate_owner_answer?: boolean; behavior?: Record<string,unknown>; templates?: Record<string,Record<string,string>>;
@@ -40,8 +40,14 @@ function generatePairingCode(): string {
 }
 export interface SavedOwnerSettings { phone: string; code: string; ttlMinutes: number }
 export async function saveOwnerSettings(db: DatabaseClient, tenantId: string, input: Record<string,unknown>, me: SessionIdentity): Promise<SavedOwnerSettings> {
-  const phone = typeof input.phone === "string" ? input.phone.trim().replace(/[ +()-]/g,"") : "";
-  if (!/^\d{7,15}$/.test(phone)) throw new HttpError(400,"Укажите номер владельца с кодом страны.");
+  // Normalize before validating/storing — a local-format number (0523695741) must not
+  // reach the database as-is: toChatId() would still resolve it correctly on every
+  // read, but only after normalization is applied at least once. Validating here
+  // instead of just accepting any 7-15 digit string catches the bug that shipped
+  // silently: a locally-formatted number "saved" successfully but the confirmation
+  // code went to a JID that does not exist on WhatsApp, with no error anywhere.
+  const phone = normalizeIsraeliPhone(input.phone);
+  if (!phone) throw new HttpError(400,"Укажите номер владельца в формате +972501234567 или 0501234567.");
   if (!me.id) throw new HttpError(409,"Сначала подключите бизнес-номер WhatsApp.");
   if (ownerIdentityField(toChatId(phone),me)) throw new HttpError(400,"Номер владельца должен отличаться от бизнес-номера WhatsApp.");
   const start = input.quietStart || null; const end = input.quietEnd || null;

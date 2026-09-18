@@ -227,6 +227,27 @@ test('a wrong code or the right code from an unrelated sender never binds pairin
   assert.equal((await h.notificationSettings()).owner_chat_id, null, 'a non-@lid sender must also match the owner phone');
 });
 
+test('a local-format Israeli phone (0523695741) is normalized to 972... before it is stored or sent to', async () => {
+  const h = await pgHarness();
+  const result = await saveOwnerSettings(h.db, h.tenant, { phone: '0523695741', timeZone: 'Asia/Jerusalem' }, { id: '972500000009@c.us' });
+  // Stored canonically, not as the local-format digits the owner typed.
+  assert.equal(result.phone, '972523695741');
+  assert.equal((await h.notificationSettings()).owner_phone, '972523695741');
+  const settings = { ...h.settings, ...(await h.notificationSettings()) } as unknown as OwnerSettings;
+  // The code arrives at the correct WhatsApp JID (972523695741@c.us) and pairing works
+  // end to end — this used to fail silently: the code went to 0523695741@c.us instead,
+  // a JID nothing on WhatsApp answers to, with no error surfaced anywhere.
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', '972523695741@c.us', result.code, null, settings);
+  assert.equal((await h.notificationSettings()).owner_chat_id, '972523695741@c.us');
+});
+test('saveOwnerSettings rejects an unrecognizable phone instead of silently storing it', async () => {
+  const h = await pgHarness();
+  for (const bad of ['123', '', 'not a phone']) {
+    await assert.rejects(saveOwnerSettings(h.db, h.tenant, { phone: bad, timeZone: 'Asia/Jerusalem' }, { id: '972500000009@c.us' }), /номер/i);
+  }
+  assert.equal((await h.notificationSettings()).owner_phone, '972500000002', 'the prior valid phone from pgHarness setup is untouched');
+});
+
 test('complete real GOWS client and owner reply payloads traverse worker filters through delivery', async () => {
   const { handleWebhookEvent } = await import('../workers/webhook.worker.js');
   const h = await pgHarness();

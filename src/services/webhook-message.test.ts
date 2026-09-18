@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { normalizeWebhookMessage } from "../utils/webhook-message.js";
-import { digitsOf, toChatId } from "../utils/whatsapp-id.js";
+import { digitsOf, normalizeIsraeliPhone, toChatId } from "../utils/whatsapp-id.js";
 import { webhookFailureDetails } from "../utils/webhook-error.js";
 
 // Redacted GOWS message shape; no production message/contact data.
@@ -47,6 +47,23 @@ test("nullable owner phone does not throw replace or produce an empty chat addre
     assert.equal(toChatId(value), "");
   }
   assert.equal(digitsOf("+972 50-123-4567"), "972501234567");
+});
+test("local Israeli phone formats normalize to the same international JID", () => {
+  // The bug: 0523695741 (local format, no country code) silently became the
+  // non-existent JID 0523695741@c.us and the pairing code never arrived.
+  for (const local of ["0523695741", "052-369-5741", "+972 52-369-5741", "972523695741", "523695741"]) {
+    assert.equal(normalizeIsraeliPhone(local), "972523695741", local);
+    assert.equal(toChatId(local), "972523695741@c.us", local);
+  }
+});
+test("normalizeIsraeliPhone rejects digits that are not a plausible Israeli number", () => {
+  for (const bad of ["123", "12125550187", "", null, undefined, "0000000000000"]) {
+    assert.equal(normalizeIsraeliPhone(bad), null, String(bad));
+  }
+  // toChatId stays permissive for non-Israeli-shaped input (unchanged prior behavior) —
+  // callers that must reject bad input (saveOwnerSettings) check normalizeIsraeliPhone
+  // directly instead.
+  assert.equal(toChatId("12125550187"), "12125550187@c.us");
 });
 test("worker diagnostics include event and stack frames but exclude error message/payload", () => {
   const error = new TypeError(`private message token=secret
