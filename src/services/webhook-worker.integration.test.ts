@@ -78,7 +78,8 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
       assert.equal(lidClient.rows[0]!.count, "1", "the @lid contact resolves to exactly one client row across both messages");
       // A different WhatsApp JID with the same digits and display name is never merged
       // into the @lid client, even though it looks like the same contact: two real
-      // contacts can share a name (see migration 048), so only an exact JID match counts.
+      // contacts can share a name, so only an exact JID match counts (findOrCreateClient
+      // no longer has a name-based fallback — see tenant.service.ts).
       await handleWebhookEvent(tenantId, { ...body, payload: { ...body.payload, from: "261885798707406@c.us", body: "Тот же контакт" } }, db, provider, ai as never);
       const aliasedClients = await pg.query<{ count: string }>("select count(*)::text as count from clients where tenant_id=$1 and regexp_replace(whatsapp_jid,'@.*$','')='261885798707406'", [tenantId]);
       assert.equal(aliasedClients.rows[0]!.count, "2", "matching digits under a different JID suffix create a separate client card, not a merge");

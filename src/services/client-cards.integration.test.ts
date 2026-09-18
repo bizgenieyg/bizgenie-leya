@@ -72,17 +72,19 @@ test('046 backfills group chats and removes them from card aggregates',async()=>
   assert.equal(visible.rows.length,1);
  }finally{await db.close();}
 });
-test('048 no longer merges c.us and lid duplicates that share a display name',async()=>{
- // Regression pin for the migration 047 revert: two clients with the same visible name
- // but different WhatsApp JIDs (e.g. a personal account and an unrelated group/session
- // sharing a name) must stay separate rows — see 20260918100000_048_revert_client_merge_by_name.sql.
+test('clients with the same display name but different WhatsApp JIDs are never merged',async()=>{
+ // Regression pin for the reverted merge-by-name behaviour (was migration 047 + a
+ // findOrCreateClient fallback in commit e5025bc; 047 was never applied to the live
+ // database and was removed outright rather than reverted forward). Two clients with
+ // the same visible name but different JIDs (e.g. a personal account and an unrelated
+ // group/session sharing a name) must stay separate rows — findOrCreateClient
+ // (tenant.service.ts) only ever matches on an exact whatsapp_jid.
  const db=new PGlite();try{
   await db.exec(readFileSync('supabase/migrations/001_phase1_schema.sql','utf8').replace('create extension if not exists pgcrypto;',''));
   await db.exec(readFileSync('supabase/migrations/20260910120000_040_client_cards_and_owner_summaries.sql','utf8'));
   await db.exec("create role anon; create role authenticated; create role service_role; alter table conversations add column routed_agent text; create table escalations(id uuid primary key default gen_random_uuid(),tenant_id uuid,conversation_id uuid,status text);");
   await db.exec(readFileSync('supabase/migrations/20260910130000_041_client_soft_delete_and_job_contracts.sql','utf8'));
   await db.exec(readFileSync('supabase/migrations/20260917090000_046_client_chat_type.sql','utf8'));
-  await db.exec(readFileSync('supabase/migrations/20260918100000_048_revert_client_merge_by_name.sql','utf8'));
   const tenant='10000000-0000-4000-8000-000000000003',first='20000000-0000-4000-8000-000000000001',second='20000000-0000-4000-8000-000000000002';
   await db.query("insert into tenants(id,name,phone) values($1,'T','1')",[tenant]);
   await db.query("insert into clients(id,tenant_id,phone,whatsapp_jid,name,first_seen_at) values($1,$3,'52377797296184','52377797296184@c.us','BNI Synergy','2026-09-06'),($2,$3,'52377797296184@lid','52377797296184@lid','BNI Synergy','2026-09-07')",[first,second,tenant]);
@@ -91,13 +93,13 @@ test('048 no longer merges c.us and lid duplicates that share a display name',as
   assert.equal((await db.query<{client_id:string}>('select client_id from conversations where tenant_id=$1',[tenant])).rows[0]!.client_id,second,'conversation stays on the client it was created for');
  }finally{await db.close();}
 });
-test('049 resets one tenant\'s customer data without touching settings or the knowledge base',async()=>{
+test('047 resets one tenant\'s customer data without touching settings or the knowledge base',async()=>{
  const db=new PGlite();try{
   await db.exec(readFileSync('supabase/migrations/001_phase1_schema.sql','utf8').replace('create extension if not exists pgcrypto;',''));
   await db.exec(readFileSync('supabase/migrations/20260910120000_040_client_cards_and_owner_summaries.sql','utf8'));
   await db.exec("create role anon; create role authenticated; create role service_role; alter table conversations add column routed_agent text; create table escalations(id uuid primary key default gen_random_uuid(),tenant_id uuid,conversation_id uuid,status text);");
   await db.exec(readFileSync('supabase/migrations/20260910130000_041_client_soft_delete_and_job_contracts.sql','utf8'));
-  await db.exec(readFileSync('supabase/migrations/20260918101000_049_reset_tenant_customer_data.sql','utf8'));
+  await db.exec(readFileSync('supabase/migrations/20260918101000_047_reset_tenant_customer_data.sql','utf8'));
   const tenant='10000000-0000-4000-8000-000000000004',client='20000000-0000-4000-8000-000000000003';
   await db.query("insert into tenants(id,name,phone) values($1,'T','1')",[tenant]);
   await db.query("insert into notification_settings(tenant_id,mode) values($1,'mute_all')",[tenant]);
