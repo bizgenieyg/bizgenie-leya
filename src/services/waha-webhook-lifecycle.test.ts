@@ -182,6 +182,8 @@ test("status() detects a WhatsApp number swap and defers recording it until ackn
   // Same account reconnecting: still no prompt.
   const second = await service.status(tenantId);
   assert.equal(second.numberChanged, undefined);
+  await assert.rejects(service.requirePendingNumberChange(tenantId),
+    (error: unknown) => error instanceof HttpError && error.status === 409);
 
   // A different account connects — this is the number swap the cabinet must ask about.
   me = { id: "972500000002@c.us" };
@@ -192,10 +194,13 @@ test("status() detects a WhatsApp number swap and defers recording it until ackn
   assert.equal(row.connected_identity, "972500000001@c.us");
   const fourth = await service.status(tenantId);
   assert.equal(fourth.numberChanged, true);
+  await service.requirePendingNumberChange(tenantId);
 
   // The owner answers (reset or not) and the cabinet acknowledges the swap.
   await service.acknowledgeNumberChange(tenantId);
   assert.equal(row.connected_identity, "972500000002@c.us");
+  await assert.rejects(service.requirePendingNumberChange(tenantId),
+    (error: unknown) => error instanceof HttpError && error.status === 409);
   const fifth = await service.status(tenantId);
   assert.equal(fifth.numberChanged, undefined);
 });

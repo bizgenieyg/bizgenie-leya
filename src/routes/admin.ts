@@ -9,7 +9,7 @@ import { createWhatsAppProvider } from '../providers/whatsapp/index.js';
 import { readSessionIdentity } from '../utils/incoming-policy.js';
 import { renderText } from '../services/templates.service.js';
 import { toChatId } from '../utils/whatsapp-id.js';
-import { resetTenantCustomerData } from '../services/tenant-reset.service.js';
+import { resetTenantCustomerDataAfterNumberChange } from '../services/tenant-reset.service.js';
 import express, { Router } from "express";
 
 import { WahaAdminService } from "../services/waha-admin.service.js";
@@ -137,7 +137,8 @@ adminRouter.get('/tenant-settings',async(request,response)=>{
 // customer data (clients/conversations/messages/escalations/agent actions/owner-summary
 // jobs) for the tenant. Never automatic — settings, schedule and knowledge base stay.
 adminRouter.post('/reset-tenant-data',async(request,response)=>{
- await resetTenantCustomerData(supabase,queryTenantId(request.query.tenantId));
+ const tenantId=queryTenantId(request.query.tenantId);
+ await resetTenantCustomerDataAfterNumberChange(supabase,waha,tenantId);
  response.json({reset:true});
 });
 adminRouter.get('/clients',async(request,response)=>{response.setHeader('Cache-Control','no-store');response.json(await listClientCards(supabase,queryTenantId(request.query.tenantId),typeof request.query.search==='string'?request.query.search:'',Number(request.query.page)||1,Number(request.query.limit)||20,typeof request.query.status==='string'?request.query.status:''));});

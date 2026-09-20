@@ -12,3 +12,14 @@ export async function resetTenantCustomerData(db: DatabaseClient, tenantId: stri
   const { error } = await db.rpc('reset_tenant_customer_data', { p_tenant_id: tenantId });
   if (error) throw new Error('Tenant data reset failed');
 }
+
+export interface NumberChangeResetGuard {
+  requirePendingNumberChange(tenantId:string):Promise<void>;
+  acknowledgeNumberChange(tenantId:string):Promise<void>;
+}
+
+export async function resetTenantCustomerDataAfterNumberChange(db:DatabaseClient,guard:NumberChangeResetGuard,tenantId:string):Promise<void>{
+  await guard.requirePendingNumberChange(tenantId);
+  await resetTenantCustomerData(db,tenantId);
+  await guard.acknowledgeNumberChange(tenantId);
+}

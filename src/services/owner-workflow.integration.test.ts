@@ -227,23 +227,23 @@ test('a wrong code or the right code from an unrelated sender never binds pairin
   assert.equal((await h.notificationSettings()).owner_chat_id, null, 'a non-@lid sender must also match the owner phone');
 });
 
-test('a local-format Israeli phone (0523695741) is normalized to 972... before it is stored or sent to', async () => {
+test('owner phone accepts explicit international country codes from Israel and other countries', async () => {
   const h = await pgHarness();
-  const result = await saveOwnerSettings(h.db, h.tenant, { phone: '0523695741', timeZone: 'Asia/Jerusalem' }, { id: '972500000009@c.us' });
-  // Stored canonically, not as the local-format digits the owner typed.
+  const result = await saveOwnerSettings(h.db, h.tenant, { phone: '+972 52-369-5741', timeZone: 'Asia/Jerusalem' }, { id: '972500000009@c.us' });
   assert.equal(result.phone, '972523695741');
   assert.equal((await h.notificationSettings()).owner_phone, '972523695741');
   const settings = { ...h.settings, ...(await h.notificationSettings()) } as unknown as OwnerSettings;
-  // The code arrives at the correct WhatsApp JID (972523695741@c.us) and pairing works
-  // end to end — this used to fail silently: the code went to 0523695741@c.us instead,
-  // a JID nothing on WhatsApp answers to, with no error surfaced anywhere.
   await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', '972523695741@c.us', result.code, null, settings);
   assert.equal((await h.notificationSettings()).owner_chat_id, '972523695741@c.us');
+
+  const us = await saveOwnerSettings(h.db, h.tenant, { phone: '+15551234567', timeZone: 'America/New_York' }, { id: '972500000009@c.us' });
+  assert.equal(us.phone, '15551234567');
+  assert.equal((await h.notificationSettings()).owner_phone, '15551234567');
 });
-test('saveOwnerSettings rejects an unrecognizable phone instead of silently storing it', async () => {
+test('saveOwnerSettings rejects local numbers without a country code instead of guessing a country', async () => {
   const h = await pgHarness();
-  for (const bad of ['123', '', 'not a phone']) {
-    await assert.rejects(saveOwnerSettings(h.db, h.tenant, { phone: bad, timeZone: 'Asia/Jerusalem' }, { id: '972500000009@c.us' }), /номер/i);
+  for (const bad of ['0501234567', '501234567', '123', '', 'not a phone']) {
+    await assert.rejects(saveOwnerSettings(h.db, h.tenant, { phone: bad, timeZone: 'Asia/Jerusalem' }, { id: '972500000009@c.us' }), /кодом страны/i);
   }
   assert.equal((await h.notificationSettings()).owner_phone, '972500000002', 'the prior valid phone from pgHarness setup is untouched');
 });

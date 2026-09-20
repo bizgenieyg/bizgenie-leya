@@ -38,6 +38,20 @@ export function normalizeIsraeliPhone(value: unknown): string | null {
   return /^\d{9}$/.test(digits) ? `972${digits}` : null;
 }
 
+/** Normalize new owner input only when an international country code is explicit. */
+export function normalizeInternationalPhone(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const input = value.trim();
+  if (!/^(?:\+|00)?[\d\s().-]+$/.test(input)) return null;
+  const explicitPrefix = input.startsWith("+") || input.startsWith("00");
+  let digits = digitsOf(input);
+  if (input.startsWith("00")) digits = digits.slice(2);
+  // Bare canonical values are accepted for compatibility with forms populated from
+  // storage, but 9-10 digit local formats are never assigned a country implicitly.
+  if (!explicitPrefix && digits.length < 11) return null;
+  return /^[1-9]\d{7,14}$/.test(digits) ? digits : null;
+}
+
 /** True for WhatsApp Status / Stories broadcasts, which must be ignored. */
 export function isStatusBroadcast(from: unknown): boolean {
   if (typeof from !== "string") return false;

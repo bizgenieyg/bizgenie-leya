@@ -59,6 +59,9 @@ export function nextQuietHoursEnd(settings:RuntimeSettings,now:Date):Date|null {
   const zone=settings.time_zone??DEFAULT_TIME_ZONE;
   const base=Math.floor(now.getTime()/60000)*60000;
   const weekly=settings.behavior?.weekly_schedule as Record<string,{mode:string;start?:string;end?:string}>|undefined;
+  const hasWeeklyWindow=weekly&&Object.values(weekly).some(day=>day?.mode==='working_day'||day?.mode==='working_hours'&&minutes(day.start??'')<minutes(day.end??''));
+  const hasSpecialWindow=(settings.exceptions??[]).some(exception=>exception.kind==='special_hours'&&minutes(exception.work_start??'')<minutes(exception.work_end??''));
+  if(weekly&&!hasWeeklyWindow&&!hasSpecialWindow)return null;
   // A weekly schedule repeats every 7 days; a legacy daily window resets every day.
   const horizonDays=weekly?8:2;
   const [Y,M,D]=localDate(now,zone).iso.split('-').map(Number) as [number,number,number];

@@ -137,6 +137,23 @@ export class WahaAdminService {
    * session itself rather than trusting a client-supplied identity.
    */
   async acknowledgeNumberChange(tenantId: string): Promise<void> {
+    const identity = await this.connectedIdentity(tenantId);
+    await this.recordConnectedIdentity(tenantId, identity);
+  }
+
+  async requirePendingNumberChange(tenantId: string): Promise<void> {
+    const identity = await this.connectedIdentity(tenantId);
+    const { data, error } = await this.db.from("whatsapp_instances")
+      .select("connected_identity").eq("tenant_id", tenantId).maybeSingle();
+    if (error) throw new HttpError(500, "WhatsApp instance lookup failed");
+    const stored = (data as { connected_identity?: string | null } | null)?.connected_identity;
+    const acknowledged = canonicalIdentity(stored ? { id: stored } : {});
+    if (!acknowledged || acknowledged === identity) {
+      throw new HttpError(409, "No pending WhatsApp number change");
+    }
+  }
+
+  private async connectedIdentity(tenantId: string): Promise<string> {
     const session = await this.requireSession(tenantId);
     let raw: SessionStatus;
     try {
@@ -148,7 +165,7 @@ export class WahaAdminService {
     if (normalizeSessionStatus(raw).status !== "WORKING" || !identity) {
       throw new HttpError(409, "WhatsApp session is not connected");
     }
-    await this.recordConnectedIdentity(tenantId, identity);
+    return identity;
   }
 
   async reconnect(tenantId: string): Promise<{ session: string; status: string; qrAvailable: boolean; numberChanged?: boolean }> {
