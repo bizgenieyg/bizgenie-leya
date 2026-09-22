@@ -16,12 +16,14 @@ export function templates(settings:OwnerSettings){
 }
 export async function readRuntimeSettings(db:DatabaseClient,tenantId:string){
  const owner=await loadOwnerSettings(db,tenantId);
+ const tenant=await db.from('tenants').select('business_sector').eq('id',tenantId).single();
+ if(tenant.error)throw new Error('Tenant profile unavailable');
  const {data,error}=await db.from('tenant_usage_limits').select('messages_per_month,voice_minutes_per_month,warning_percent,plan,messages_overridden,voice_overridden,warning_overridden').eq('tenant_id',tenantId).maybeSingle();
  if(error)throw new Error('Tenant limits unavailable');
  const planCode=data?.plan;
  const plan=planCode?await db.from('plans').select('code,display_name,messages_per_month,voice_minutes_per_month,warning_percent,unlimited').eq('code',planCode).maybeSingle():{data:null,error:{}};
  if(plan.error||!plan.data){console.error('critical_tenant_plan_integrity_violation',{tenantId});try{await logSystemEvent(db,{tenantId,level:'error',event:'tenant_plan_integrity_violation'});}catch{}throw new Error('Tenant plan unavailable');}
- return { ...behavior(owner),translate_owner_answer:owner.translate_owner_answer??BEHAVIOR_DEFAULTS.translate_owner_answer,
+ return { ...behavior(owner),business_sector:tenant.data.business_sector??null,translate_owner_answer:owner.translate_owner_answer??BEHAVIOR_DEFAULTS.translate_owner_answer,
  messages_per_month:data?.messages_overridden?data.messages_per_month:plan.data.messages_per_month,
  voice_minutes_per_month:data?.voice_overridden?data.voice_minutes_per_month:plan.data.voice_minutes_per_month,
  warning_percent:data?.warning_overridden?data.warning_percent:plan.data.warning_percent,plan:plan.data.code,plan_name:plan.data.display_name,unlimited:Boolean(plan.data.unlimited),
@@ -92,12 +94,21 @@ export function validateRuntimePatch(input:Record<string,unknown>) {
  return {notification,behaviorPatch};
 }
 export async function saveRuntimeSettings(db:DatabaseClient,tenantId:string,input:Record<string,unknown>){
- const patch=validateRuntimePatch(input),existing=await loadOwnerSettings(db,tenantId);
+ const {business_sector,...runtimeInput}=input;
+ if(business_sector!==undefined&&(business_sector!==null&&(typeof business_sector!=='string'||business_sector.trim().length>100)))throw new HttpError(400,'Invalid business sector');
+ const patch=validateRuntimePatch(runtimeInput),existing=await loadOwnerSettings(db,tenantId);
  const merged={...behavior(existing),...patch.behaviorPatch};
  if(Number(merged.knowledge_chunk_overlap)>=Number(merged.knowledge_chunk_characters))throw new HttpError(400,'Knowledge chunk overlap must be smaller than chunk size');
  if(Number(merged.escalation_close_minutes)<=Number(merged.escalation_remind_minutes))throw new HttpError(400,'Close timeout must exceed reminder timeout');
  for(const route of [...merged.campaign_routes,...merged.source_routes])if(!merged.enabled_agents.includes(route.agent))throw new HttpError(400,'Route agent must be enabled');
- const result=await db.rpc('update_tenant_runtime_settings',{p_tenant_id:tenantId,p_notification:patch.notification,p_behavior:patch.behaviorPatch,p_default_time_zone:DEFAULT_TIME_ZONE});
- if(result.error)throw new Error('Settings save failed');
+ if(Object.keys(runtimeInput).length){
+  const result=await db.rpc('update_tenant_runtime_settings',{p_tenant_id:tenantId,p_notification:patch.notification,p_behavior:patch.behaviorPatch,p_default_time_zone:DEFAULT_TIME_ZONE});
+  if(result.error)throw new Error('Settings save failed');
+ }
+ if(business_sector!==undefined){
+  const sector=typeof business_sector==='string'?business_sector.trim():'';
+  const result=await db.from('tenants').update({business_sector:sector||null}).eq('id',tenantId);
+  if(result.error)throw new Error('Business sector save failed');
+ }
  return readRuntimeSettings(db,tenantId);
 }

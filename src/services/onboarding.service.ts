@@ -15,7 +15,7 @@ function databaseError(context: string, _error: { message: string } | null): nev
 export class OnboardingService {
   constructor(private readonly db: DatabaseClient = supabase) {}
 
-  async createTenant(input: { name: string; phone: string; businessName?: string | null }) {
+  async createTenant(input: { name: string; phone: string; businessName?: string | null; businessSector?: string | null }) {
     const token = createSetupToken();
     const expiresAt = new Date(Date.now() + SETUP_LIFETIME_MS).toISOString();
     const { data: tenant, error: tenantError } = await this.db
@@ -24,6 +24,7 @@ export class OnboardingService {
         name: input.name,
         phone: input.phone,
         business_name: input.businessName,
+        business_sector: input.businessSector?.trim() || null,
         status: "draft",
       })
       .select("id")

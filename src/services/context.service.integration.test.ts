@@ -1,7 +1,21 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { loadConversationMemory } from './context.service.js';
+import { loadContext, loadConversationMemory } from './context.service.js';
 import { createTestDatabase, pgliteDatabaseClient } from './test-support/pglite-harness.js';
+
+test('business sector from migration 050 reaches assistant context only when populated',async()=>{
+ const pg=await createTestDatabase();
+ try{
+  const db=pgliteDatabaseClient(pg);
+  const inserted=await db.from('tenants').insert({name:'Owner',business_name:'Studio',language:'ru',tier:'basic',status:'active'}).select('id').single();
+  assert.equal(inserted.error,null);
+  const id=(inserted.data as {id:string}).id;
+  assert.deepEqual((await loadContext(db,id)).business,{owner_name:'Owner',business_name:'Studio',language:'ru'});
+  const updated=await db.from('tenants').update({business_sector:'  косметолог  '}).eq('id',id);
+  assert.equal(updated.error,null);
+  assert.deepEqual((await loadContext(db,id)).business,{owner_name:'Owner',business_name:'Studio',language:'ru',business_sector:'косметолог'});
+ }finally{await pg.close();}
+});
 
 // Converted to PGlite (real migrations, real Postgres types) per review: a hand-rolled
 // mock DB cannot enforce column types/constraints and previously let a schema-breaking

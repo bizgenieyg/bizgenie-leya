@@ -11,6 +11,17 @@ test("absent key disables fallback without an API call", async () => {
   assert.equal(createAIProvider(""), null);
   assert.equal(await generateKnowledgeReply(context, "Когда?", null), null);
 });
+test('sector appears in knowledge and reception prompts only when set',async()=>{
+ const prompts:string[]=[];
+ const ai={async generateReply(input:{systemPrompt:string;userMessage:string}){prompts.push(input.systemPrompt);return{text:'Ответ'};}};
+ const withSector={...context,business:{...context.business,business_sector:'косметолог'}};
+ await generateKnowledgeReply(withSector,'Когда?',ai);
+ await generateReceptionReply(withSector,'Привет','Уточните вопрос',ai,[],false);
+ await generateKnowledgeReply(context,'Когда?',ai);
+ assert.match(prompts[0]!,/Сфера бизнеса владельца: "косметолог"/);
+ assert.match(prompts[1]!,/Сфера бизнеса владельца: "косметолог"/);
+ assert.doesNotMatch(prompts[2]!,/Сфера бизнеса владельца:/);
+});
 test("explicit no-knowledge marker is distinguishable from provider failure",async()=>{
  const missing=await generateKnowledgeReplyResult(context,'Гарантия?',{async generateReply(){return{text:'NO_KNOWLEDGE_ANSWER'}}});
  assert.deepEqual(missing,{reply:null,missingKnowledge:true});

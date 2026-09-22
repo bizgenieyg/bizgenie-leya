@@ -14,7 +14,7 @@ export interface AssistantContext {
 
 export interface TenantContext {
   assistant: AssistantContext | null;
-  business?: { owner_name:string; business_name:string; language:string | null } | null;
+  business?: { owner_name:string; business_name:string; language:string | null; business_sector?:string } | null;
   knowledge: KnowledgeCandidate[];
   materials?: Array<{content:string;file_name:string;similarity:number}>;
 }
@@ -52,7 +52,7 @@ export async function loadContext(
       .maybeSingle(),
     db
       .from("tenants")
-      .select("name, business_name, language")
+      .select("name, business_name, business_sector, language")
       .eq("id", tenantId)
       .maybeSingle(),
     db
@@ -88,6 +88,8 @@ export async function loadContext(
       owner_name: String(tenantResult.data.name),
       business_name: String(tenantResult.data.business_name ?? tenantResult.data.name),
       language: typeof tenantResult.data.language === "string" ? tenantResult.data.language : null,
+      ...(typeof tenantResult.data.business_sector === "string" && tenantResult.data.business_sector.trim()
+        ? { business_sector: tenantResult.data.business_sector.trim() } : {}),
     } : null,
     knowledge,
   };

@@ -6,6 +6,11 @@ import { HttpError } from "../utils/http-error.js";
 import { objectBody, optionalString, pickDefined, requiredArray, requiredString } from "../utils/validation.js";
 
 const service = new OnboardingService();
+function sectorValue(body:Record<string,unknown>):string|null|undefined {
+ const value=optionalString(body,'business_sector');
+ if(value&&value.length>100)throw new HttpError(400,'Invalid business sector');
+ return value||null;
+}
 
 export const adminOnboardingRouter = Router();
 export const setupRouter = Router();
@@ -13,10 +18,12 @@ export const setupRouter = Router();
 adminOnboardingRouter.post("/create", requireAdmin, async (request, response) => {
   const body = objectBody(request.body);
   const businessName = optionalString(body, "business_name");
+  const businessSector = body.business_sector===undefined?undefined:sectorValue(body);
   const result = await service.createTenant({
     name: requiredString(body, "name"),
     phone: requiredString(body, "phone"),
     ...(businessName !== undefined ? { businessName } : {}),
+    ...(businessSector !== undefined ? { businessSector } : {}),
   });
   response.status(201).json(result);
 });
@@ -27,7 +34,8 @@ setupRouter.get("/:token", async (request, response) => {
 
 setupRouter.patch("/:token/business", async (request, response) => {
   const body = objectBody(request.body);
-  const values = pickDefined(body, ["name", "business_name", "phone", "birthday", "language"]);
+  const values = pickDefined(body, ["name", "business_name", "business_sector", "phone", "birthday", "language"]);
+  if(body.business_sector!==undefined)values.business_sector=sectorValue(body);
   if (Object.keys(values).length === 0) throw new HttpError(400, "No business fields supplied");
   response.json(await service.updateBusiness(request.params.token, values));
 });
