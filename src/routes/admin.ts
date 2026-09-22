@@ -22,6 +22,7 @@ import { deleteClientCard,getClientCard,listClientCards,updateClientCard } from 
 import { buildOwnerSummary } from '../services/owner-summary.service.js';
 import { simulateCustomerMessage } from '../services/simulator.service.js';
 import {deleteKnowledgeDocument,indexKnowledgeDocument,listKnowledgeDocuments,reindexKnowledgeDocument} from '../services/knowledge-documents.service.js';
+import {submitPlatformFeedback} from '../services/platform-feedback.service.js';
 
 const waha = new WahaAdminService();
 
@@ -155,6 +156,7 @@ adminRouter.post('/knowledge-documents',express.raw({type:'application/octet-str
 adminRouter.delete('/knowledge-documents/:id',async(request,response)=>{await deleteKnowledgeDocument(supabase,queryTenantId(request.query.tenantId),String(request.params.id));response.status(204).send()});
 adminRouter.post('/knowledge-documents/:id/reindex',async(request,response)=>response.json(await reindexKnowledgeDocument(supabase,queryTenantId(request.query.tenantId),String(request.params.id))));
 adminRouter.get('/owner-summary',async(request,response)=>{const tenantId=queryTenantId(request.query.tenantId),to=request.query.to?new Date(String(request.query.to)):new Date(),from=request.query.from?new Date(String(request.query.from)):new Date(to.getTime()-7*86400000);if(!Number.isFinite(from.getTime())||!Number.isFinite(to.getTime())||from>=to||to.getTime()-from.getTime()>366*86400000)throw new HttpError(400,'Invalid summary period');response.setHeader('Cache-Control','no-store');response.json(await buildOwnerSummary(supabase,tenantId,from,to));});
+adminRouter.post('/feedback',async(request,response)=>{const tenantId=queryTenantId(request.query.tenantId),message=requiredString(objectBody(request.body),'message').trim();if(!message||message.length>2000)throw new HttpError(400,'Feedback must contain 1 to 2000 characters');response.status(201).json(await submitPlatformFeedback(tenantId,message));});
 adminRouter.post('/simulator',async(request,response)=>{const tenantId=queryTenantId(request.query.tenantId),body=objectBody(request.body),text=requiredString(body,'text').trim(),sessionId=requiredString(body,'sessionId').trim();if(!text||text.length>2000)throw new HttpError(400,'Message must contain 1 to 2000 characters',{code:'simulator_invalid_message'});if(!isUuid(sessionId))throw new HttpError(400,'sessionId must be a UUID',{code:'simulator_invalid_session'});response.setHeader('Cache-Control','no-store');try{response.json(await simulateCustomerMessage(supabase,tenantId,sessionId,text));}catch(error){console.error('simulator_request_failed',{tenantId,errorName:error instanceof Error?error.name:'unknown',errorMessage:error instanceof Error?error.message:String(error),stack:error instanceof Error?error.stack:undefined});if(error instanceof HttpError)throw error;throw new HttpError(503,'Simulator unavailable',{code:'simulator_processing_unavailable'});}});
 // This endpoint is reachable only with ADMIN_SECRET (requireAdmin). There is no separate
 // operator credential, so a `?scope=operator` flag would be security theatre — anyone

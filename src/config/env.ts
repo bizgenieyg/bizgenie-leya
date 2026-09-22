@@ -33,6 +33,7 @@ export const env = Object.freeze({
   wahaApiKey: process.env.WAHA_API_KEY,
   publicBaseUrl: leyaEnvironment.apiUrl ?? process.env.PUBLIC_BASE_URL,
   credentialEncryptionKey: process.env.CREDENTIAL_ENCRYPTION_KEY,
+  platformOwnerWhatsAppNumber: process.env.PLATFORM_OWNER_WHATSAPP_NUMBER,
 });
 
 export function requireSupabaseEnv(): {
