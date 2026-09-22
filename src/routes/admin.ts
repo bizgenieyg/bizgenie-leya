@@ -53,6 +53,11 @@ adminRouter.get("/waha/status", async (request, response) => {
   response.json(await waha.status(queryTenantId(request.query.tenantId)));
 });
 
+adminRouter.get("/groups", async (request, response) => {
+  response.setHeader("Cache-Control", "private, max-age=120");
+  response.json(await waha.groups(queryTenantId(request.query.tenantId)));
+});
+
 adminRouter.post("/waha/reconnect", async (request, response) => {
   response.json(await waha.reconnect(queryTenantId(request.query.tenantId)));
 });

@@ -7,7 +7,7 @@ import {
   createWhatsAppSessionProvider,
   type WhatsAppSessionProvider,
 } from "../providers/whatsapp/index.js";
-import type { QrImage, SessionStatus } from "../providers/whatsapp/whatsapp-provider.interface.js";
+import type { QrImage, SessionStatus, WhatsAppGroup } from "../providers/whatsapp/whatsapp-provider.interface.js";
 import { HttpError } from "../utils/http-error.js";
 import { canonicalIdentity, readSessionIdentity } from "../utils/incoming-policy.js";
 import {
@@ -22,6 +22,7 @@ function upstreamError(): never {
 }
 
 export class WahaAdminService {
+  private readonly groupsCache = new Map<string, { expiresAt: number; value: WhatsAppGroup[] }>();
   constructor(
     private readonly db: DatabaseClient = supabase,
     private readonly provider: WhatsAppSessionProvider = createWhatsAppSessionProvider(),
@@ -197,6 +198,20 @@ export class WahaAdminService {
     }
     await this.updateInstanceStatus(tenantId, "disconnected");
     return { session, disconnected: true };
+  }
+
+  async groups(tenantId: string) {
+    const session = await this.requireSession(tenantId);
+    const cached = this.groupsCache.get(session);
+    if (cached && cached.expiresAt > Date.now()) return { groups: cached.value };
+    try {
+      if (!this.provider.getGroups) upstreamError();
+      const groups = await this.provider.getGroups(session);
+      this.groupsCache.set(session, { expiresAt: Date.now() + 120_000, value: groups });
+      return { groups };
+    } catch {
+      upstreamError();
+    }
   }
 
   private async requireTenant(tenantId: string): Promise<void> {

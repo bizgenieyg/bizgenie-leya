@@ -129,3 +129,25 @@ test("session status reads both me.id and me.lid without returning other credent
     assert.doesNotMatch(JSON.stringify(result), /private/);
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test("group list uses the GOWS endpoint and normalizes current response shapes", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedUrl = "";
+  globalThis.fetch = async (url, init) => {
+    capturedUrl = String(url);
+    assert.equal(init?.method, "GET");
+    assert.ok(init?.signal);
+    return Response.json([
+      { JID: "1203631@g.us", Name: "Pilot team", ParticipantCount: 12 },
+      { id: "1203632@g.us", subject: "Sales", participants: [{ id: "1" }, { id: "2" }], timestamp: 1_700_000_000 },
+    ]);
+  };
+  try {
+    const groups = await new WahaProvider("http://waha.internal", "secret").getGroups("tenant / one");
+    assert.equal(capturedUrl, "http://waha.internal/api/tenant%20%2F%20one/groups?sortBy=subject&sortOrder=asc");
+    assert.deepEqual(groups, [
+      { id: "1203631@g.us", name: "Pilot team", participantsCount: 12 },
+      { id: "1203632@g.us", name: "Sales", participantsCount: 2, lastActivityAt: "2023-11-14T22:13:20.000Z" },
+    ]);
+  } finally { globalThis.fetch = originalFetch; }
+});

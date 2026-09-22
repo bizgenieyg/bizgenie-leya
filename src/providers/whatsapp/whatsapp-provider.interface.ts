@@ -47,6 +47,13 @@ export interface QrImage {
   contentType: string;
 }
 
+export interface WhatsAppGroup {
+  id: string;
+  name: string;
+  participantsCount: number;
+  lastActivityAt?: string;
+}
+
 export interface WhatsAppProvider {
   sendMessage(input: SendMessageInput): Promise<SendMessageResult>;
   getSessionStatus(session: string): Promise<SessionStatus>;
@@ -61,4 +68,5 @@ export interface WhatsAppSessionProvider {
   deleteSession(session: string): Promise<void>;
   getSessionStatus(session: string): Promise<SessionStatus>;
   getQrImage(session: string): Promise<QrImage>;
+  getGroups?(session: string): Promise<WhatsAppGroup[]>;
 }

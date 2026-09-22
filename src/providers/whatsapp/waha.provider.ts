@@ -5,6 +5,7 @@ import type {
   SessionStatus,
   StartSessionInput,
   WhatsAppProvider,
+  WhatsAppGroup,
   WhatsAppSessionProvider,
 } from "./whatsapp-provider.interface.js";
 
@@ -128,6 +129,21 @@ export class WahaProvider implements WhatsAppProvider, WhatsAppSessionProvider {
     };
   }
 
+  async getGroups(session: string): Promise<WhatsAppGroup[]> {
+    const data = await this.request(
+      "GET",
+      `/api/${encodeURIComponent(session)}/groups?sortBy=subject&sortOrder=asc`,
+      undefined,
+      AbortSignal.timeout(15000),
+    );
+    const values = Array.isArray(data)
+      ? data
+      : isRecord(data)
+        ? Object.entries(data).map(([id, value]) => isRecord(value) ? { id, ...value } : value)
+        : [];
+    return values.flatMap(normalizeGroup);
+  }
+
   private async request(
     method: "GET" | "POST" | "PUT" | "DELETE",
     path: string,
@@ -175,6 +191,37 @@ export class WahaProvider implements WhatsAppProvider, WhatsAppSessionProvider {
 
     return response;
   }
+}
+
+function normalizeGroup(value: unknown): WhatsAppGroup[] {
+  if (!isRecord(value)) return [];
+  const id = firstString(value.id, value.JID, value.jid);
+  if (!id) return [];
+  const name = firstString(value.subject, value.Name, value.name) || id.split("@")[0] || id;
+  const participants = value.participants ?? value.Participants;
+  const explicitCount = value.size ?? value.ParticipantCount ?? value.participantsCount;
+  const participantsCount = typeof explicitCount === "number" && Number.isFinite(explicitCount)
+    ? Math.max(0, Math.trunc(explicitCount))
+    : Array.isArray(participants) ? participants.length : 0;
+  const rawActivity = value.lastActivityAt ?? value.lastMessageAt ?? value.timestamp;
+  const lastActivityAt = normalizeTimestamp(rawActivity);
+  return [{ id, name, participantsCount, ...(lastActivityAt ? { lastActivityAt } : {}) }];
+}
+
+function firstString(...values: unknown[]): string {
+  return values.find((value): value is string => typeof value === "string" && value.trim() !== "")?.trim() ?? "";
+}
+
+function normalizeTimestamp(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    const parsed = new Date(value);
+    return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : undefined;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const parsed = new Date(value < 1e12 ? value * 1000 : value);
+    return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : undefined;
+  }
+  return undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
