@@ -7,7 +7,7 @@ import {
   createWhatsAppSessionProvider,
   type WhatsAppSessionProvider,
 } from "../providers/whatsapp/index.js";
-import type { QrImage, SessionStatus, WhatsAppGroup } from "../providers/whatsapp/whatsapp-provider.interface.js";
+import type { QrImage, SessionStatus, WhatsAppChatActivity, WhatsAppGroup } from "../providers/whatsapp/whatsapp-provider.interface.js";
 import { HttpError } from "../utils/http-error.js";
 import { canonicalIdentity, readSessionIdentity } from "../utils/incoming-policy.js";
 import {
@@ -207,8 +207,24 @@ export class WahaAdminService {
     try {
       if (!this.provider.getGroups) upstreamError();
       const groups = await this.provider.getGroups(session);
-      this.groupsCache.set(session, { expiresAt: Date.now() + 120_000, value: groups });
-      return { groups };
+      const baseGroups = groups.map(({ lastActivityAt: _ignored, ...group }) => group);
+      let result = sortGroups(baseGroups);
+      if (this.provider.getChats) {
+        try {
+          const chats: WhatsAppChatActivity[] = [];
+          for (let offset = 0; offset < 2000; offset += 200) {
+            const page = await this.provider.getChats(session, { limit: 200, offset, sortBy: "conversationTimestamp", sortOrder: "desc" });
+            if (!Array.isArray(page)) throw new Error("WAHA chats endpoint returned a non-array response");
+            if (page.length === 0) break;
+            chats.push(...page.slice(0, 2000 - chats.length));
+          }
+          result = groupsWithActivity(baseGroups, chats);
+        } catch {
+          // Chat metadata is optional; keep the group directory available.
+        }
+      }
+      this.groupsCache.set(session, { expiresAt: Date.now() + 120_000, value: result });
+      return { groups: result };
     } catch {
       upstreamError();
     }
@@ -271,6 +287,24 @@ export class WahaAdminService {
       .eq("tenant_id", tenantId);
     if (error) throw new HttpError(500, "Could not update WhatsApp session");
   }
+}
+
+function sortGroups(groups: WhatsAppGroup[]): WhatsAppGroup[] {
+  return [...groups].sort((a, b) => {
+    const timeOrder = (b.lastActivityAt ?? "").localeCompare(a.lastActivityAt ?? "");
+    return timeOrder || a.name.localeCompare(b.name);
+  });
+}
+
+export function groupsWithActivity(groups: WhatsAppGroup[], chats: WhatsAppChatActivity[]): WhatsAppGroup[] {
+  const timestamps = new Map(chats.flatMap(chat => chat.conversationTimestamp
+    ? [[chat.id, chat.conversationTimestamp] as const] : []));
+  return sortGroups(groups.map(group => {
+    const timestamp = timestamps.get(group.id);
+    if (!timestamp) return group;
+    const date = new Date(timestamp * 1000);
+    return Number.isFinite(date.getTime()) ? { ...group, lastActivityAt: date.toISOString() } : group;
+  }));
 }
 
 export function normalizeSessionStatus(value: SessionStatus) {

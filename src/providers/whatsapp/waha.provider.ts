@@ -6,6 +6,7 @@ import type {
   StartSessionInput,
   WhatsAppProvider,
   WhatsAppGroup,
+  WhatsAppChatActivity,
   WhatsAppSessionProvider,
 } from "./whatsapp-provider.interface.js";
 
@@ -142,6 +143,21 @@ export class WahaProvider implements WhatsAppProvider, WhatsAppSessionProvider {
         ? Object.entries(data).map(([id, value]) => isRecord(value) ? { id, ...value } : value)
         : [];
     return values.flatMap(normalizeGroup);
+  }
+
+  async getChats(session: string, options: { limit: number; offset: number; sortBy: "conversationTimestamp"; sortOrder: "desc" }): Promise<WhatsAppChatActivity[]> {
+    const params = new URLSearchParams({
+      limit: String(options.limit), offset: String(options.offset),
+      sortBy: options.sortBy, sortOrder: options.sortOrder,
+    });
+    const data = await this.request("GET", `/api/${encodeURIComponent(session)}/chats?${params}`, undefined, AbortSignal.timeout(15000));
+    if (!Array.isArray(data)) throw new Error("WAHA chats endpoint returned a non-array response");
+    return data.flatMap((value): WhatsAppChatActivity[] => {
+      if (!isRecord(value) || typeof value.id !== "string") return [];
+      const timestamp = value.conversationTimestamp;
+      return [{ id: value.id, ...(typeof timestamp === "number" && Number.isFinite(timestamp) && timestamp > 0
+        ? { conversationTimestamp: timestamp } : {}) }];
+    });
   }
 
   private async request(

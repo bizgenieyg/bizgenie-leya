@@ -54,6 +54,11 @@ export interface WhatsAppGroup {
   lastActivityAt?: string;
 }
 
+export interface WhatsAppChatActivity {
+  id: string;
+  conversationTimestamp?: number;
+}
+
 export interface WhatsAppProvider {
   sendMessage(input: SendMessageInput): Promise<SendMessageResult>;
   getSessionStatus(session: string): Promise<SessionStatus>;
@@ -69,4 +74,5 @@ export interface WhatsAppSessionProvider {
   getSessionStatus(session: string): Promise<SessionStatus>;
   getQrImage(session: string): Promise<QrImage>;
   getGroups?(session: string): Promise<WhatsAppGroup[]>;
+  getChats?(session: string, options: { limit: number; offset: number; sortBy: "conversationTimestamp"; sortOrder: "desc" }): Promise<WhatsAppChatActivity[]>;
 }

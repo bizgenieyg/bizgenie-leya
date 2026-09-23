@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { WahaProvider } from "../providers/whatsapp/waha.provider.js";
+import type { DatabaseClient } from "../db/supabase.js";
+import { WahaAdminService } from "./waha-admin.service.js";
 import { sessionConfigForTenant } from "./waha-admin.utils.js";
 
 const TENANT_ID = "123e4567-e89b-42d3-a456-426614174000";
@@ -151,5 +153,52 @@ test("group list uses the GOWS endpoint and normalizes current response shapes",
       { id: "1203632@g.us", name: "Sales", participantsCount: 2, lastActivityAt: "2023-11-14T22:13:20.000Z" },
       { id: "1203633@g.us", name: "Без названия", participantsCount: 3 },
     ]);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("group directory reads paged chats and sorts by conversation activity", async () => {
+  const originalFetch = globalThis.fetch;
+  const urls: string[] = [];
+  globalThis.fetch = async url => {
+    const path = String(url);
+    urls.push(path);
+    if (path.includes("/groups?")) return Response.json([
+      { JID: "older@g.us", Name: "Older", ParticipantCount: 2 },
+      { JID: "newer@g.us", Name: "Newer", ParticipantCount: 3 },
+      { JID: "none@g.us", Name: "No activity", ParticipantCount: 1 },
+    ]);
+    if (path.includes("offset=0")) return Response.json([
+      { id: "older@g.us", conversationTimestamp: 1_700_000_000 },
+      { id: "newer@g.us", conversationTimestamp: 1_700_000_100 },
+    ]);
+    return Response.json([]);
+  };
+  const db = { from: () => ({ select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { session_name: "test" }, error: null }) }) }) }) } as unknown as DatabaseClient;
+  try {
+    const service = new WahaAdminService(db, new WahaProvider("http://waha.internal"), "https://example.com", "http://waha.internal");
+    const first = await service.groups(TENANT_ID);
+    assert.deepEqual(first.groups.map(group => [group.id, group.lastActivityAt]), [
+      ["newer@g.us", "2023-11-14T22:15:00.000Z"],
+      ["older@g.us", "2023-11-14T22:13:20.000Z"],
+      ["none@g.us", undefined],
+    ]);
+    assert.equal(urls.filter(url => url.includes("/chats?")).length, 2);
+    await service.groups(TENANT_ID);
+    assert.equal(urls.length, 3, "groups and chat activity share the cache");
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("group directory falls back to names when chats fail or return a non-array", async () => {
+  const originalFetch = globalThis.fetch;
+  const db = { from: () => ({ select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { session_name: "test" }, error: null }) }) }) }) } as unknown as DatabaseClient;
+  try {
+    for (const failure of [new Response("", { status: 500 }), Response.json({ unexpected: true })]) {
+      globalThis.fetch = async url => String(url).includes("/groups?")
+        ? Response.json([{ JID: "z@g.us", Name: "Zulu" }, { JID: "a@g.us", Name: "Alpha" }])
+        : failure;
+      const service = new WahaAdminService(db, new WahaProvider("http://waha.internal"), "https://example.com", "http://waha.internal");
+      assert.deepEqual((await service.groups(TENANT_ID)).groups.map(group => [group.name, group.lastActivityAt]),
+        [["Alpha", undefined], ["Zulu", undefined]]);
+    }
   } finally { globalThis.fetch = originalFetch; }
 });
