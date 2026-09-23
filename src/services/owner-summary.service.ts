@@ -9,6 +9,7 @@ import { loadOwnerSettings,ownerDestination,type OwnerSettings } from './owner-s
 import { renderText } from './templates.service.js';
 import { zonedDateTimeFormat } from '../utils/time-zone.js';
 import { OWNER_SUMMARY_LEASE_MS,OWNER_SUMMARY_MAX_ATTEMPTS,OWNER_SUMMARY_RETRY_MS } from '../config/owner-summary.js';
+import { scheduleWake } from '../workers/job-wake.js';
 const OPEN=['queued','notifying','pending','reminding','delivering','delivery_uncertain','closing'];
 const fail=()=>{throw new HttpError(500,'Could not build owner summary');};
 export async function buildOwnerSummary(db:DatabaseClient,tenantId:string,from:Date,to:Date){
@@ -36,6 +37,52 @@ export function summaryDue(settings:OwnerSettings,now:Date){
  const scheduled=new Date(`${local.date}T00:00:00Z`);scheduled.setUTCDate(scheduled.getUTCDate()-daysSince);
  return{periodKey:`weekly:${scheduled.toISOString().slice(0,10)}`,days:7};
 }
+export function nextSummaryAt(settings:OwnerSettings,after:Date):Date|null{
+ if(behavior(settings).summary_frequency==='off')return null;
+ const current=summaryDue(settings,after)?.periodKey??null,start=after.getTime();
+ let low=start;
+ for(let step=1;step<=8*48;step++){
+  const high=start+step*30*60_000,next=summaryDue(settings,new Date(high));
+  if(next&&next.periodKey!==current){
+   let left=low,right=high;
+   while(right-left>1000){const middle=Math.floor((left+right)/2);if(summaryDue(settings,new Date(middle))?.periodKey===next.periodKey)right=middle;else left=middle;}
+   return new Date(Math.floor(right/60_000)*60_000);
+  }
+  low=high;
+ }
+ return null;
+}
+export async function ensureOwnerSummaryJob(db:DatabaseClient,tenantId:string,settings:OwnerSettings,now=new Date()):Promise<void>{
+ if(behavior(settings).summary_frequency==='off')return;
+ const active=await db.from('scheduled_jobs').select('scheduled_at').eq('tenant_id',tenantId).eq('job_type','owner_summary')
+  .in('status',['pending','sending']).order('scheduled_at',{ascending:true}).limit(1);if(active.error)fail();
+ if(active.data?.length){scheduleWake(new Date(String(active.data[0]!.scheduled_at)));return;}
+ let at=summaryDue(settings,now)?now:nextSummaryAt(settings,now);
+ for(let period=0;at&&period<8;period++){
+  const due=summaryDue(settings,at);if(!due)return;
+  const existing=await db.from('scheduled_jobs').select('id,status').eq('tenant_id',tenantId).eq('job_type','owner_summary')
+   .contains('payload',{period_key:due.periodKey}).maybeSingle();if(existing.error)fail();
+  if(existing.data){
+   if(existing.data.status==='cancelled'){
+    const restored=await db.from('scheduled_jobs').update({status:'pending',scheduled_at:at.toISOString(),executed_at:null,error:null})
+     .eq('id',existing.data.id).eq('status','cancelled');if(restored.error)fail();scheduleWake(at);return;
+   }
+   if(['pending','sending'].includes(String(existing.data.status))){scheduleWake(at);return;}
+   at=nextSummaryAt(settings,at);
+   continue;
+  }
+  const inserted=await db.from('scheduled_jobs').insert({tenant_id:tenantId,job_type:'owner_summary',
+   payload:{period_key:due.periodKey},scheduled_at:at.toISOString(),status:'pending'});
+  if(inserted.error?.code==='23505')continue;
+  if(inserted.error)fail();
+  scheduleWake(at);return;
+ }
+}
+export async function rescheduleOwnerSummary(db:DatabaseClient,tenantId:string,settings:OwnerSettings,now=new Date()):Promise<void>{
+ const cancelled=await db.from('scheduled_jobs').update({status:'cancelled',executed_at:now.toISOString()})
+  .eq('tenant_id',tenantId).eq('job_type','owner_summary').eq('status','pending');if(cancelled.error)fail();
+ await ensureOwnerSummaryJob(db,tenantId,settings,now);
+}
 async function claimSummary(db:DatabaseClient,tenantId:string,periodKey:string,now:Date){
  const lease=new Date(now.getTime()+OWNER_SUMMARY_LEASE_MS).toISOString(),payload={period_key:periodKey,attempts:1};
  const inserted=await db.from('scheduled_jobs').insert({tenant_id:tenantId,job_type:'owner_summary',payload,scheduled_at:lease,status:'sending'}).select('id,payload').maybeSingle();
@@ -47,5 +94,7 @@ export function summaryFailureState(attempts:number,now:Date){const retry=attemp
 export async function deliverOwnerSummaryIfDue(db:DatabaseClient,tenantId:string,session:string,provider:WhatsAppProvider,now=new Date()){
  const settings=await loadOwnerSettings(db,tenantId),due=summaryDue(settings,now);if(!due||isWithinQuietHours(settings,now))return;const to=ownerDestination(settings);if(!to||!allowedRecipient(to))return;const me=readSessionIdentity((await provider.getSessionStatus(session)).me);if(!me.id||ownerIdentityField(to,me))return;
  const claimed=await claimSummary(db,tenantId,due.periodKey,now);if(!claimed)return;const summary=await buildOwnerSummary(db,tenantId,new Date(now.getTime()-due.days*86400000),now),missing=summary.missing_knowledge.length?summary.missing_knowledge.map(x=>`${x.question} (${x.count})`).join('; '):'—';
- try{await meterWhatsApp(db,tenantId,provider).sendMessage({session,chatId:to,text:renderText(settings,'owner.summary',behavior(settings).owner_language,{...summary,missing_knowledge:missing})});await db.from('scheduled_jobs').update({status:'done',executed_at:new Date().toISOString(),error:null}).eq('id',claimed.id);}catch{const failure=summaryFailureState(claimed.attempts,now);await db.from('scheduled_jobs').update({status:failure.status,scheduled_at:failure.scheduled_at,error:'summary_delivery_failed'}).eq('id',claimed.id);console.error('owner_summary_delivery_failed',{tenantId,attempt:claimed.attempts,retry:failure.retry});}
+ let sent=false;
+ try{await meterWhatsApp(db,tenantId,provider).sendMessage({session,chatId:to,text:renderText(settings,'owner.summary',behavior(settings).owner_language,{...summary,missing_knowledge:missing})});await db.from('scheduled_jobs').update({status:'done',executed_at:new Date().toISOString(),error:null}).eq('id',claimed.id);sent=true;}catch{const failure=summaryFailureState(claimed.attempts,now);await db.from('scheduled_jobs').update({status:failure.status,scheduled_at:failure.scheduled_at,error:'summary_delivery_failed'}).eq('id',claimed.id);if(failure.retry)scheduleWake(new Date(failure.scheduled_at));console.error('owner_summary_delivery_failed',{tenantId,attempt:claimed.attempts,retry:failure.retry});}
+ if(sent)await ensureOwnerSummaryJob(db,tenantId,settings,now);
 }

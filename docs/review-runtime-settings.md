@@ -23,7 +23,6 @@ All newly introduced behavioral defaults are in `src/config/behavior.ts`, `usage
 | Close unanswered after active minutes | behavior.escalation_close_minutes | 1440 | Yes |
 | Accounting failure alert interval, minutes | behavior.usage_failure_alert_minutes | 60 | API |
 | Pairing code lifetime, minutes | behavior.pairing_ttl_minutes | 30 | API |
-| Scheduler interval per tenant, seconds | behavior.scheduler_interval_seconds | 60 | API |
 | STT confidence threshold | behavior.stt_confidence_threshold | 0.85 | API |
 | STT/download timeout, seconds | behavior.stt_timeout_seconds | 30 | API |
 | Download maximum bytes | behavior.media_max_bytes | 10485760 | API |

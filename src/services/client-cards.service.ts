@@ -34,7 +34,16 @@ export async function updateClientCard(db:DatabaseClient,tenantId:string,clientI
  if('language'in input){if(!['he','ru','en'].includes(String(input.language)))throw new HttpError(400,'Invalid language');patch.language=input.language;patch.language_overridden=true;}
  if('auto_reply_allowed'in input){if(typeof input.auto_reply_allowed!=='boolean')throw new HttpError(400,'Invalid consent');patch.auto_reply_allowed=input.auto_reply_allowed;patch.auto_reply_opted_out_at=input.auto_reply_allowed?null:new Date().toISOString();}
  if(!Object.keys(patch).length)throw new HttpError(400,'No supported fields');const saved=await db.from('clients').update(patch).eq('tenant_id',tenantId).eq('id',clientId).is('deleted_at',null).select('id').maybeSingle();if(saved.error)fail();if(!saved.data)throw new HttpError(404,'Client not found');
- if(typeof input.auto_reply_allowed==='boolean'){const paused=await db.from('conversations').update({bot_paused:!input.auto_reply_allowed}).eq('tenant_id',tenantId).eq('client_id',clientId);if(paused.error)fail();}return getClientCard(db,tenantId,clientId);
+ if(typeof input.auto_reply_allowed==='boolean'){
+  const paused=await db.from('conversations').update({bot_paused:!input.auto_reply_allowed}).eq('tenant_id',tenantId).eq('client_id',clientId);
+  if(paused.error)fail();
+  if(input.auto_reply_allowed){
+   const {loadOwnerSettings}=await import('./owner-settings.service.js');
+   const {rescheduleTenantEscalationTimeouts}=await import('./owner-workflow.service.js');
+   await rescheduleTenantEscalationTimeouts(db,tenantId,await loadOwnerSettings(db,tenantId),new Date());
+  }
+ }
+ return getClientCard(db,tenantId,clientId);
 }
 
 export async function deleteClientCard(db:DatabaseClient,tenantId:string,clientId:string,permanent=false){

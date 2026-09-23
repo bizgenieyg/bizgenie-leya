@@ -10,7 +10,6 @@ export const BEHAVIOR_DEFAULTS = {
   message_retention_days: 30,
   usage_failure_alert_minutes: 60,
   pairing_ttl_minutes: 30,
-  scheduler_interval_seconds: 60,
   stt_confidence_threshold: 0.85,
   stt_timeout_seconds: 30,
   media_max_bytes: 10 * 1024 * 1024,
@@ -41,11 +40,9 @@ export const BEHAVIOR_DEFAULTS = {
   knowledge_chunk_characters: 1500,
   knowledge_chunk_overlap: 225,
 };
-export const SCHEDULER_POLL_MS = 1000;
-// Message storage retention: floor for behavior.message_retention_days, and how often
-// the scheduler runs the background sweep per tenant.
+// Message storage retention: floor for behavior.message_retention_days, and daily sweep cadence.
 export const MESSAGE_RETENTION_MIN_DAYS = 7;
-export const MESSAGE_RETENTION_SWEEP_MS = 60 * 60 * 1000;
+export const MESSAGE_RETENTION_SWEEP_MS = 24 * 60 * 60 * 1000;
 export const STT_DEFAULT_MODEL = 'gemini-2.5-flash-lite';
 // Local operational storage, shared by workers on the supported single VPS.
 export const ALERT_STATE_DIR = '.runtime/usage-alerts';

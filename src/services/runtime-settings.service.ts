@@ -60,7 +60,7 @@ export function validateRuntimePatch(input:Record<string,unknown>) {
   else if(['knowledge_max_file_bytes','knowledge_max_total_bytes'].includes(key))behaviorPatch[key]=integer(key,value,1024,1073741824);
   else if(key==='knowledge_similarity_threshold'){if(typeof value!=='number'||value<0||value>1)throw new HttpError(400,'Invalid knowledge threshold');behaviorPatch[key]=value;}
   else if(key==='message_retention_days')behaviorPatch[key]=integer(key,value,MESSAGE_RETENTION_MIN_DAYS,3650);
-  else if(['escalation_remind_minutes','escalation_close_minutes','usage_failure_alert_minutes','pairing_ttl_minutes','scheduler_interval_seconds','stt_timeout_seconds','media_max_bytes','deferred_max_age_hours','context_message_count','context_retention_hours'].includes(key))behaviorPatch[key]=integer(key,value,1,2147483647);
+  else if(['escalation_remind_minutes','escalation_close_minutes','usage_failure_alert_minutes','pairing_ttl_minutes','stt_timeout_seconds','media_max_bytes','deferred_max_age_hours','context_message_count','context_retention_hours'].includes(key))behaviorPatch[key]=integer(key,value,1,2147483647);
   else if(['stt_confidence_threshold','intent_confidence_threshold'].includes(key)){if(typeof value!=='number'||value<0||value>1)throw new HttpError(400,'Invalid confidence');behaviorPatch[key]=value;}
   else if(key==='route_stickiness_hours')behaviorPatch[key]=integer(key,value,1,8760);
   else if(key==='enabled_agents'){if(!Array.isArray(value)||!value.length||value.some(v=>typeof v!=='string'||!/^[A-Z][A-Z0-9_]*$/.test(v)))throw new HttpError(400,'Invalid agents');behaviorPatch[key]=[...new Set(value)];}
@@ -109,6 +109,14 @@ export async function saveRuntimeSettings(db:DatabaseClient,tenantId:string,inpu
   const sector=typeof business_sector==='string'?business_sector.trim():'';
   const result=await db.from('tenants').update({business_sector:sector||null}).eq('id',tenantId);
   if(result.error)throw new Error('Business sector save failed');
+ }
+ if(['summary_frequency','summary_time','summary_weekday','time_zone'].some(key=>key in runtimeInput)){
+  const {rescheduleOwnerSummary}=await import('./owner-summary.service.js');
+  await rescheduleOwnerSummary(db,tenantId,await loadOwnerSettings(db,tenantId));
+ }
+ if(['escalation_remind_minutes','escalation_close_minutes','deferred_max_age_hours','weekly_schedule','time_zone','auto_replies_paused'].some(key=>key in runtimeInput)){
+  const {rescheduleTenantEscalationTimeouts}=await import('./owner-workflow.service.js');
+  await rescheduleTenantEscalationTimeouts(db,tenantId,await loadOwnerSettings(db,tenantId));
  }
  return readRuntimeSettings(db,tenantId);
 }

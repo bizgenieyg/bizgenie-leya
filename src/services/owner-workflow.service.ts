@@ -12,6 +12,8 @@ import { allowedRecipient, ownerIdentityField, readSessionIdentity } from '../ut
 import { clientText, isDeferredAnswer, ownerAnswerText, replyId, waitingText, withoutRepeatedIntroduction } from '../utils/assistant-text.js';
 import { buildEscalationText, isWithinQuietHours, nextQuietHoursEnd } from './escalation.service.js';
 import { isBusinessOwner, loadOwnerSettings, ownerDestination, pairOwner, type OwnerSettings } from './owner-settings.service.js';
+import { nextEscalationDeadline } from './escalation-deadline.js';
+import { scheduleWake } from '../workers/job-wake.js';
 
 export interface Escalation {
   id:string;tenant_id:string;conversation_id:string;client_chat_id:string;client_name:string;question:string;session:string;
@@ -20,6 +22,7 @@ export interface Escalation {
   inbound_id:string|null;status:string;owner_message_ids:string[];answer:string|null;learning_state:string;learning_message_ids:string[];
 }
 const JOB='owner_escalation';
+const TIMEOUT_JOB='escalation_timeout';
 function check(error:unknown) { if(error) throw new Error('Escalation persistence failed'); }
 async function patch(db:DatabaseClient,e:Escalation,values:Record<string,unknown>) {
   const {error}=await db.from('escalations').update(values).eq('tenant_id',e.tenant_id).eq('id',e.id);check(error);
@@ -57,6 +60,35 @@ async function closeObsolete(db:DatabaseClient,e:Escalation,reason:'owner'|'expi
   await patch(db,e,{status:reason==='owner'?'resolved_by_owner':'expired',closed_at:now.toISOString()});
   const route=await db.from('conversations').update({routed_agent:null,route_selected_at:null}).eq('tenant_id',e.tenant_id).eq('id',e.conversation_id);check(route.error);
   const jobs=await db.from('scheduled_jobs').update({status:'cancelled',executed_at:now.toISOString(),error:reason}).eq('tenant_id',e.tenant_id).eq('job_type',JOB).contains('payload',{escalation_id:e.id}).eq('status','pending');check(jobs.error);
+  await cancelEscalationTimeout(db,e,now);
+}
+export async function cancelEscalationTimeout(db:DatabaseClient,e:Pick<Escalation,'tenant_id'|'id'>,now=new Date()):Promise<void>{
+  const result=await db.from('scheduled_jobs').update({status:'cancelled',executed_at:now.toISOString()})
+    .eq('tenant_id',e.tenant_id).eq('job_type',TIMEOUT_JOB).contains('payload',{escalation_id:e.id}).in('status',['pending','sending']);
+  check(result.error);
+}
+export async function scheduleEscalationTimeout(db:DatabaseClient,e:Escalation,settings:OwnerSettings,now=new Date(),notBefore?:Date):Promise<void>{
+  const due=nextEscalationDeadline(settings,e,now);
+  const at=notBefore&&notBefore>due?notBefore:due;
+  const existing=await db.from('scheduled_jobs').select('id').eq('tenant_id',e.tenant_id).eq('job_type',TIMEOUT_JOB)
+    .contains('payload',{escalation_id:e.id}).in('status',['pending','sending']).maybeSingle();check(existing.error);
+  if(existing.data){
+    const updated=await db.from('scheduled_jobs').update({status:'pending',scheduled_at:at.toISOString(),error:null})
+      .eq('id',existing.data.id).in('status',['pending','sending']);check(updated.error);
+  }else{
+    const inserted=await db.from('scheduled_jobs').insert({tenant_id:e.tenant_id,job_type:TIMEOUT_JOB,
+      payload:{escalation_id:e.id},scheduled_at:at.toISOString(),status:'pending'});
+    if(inserted.error?.code!=='23505')check(inserted.error);
+  }
+  scheduleWake(at);
+}
+export async function rescheduleTenantEscalationTimeouts(db:DatabaseClient,tenantId:string,settings:OwnerSettings,now=new Date()):Promise<void>{
+  const pending=await db.from('escalations').select('*').eq('tenant_id',tenantId).eq('status','pending');check(pending.error);
+  for(const row of pending.data??[]){
+    const e=row as Escalation;
+    const expiry=new Date(new Date(e.created_at??now).getTime()+Number(behavior(settings).deferred_max_age_hours)*3_600_000+1);
+    await scheduleEscalationTimeout(db,e,settings,now,settings.auto_replies_paused?expiry:undefined);
+  }
 }
 export async function notifyOwner(db:DatabaseClient,provider:WhatsAppProvider,e:Escalation,settings:OwnerSettings):Promise<boolean> {
   provider=meterWhatsApp(db,e.tenant_id,provider);
@@ -69,15 +101,18 @@ export async function notifyOwner(db:DatabaseClient,provider:WhatsAppProvider,e:
     console.warn('escalation_owner_identity_unavailable_or_self');return false;
   }
   if(!await claim(db,e,'queued','notifying')) return false;
+  let pendingSince:Date;
   try {
     const id=await send(provider,e.session,destination,buildEscalationText(e.client_name,e.question,settings));
-    await patch(db,e,{status:'pending',pending_since:new Date().toISOString(),owner_message_ids:[...new Set([...e.owner_message_ids,replyId(id)])]});
-    return true;
+    pendingSince=new Date();
+    await patch(db,e,{status:'pending',pending_since:pendingSince.toISOString(),owner_message_ids:[...new Set([...e.owner_message_ids,replyId(id)])]});
   } catch {
     // Ambiguous network result: do not resend automatically and create duplicate questions.
     console.error('escalation_notification_uncertain',{tenantId:e.tenant_id,escalationId:e.id});
     throw new Error('Owner notification delivery uncertain');
   }
+  await scheduleEscalationTimeout(db,{...e,pending_since:pendingSince.toISOString()},settings,pendingSince);
+  return true;
 }
 export async function createEscalation(db:DatabaseClient,provider:WhatsAppProvider,input:Omit<Escalation,'id'|'status'|'owner_message_ids'|'answer'|'learning_state'|'learning_message_ids'>,settings:OwnerSettings,clientZone?:string|null) {
   provider=meterWhatsApp(db,input.tenant_id,provider);
@@ -92,6 +127,7 @@ export async function createEscalation(db:DatabaseClient,provider:WhatsAppProvid
   // Quiet with no working window ahead: schedule and notify now, promise a callback — never a far-future date.
   const scheduledAt=quietEnd??now;
   const {error:jobError}=await db.from('scheduled_jobs').insert({tenant_id:e.tenant_id,job_type:JOB,payload:{escalation_id:e.id},scheduled_at:scheduledAt.toISOString(),status:'pending'});check(jobError);
+  scheduleWake(scheduledAt);
   const waiting=escalationWaitingMessage(e.question,settings,clientZone,e.response_language??languageOf(e.question),now);
   await sendClient(db,provider,e,waiting.text);
   if(!quiet||!quietEnd) await notifyOwner(db,provider,e,settings);
@@ -120,6 +156,7 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
   if(['пауза всё','пауза все','продолжить всё','продолжить все'].includes(command)) {
     const paused=command.startsWith('пауза');
     const {error}=await db.from('notification_settings').update({auto_replies_paused:paused}).eq('tenant_id',tenantId);check(error);
+    if(!paused) await rescheduleTenantEscalationTimeouts(db,tenantId,await loadOwnerSettings(db,tenantId),new Date());
     await send(provider,session,from,paused?renderText(settings,'owner.owner_reply_5',behavior(settings).owner_language):renderText(settings,'owner.owner_reply_6',behavior(settings).owner_language));return true;
   }
   if(command==='диалоги') {
@@ -135,6 +172,7 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
   if(direct) {
     const paused=direct[1]!=='продолжить диалог';
     const result=await db.from('conversations').update({bot_paused:paused}).eq('tenant_id',tenantId).eq('id',direct[2]!).select('id');check(result.error);
+    if(!paused&&result.data?.length) await rescheduleTenantEscalationTimeouts(db,tenantId,settings,new Date());
     await send(provider,session,from,result.data?.length?(paused?renderText(settings,'owner.owner_reply_12',behavior(settings).owner_language):renderText(settings,'owner.short_1',behavior(settings).owner_language)):renderText(settings,'owner.short_2',behavior(settings).owner_language));return true;
   }
   if(!quoted) {await send(provider,session,from,renderText(settings,'owner.owner_reply_15',behavior(settings).owner_language));return true;}
@@ -155,6 +193,7 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
   if(['беру на себя','пауза','продолжить'].includes(command)) {
     const paused=command!=='продолжить';
     const {error}=await db.from('conversations').update({bot_paused:paused}).eq('tenant_id',tenantId).eq('id',e.conversation_id);check(error);
+    if(!paused) await rescheduleTenantEscalationTimeouts(db,tenantId,settings,new Date());
     await send(provider,session,from,paused?renderText(settings,'owner.owner_reply_22',behavior(settings).owner_language):renderText(settings,'owner.owner_reply_23',behavior(settings).owner_language));return true;
   }
   if(e.status==='delivered'){await requestLearning(db,provider,e,from,settings);return true;}
@@ -171,37 +210,54 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
     const responseLanguage=e.response_language??languageOf(e.question);
     const id=await sendClient(db,provider,e,ownerAnswerText(e.question,(settings.translate_owner_answer ?? BEHAVIOR_DEFAULTS.translate_owner_answer) ? await translateOwnerAnswer(responseLanguage,answer,ai) : answer,settings,responseLanguage));
     await patch(db,e,{status:'delivered',client_message_id:id,delivered_at:new Date().toISOString()});
+    await cancelEscalationTimeout(db,e);
     const route=await db.from('conversations').update({routed_agent:null,route_selected_at:null}).eq('tenant_id',tenantId).eq('id',e.conversation_id);check(route.error);
   } catch {
     await patch(db,e,{status:'delivery_uncertain'});
+    await cancelEscalationTimeout(db,e);
     console.error('escalation_client_delivery_uncertain',{tenantId,escalationId:e.id});
     await send(provider,session,from,renderText(settings,'owner.owner_reply_26',behavior(settings).owner_language));return true;
   }
   await requestLearning(db,provider,{...e,answer},from,settings);
   return true;
 }
-export async function runDueScheduledEscalations(db:DatabaseClient,providerFor:()=>WhatsAppProvider,now=new Date(),tenantId?:string):Promise<number> {
-  let jobs=db.from('scheduled_jobs').select('id,tenant_id,payload').eq('job_type',JOB).eq('status','pending').lte('scheduled_at',now.toISOString());if(tenantId)jobs=jobs.eq('tenant_id',tenantId);const {data,error}=await jobs.limit(50);check(error);
+export async function runDueScheduledEscalations(db:DatabaseClient,providerFor:()=>WhatsAppProvider,now=new Date(),tenantId?:string,jobId?:string):Promise<number> {
+  let jobs=db.from('scheduled_jobs').select('id,tenant_id,payload').eq('job_type',JOB)
+    .in('status',jobId?['pending','sending']:['pending']);
+  if(!jobId)jobs=jobs.lte('scheduled_at',now.toISOString());
+  if(tenantId)jobs=jobs.eq('tenant_id',tenantId);if(jobId)jobs=jobs.eq('id',jobId);
+  const {data,error}=await jobs.limit(50);check(error);
   let count=0;
   for(const job of data??[]){
     try{
       const found=await db.from('escalations').select('*').eq('tenant_id',job.tenant_id).eq('id',job.payload.escalation_id).maybeSingle();check(found.error);
-      const e=found.data as Escalation|null;if(!e) continue;
+      const e=found.data as Escalation|null;if(!e){
+        const missing=await db.from('scheduled_jobs').update({status:'done',executed_at:now.toISOString()}).eq('id',job.id);check(missing.error);continue;
+      }
       if(e.status==='queued'){
         const settings=await loadOwnerSettings(db,e.tenant_id);
         const stale=await obsolete(db,e,settings,now);if(stale){await closeObsolete(db,e,stale,now);continue;}
-        if(isWithinQuietHours(settings,now)) continue;
-        if(!await notifyOwner(db,providerFor(),e,settings)) continue;
+        if(isWithinQuietHours(settings,now)){
+          const next=nextQuietHoursEnd(settings,now);
+          if(next){const deferred=await db.from('scheduled_jobs').update({status:'pending',scheduled_at:next.toISOString()}).eq('id',job.id);check(deferred.error);scheduleWake(next);}
+          continue;
+        }
+        if(!await notifyOwner(db,providerFor(),e,settings)){
+          const retry=new Date(now.getTime()+60_000),deferred=await db.from('scheduled_jobs').update({status:'pending',scheduled_at:retry.toISOString()}).eq('id',job.id);check(deferred.error);scheduleWake(retry);continue;
+        }
         count++;
       }
       const done=await db.from('scheduled_jobs').update({status:'done',executed_at:now.toISOString()}).eq('tenant_id',job.tenant_id).eq('id',job.id);check(done.error);
-    }catch{console.error('escalation_queue_failed',{tenantId:job.tenant_id,jobId:job.id});}
+    }catch{
+      console.error('escalation_queue_failed',{tenantId:job.tenant_id,jobId:job.id});
+      if(jobId)throw new Error('Scheduled escalation failed');
+    }
   }
   return count;
 }
 
-export async function runEscalationTimeouts(db:DatabaseClient,providerFor:()=>WhatsAppProvider,now=new Date(),tenantId?:string){
- let pending=db.from('escalations').select('*').eq('status','pending');if(tenantId)pending=pending.eq('tenant_id',tenantId);const {data,error}=await pending;check(error);
+export async function runEscalationTimeouts(db:DatabaseClient,providerFor:()=>WhatsAppProvider,now=new Date(),tenantId?:string,escalationId?:string){
+ let pending=db.from('escalations').select('*').eq('status','pending');if(tenantId)pending=pending.eq('tenant_id',tenantId);if(escalationId)pending=pending.eq('id',escalationId);const {data,error}=await pending;check(error);
  for(const row of data??[]){
   const e=row as Escalation;
   try{
@@ -216,6 +272,7 @@ export async function runEscalationTimeouts(db:DatabaseClient,providerFor:()=>Wh
      await patch(db,e,{status:'closed_unanswered',closed_at:now.toISOString(),client_message_id:id});
      const route=await db.from('conversations').update({routed_agent:null,route_selected_at:null}).eq('tenant_id',e.tenant_id).eq('id',e.conversation_id);check(route.error);
     }catch{await patch(db,e,{status:'delivery_uncertain'});console.error('escalation_timeout_delivery_uncertain',{tenantId:e.tenant_id,escalationId:e.id});}
+    await cancelEscalationTimeout(db,e,now);
    }else if(!e.reminded_at&&elapsed>=config.escalation_remind_minutes*60000){
     const to=ownerDestination(settings),me=readSessionIdentity((await provider.getSessionStatus(e.session)).me);
     if(!to||!me.id||ownerIdentityField(to,me)||ownerIdentityField(`${settings.owner_phone}@c.us`,me))continue;

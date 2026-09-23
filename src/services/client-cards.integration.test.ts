@@ -3,7 +3,7 @@ import test from 'node:test';
 import {readFileSync} from 'node:fs';
 import {PGlite} from '@electric-sql/pglite';
 import {inferredLanguage,requestsNoAutomaticReplies} from './client-cards.service.js';
-import {buildOwnerSummary,summaryDue,summaryFailureState} from './owner-summary.service.js';
+import {buildOwnerSummary,nextSummaryAt,summaryDue,summaryFailureState} from './owner-summary.service.js';
 import {isGroupChatJid} from '../utils/incoming-policy.js';
 
 test('client preference detection is limited to language and explicit automation opt-out',()=>{
@@ -23,6 +23,11 @@ test('summaryDue translates UTC labels and preserves IANA behavior',()=>{
  assert.equal(summaryDue({...base,time_zone:'UTC-5'},new Date('2026-09-14T14:00:00Z'))?.periodKey,'weekly:2026-09-14');
  assert.equal(summaryDue({...base,time_zone:'Asia/Jerusalem'},new Date('2026-09-14T06:00:00Z'))?.days,7);
  assert.equal(summaryDue({...base,time_zone:'Asia/Jerusalem',behavior:{...base.behavior,summary_frequency:'off'}},new Date()),null);
+});
+test('next summary follows the owner timezone and advances after a delivered period',()=>{
+ const settings:any={time_zone:'Asia/Jerusalem',behavior:{summary_frequency:'daily',summary_time:'09:00'}};
+ assert.equal(nextSummaryAt(settings,new Date('2026-09-14T05:59:00Z'))?.toISOString(),'2026-09-14T06:00:00.000Z');
+ assert.equal(nextSummaryAt(settings,new Date('2026-09-14T06:01:00Z'))?.toISOString(),'2026-09-15T06:00:00.000Z');
 });
 test('tenant time zones reach Intl only through the shared formatter',()=>{
  for(const file of ['src/services/owner-summary.service.ts','src/services/escalation.service.ts'])assert.doesNotMatch(readFileSync(file,'utf8'),/new Intl\.DateTimeFormat/);

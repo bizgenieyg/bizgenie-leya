@@ -77,6 +77,7 @@ test('owner reply: short GOWS ID, delivery before closure, quoted confirmation o
   const h = await pgHarness();
   const input = { tenant_id: h.tenant, conversation_id: h.conversationId, client_chat_id: customer, client_name: 'Тестовый клиент', question: 'Можно завтра?', session: 'session', inbound_id: 'incoming' };
   await createEscalation(h.db, h.provider, input, h.settings);
+  assert.equal((await h.pg.query<{count:number}>("select count(*)::int as count from scheduled_jobs where job_type='escalation_timeout' and status='pending'")).rows[0]!.count, 1);
   assert.equal(h.sent.length, 2); assert.match(h.sent[0]!.text, /ассистент владельца/); assert.equal(h.sent[1]!.chatId, owner);
   let e = await h.escalation((await h.pg.query<{ id: string }>('select id from escalations limit 1')).rows[0]!.id);
   assert.equal(e.status, 'pending');
@@ -90,6 +91,7 @@ test('owner reply: short GOWS ID, delivery before closure, quoted confirmation o
 
   await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'Да, можно', e.owner_message_ids[0]!, h.settings);
   e = await h.escalation(e.id); assert.equal(e.status, 'delivered'); assert.ok(e.client_message_id);
+  assert.equal((await h.pg.query<{count:number}>("select count(*)::int as count from scheduled_jobs where job_type='escalation_timeout' and status='cancelled'")).rows[0]!.count, 1);
   assert.equal(h.sent.at(-2)!.chatId, customer); assert.equal(h.sent.at(-2)!.replyTo, undefined);
   assert.match(h.sent.at(-2)!.text, /Передаю ответ владельца/); assert.equal(await h.knowledgeCount(), 0);
 

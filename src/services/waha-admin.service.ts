@@ -23,6 +23,7 @@ function upstreamError(): never {
 
 export class WahaAdminService {
   private readonly groupsCache = new Map<string, { expiresAt: number; value: WhatsAppGroup[] }>();
+  private readonly summarySeeded = new Set<string>();
   constructor(
     private readonly db: DatabaseClient = supabase,
     private readonly provider: WhatsAppSessionProvider = createWhatsAppSessionProvider(),
@@ -286,6 +287,14 @@ export class WahaAdminService {
       .update({ status })
       .eq("tenant_id", tenantId);
     if (error) throw new HttpError(500, "Could not update WhatsApp session");
+    if(status === 'WORKING' && !this.summarySeeded.has(tenantId)){
+      try{
+        const {loadOwnerSettings}=await import('./owner-settings.service.js');
+        const {ensureOwnerSummaryJob}=await import('./owner-summary.service.js');
+        await ensureOwnerSummaryJob(this.db,tenantId,await loadOwnerSettings(this.db,tenantId));
+        this.summarySeeded.add(tenantId);
+      }catch{console.error('owner_summary_seed_failed',{tenantId});}
+    }
   }
 }
 

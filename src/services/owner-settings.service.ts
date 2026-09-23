@@ -55,6 +55,13 @@ export async function saveOwnerSettings(db: DatabaseClient, tenantId: string, in
   const { error } = await db.from("notification_settings").upsert({tenant_id:tenantId,owner_phone:phone,owner_chat_id:null,
     time_zone:timeZone,owner_pairing_hash:hash(code),owner_pairing_expires_at:new Date(Date.now()+ttlMinutes*60*1000).toISOString(),quiet_hours_start:start,quiet_hours_end:end,mode:"mute_all"},{onConflict:"tenant_id"});
   if(error) throw new Error("Owner settings save failed");
+  if(settings.time_zone!==timeZone||settings.quiet_hours_start!==start||settings.quiet_hours_end!==end){
+    const updated=await loadOwnerSettings(db,tenantId);
+    const {rescheduleOwnerSummary}=await import('./owner-summary.service.js');
+    const {rescheduleTenantEscalationTimeouts}=await import('./owner-workflow.service.js');
+    await rescheduleOwnerSummary(db,tenantId,updated);
+    await rescheduleTenantEscalationTimeouts(db,tenantId,updated);
+  }
   return { phone, code, ttlMinutes };
 }
 export async function pairOwner(db: DatabaseClient,tenantId:string,from:string,text:string,settings:OwnerSettings):Promise<boolean> {

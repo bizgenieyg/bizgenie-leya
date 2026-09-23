@@ -65,6 +65,7 @@ const MIGRATIONS_IN_APPLICATION_ORDER = [
   '20260922181956_platform_feedback.sql',
   '20260922194934_050_business_sector.sql',
   '20260923132548_051_simulator_messages.sql',
+  '20260923182010_052_event_driven_scheduler.sql',
 ];
 
 /** PGlite has no real `auth` schema/GoTrue; stub just enough for RLS-authoring
