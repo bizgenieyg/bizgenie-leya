@@ -8,11 +8,24 @@ import type { DatabaseClient } from '../db/supabase.js';
 // branches in metered-providers.ts and usage.service.ts (e.g. what happens when the RPC
 // call itself throws), which a mock can simulate directly and a real Postgres schema
 // cannot easily force into. Do not convert without a concrete reason.
-import { recordUsageEvent,admitUsage } from './usage.service.js';
+import { recordUsageEvent,admitUsage,usageAllowsMessage } from './usage.service.js';
 import { meterAI,meterWhatsApp } from './metered-providers.js';
 import { voiceUsage } from './voice-usage.service.js';
 import { limitClientText } from './usage-notifications.service.js';
 process.env.SUPABASE_URL='https://database.invalid';process.env.SUPABASE_SERVICE_ROLE_KEY='test-only';
+test('read-only message allowance handles unlimited, exhausted and missing limits',()=>{
+  const original=console.error,logs:string[]=[];
+  console.error=(message:unknown)=>{logs.push(String(message));};
+  try{
+    assert.equal(usageAllowsMessage({unlimited:true,messages_used:999,messages_limit:null}),true);
+    assert.equal(usageAllowsMessage({unlimited:false,messages_used:4,messages_limit:5}),true);
+    assert.equal(usageAllowsMessage({unlimited:false,messages_used:5,messages_limit:5}),false);
+    assert.equal(usageAllowsMessage({unlimited:false,messages_used:6,messages_limit:5}),false);
+    assert.equal(usageAllowsMessage({unlimited:false,messages_used:4,messages_limit:null}),true);
+    assert.equal(usageAllowsMessage({unlimited:false,messages_used:4}),true);
+    assert.deepEqual(logs,['usage_summary_limit_missing','usage_summary_limit_missing']);
+  }finally{console.error=original;}
+});
 test('metering never breaks message handling on database rejection or thrown network errors',async()=>{
   for(const db of [{from(){throw new Error('private secret');}},{from(){return{insert:async()=>({error:{code:'network'}})};}}] as unknown as DatabaseClient[]){
     await recordUsageEvent(db,{tenantId:'t',eventType:'message_received'});

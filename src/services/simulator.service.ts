@@ -7,7 +7,7 @@ import type { ConversationMemory } from './context.service.js';
 import { loadOwnerSettings, ownerDestination } from './owner-settings.service.js';
 import { behavior } from './runtime-settings.service.js';
 import { meterAI } from './metered-providers.js';
-import { recordUsageEvent } from './usage.service.js';
+import { recordUsageEvent, usageAllowsMessage } from './usage.service.js';
 import { reserveSimulatorCall } from './simulator-rate-limit.js';
 import { processCustomerMessage, type PipelineResult, type PipelineSink } from './message-pipeline.service.js';
 import { escalationWaitingMessage } from './owner-workflow.service.js';
@@ -72,7 +72,7 @@ export async function simulateCustomerMessage(db: DatabaseClient, tenantId: stri
       const summary = await db.rpc('tenant_usage_summary', { p_tenant_id: tenantId, p_default_messages: 0,
         p_default_voice_seconds: 0, p_now: now.toISOString() });
       if (summary.error || !summary.data) return { allowed: true, duplicate: false, unavailable: true };
-      return { allowed: Number(summary.data.messages_used) < Number(summary.data.messages_limit), duplicate: false };
+      return { allowed: usageAllowsMessage(summary.data), duplicate: false };
     },
     afterAdmission: async () => {},
     sendToClient: async reply => { sentReply = reply; return null; },

@@ -106,6 +106,30 @@ test('two-turn WhatsApp and simulator replies are byte-for-byte equivalent', asy
   } finally { await f.close(); }
 });
 
+test('pilot unlimited plan answers a FAQ identically in WhatsApp and simulator', async () => {
+  const f = await fixture();
+  try {
+    await f.pg.query("update tenant_usage_limits set plan='pilot',messages_overridden=false where tenant_id=$1", [f.tenantId]);
+    await f.pg.query("insert into knowledge_items(tenant_id,type,question,answer,active) values($1,'faq','Часы работы?','<b>С 9 до 18.</b>',true)", [f.tenantId]);
+    const summary = await f.pg.query<{ usage: { unlimited: boolean; messages_limit: number | null } }>(
+      'select tenant_usage_summary($1,0,0) as usage', [f.tenantId]);
+    assert.equal(summary.rows[0]!.usage.unlimited, true);
+    assert.equal(summary.rows[0]!.usage.messages_limit, 0);
+    const sent: string[] = [];
+    const provider: WhatsAppProvider = {
+      async sendMessage(input) { sent.push(input.text); return { id: `sent-${sent.length}` }; },
+      async getSessionStatus() { return { status: 'WORKING' }; },
+    };
+    const text = 'Часы работы?';
+    await handleWebhookEvent(f.tenantId, { event: 'message', payload: { from: '972500000001@c.us', fromMe: false,
+      hasMedia: false, body: text, author: null, replyTo: null, _data: { Info: { PushName: 'Тест' } } } }, f.db, provider, null);
+    const simulation = await simulateCustomerMessage(f.db, f.tenantId, crypto.randomUUID(), text, null, { root: f.root });
+    assert.equal(simulation.outcome, 'answered');
+    assert.equal(simulation.reply, 'С 9 до 18.');
+    assert.equal(simulation.reply, sent.at(-1));
+  } finally { await f.close(); }
+});
+
 test('agent answer uses knowledge and records only simulated model usage', async () => {
   const f = await fixture();
   try {
@@ -190,6 +214,14 @@ test('exhausted customer quota is previewed without charging a simulator call to
     const result = await simulateCustomerMessage(f.db, f.tenantId, crypto.randomUUID(), 'Привет', null, { root: f.root, now });
     assert.equal(result.outcome, 'limit');
     assert.ok(result.reply);
+    const sent: string[] = [];
+    const provider: WhatsAppProvider = {
+      async sendMessage(input) { sent.push(input.text); return { id: `sent-${sent.length}` }; },
+      async getSessionStatus() { return { status: 'WORKING' }; },
+    };
+    await handleWebhookEvent(f.tenantId, { event: 'message', payload: { from: '972500000001@c.us', fromMe: false,
+      hasMedia: false, body: 'Привет', author: null, replyTo: null, _data: { Info: { PushName: 'Тест' } } } }, f.db, provider, null);
+    assert.equal(result.reply, sent.at(-1));
     const after = await f.pg.query<{ n: number; messages_used: number }>('select count(*)::int n,max(messages_used)::int messages_used from tenant_monthly_usage where tenant_id=$1', [f.tenantId]);
     assert.equal(after.rows[0]!.n, before.rows[0]!.n + 1);
     assert.equal(after.rows[0]!.messages_used, 1);

@@ -9,6 +9,18 @@ export async function recordUsageEvent(db:DatabaseClient,input:{tenantId:string;
   }catch{console.error('usage_event_write_failed',{eventType:input.eventType});}
 }
 export interface UsageAdmission {allowed:boolean;duplicate:boolean;unavailable?:boolean;}
+export interface MessageUsageSummary {unlimited?:boolean|null;messages_used?:number|null;messages_limit?:number|null;}
+
+/** Read-only allowance for previews; real customer admission stays in admit_tenant_usage. */
+export function usageAllowsMessage(summary:MessageUsageSummary):boolean {
+  if(summary.unlimited===true)return true;
+  if(summary.messages_limit==null){
+    console.error('usage_summary_limit_missing');
+    return true;
+  }
+  return Number(summary.messages_used)<Number(summary.messages_limit);
+}
+
 export async function admitUsage(db:DatabaseClient,tenantId:string,eventKey:string,messages=1,voiceSeconds=0):Promise<UsageAdmission> {
   try {
     const {data,error}=await db.rpc('admit_tenant_usage',{p_tenant_id:tenantId,p_event_key:eventKey,p_messages:messages,p_voice_seconds:voiceSeconds,p_default_messages:0,p_default_voice_seconds:0,p_default_warning_percent:0});
