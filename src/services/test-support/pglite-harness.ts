@@ -64,6 +64,7 @@ const MIGRATIONS_IN_APPLICATION_ORDER = [
   '20260918110000_048_whatsapp_connected_identity.sql',
   '20260922181956_platform_feedback.sql',
   '20260922194934_050_business_sector.sql',
+  '20260923132548_051_simulator_messages.sql',
 ];
 
 /** PGlite has no real `auth` schema/GoTrue; stub just enough for RLS-authoring

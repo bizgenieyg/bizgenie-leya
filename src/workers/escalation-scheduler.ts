@@ -4,6 +4,7 @@ import { supabase } from '../db/supabase.js';
 import { createWhatsAppProvider } from '../providers/whatsapp/index.js';
 import { runDueScheduledEscalations,runEscalationTimeouts } from '../services/owner-workflow.service.js';
 import { purgeExpiredMessages } from '../services/message-retention.service.js';
+import { purgeExpiredSimulatorMessages } from '../services/simulator-retention.service.js';
 import { loadOwnerSettings } from '../services/owner-settings.service.js';
 import { behavior } from '../services/runtime-settings.service.js';
 import { deliverOwnerSummaryIfDue } from '../services/owner-summary.service.js';
@@ -24,6 +25,8 @@ export function startEscalationScheduler() {
     lastPurge.set(row.tenant_id,now);
     try{await purgeExpiredMessages(supabase,row.tenant_id,behavior(settings).message_retention_days,new Date(now));}
     catch{console.error('message_retention_sweep_failed',{tenantId:row.tenant_id});}
+    try{await purgeExpiredSimulatorMessages(supabase,row.tenant_id,behavior(settings).context_retention_hours,new Date(now));}
+    catch{console.error('simulator_retention_sweep_failed',{tenantId:row.tenant_id});}
    }
   }
  }catch{console.error('escalation_scheduler_failed');}finally{busy=false;}};

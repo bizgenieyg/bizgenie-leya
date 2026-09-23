@@ -1,72 +1,107 @@
 import { randomUUID } from 'node:crypto';
-import { agentContext } from '../agents/index.js';
 import { createAIProvider } from '../providers/ai/index.js';
 import type { AIProvider } from '../providers/ai/ai-provider.interface.js';
 import type { DatabaseClient } from '../db/supabase.js';
-import { loadContext } from './context.service.js';
-import { generateKnowledgeReply, generateReceptionReply } from './ai-fallback.service.js';
-import { findExactKnowledgeAnswer } from './knowledge.service.js';
-import { meterAI } from './metered-providers.js';
-import { loadOwnerSettings } from './owner-settings.service.js';
-import { routeConversation } from './conversation-routing.service.js';
-import { languageOf, renderText } from './templates.service.js';
-import { recordUsageEvent } from './usage.service.js';
-import type { ConversationRow } from './tenant.service.js';
-import { reserveSimulatorCall } from './simulator-rate-limit.js';
-import {findSemanticKnowledge} from './semantic-knowledge.service.js';
-import { HttpError } from '../utils/http-error.js';
+import type { ClientRow, ConversationRow } from './tenant.service.js';
+import type { ConversationMemory } from './context.service.js';
+import { loadOwnerSettings, ownerDestination } from './owner-settings.service.js';
 import { behavior } from './runtime-settings.service.js';
+import { meterAI } from './metered-providers.js';
+import { recordUsageEvent } from './usage.service.js';
+import { reserveSimulatorCall } from './simulator-rate-limit.js';
+import { processCustomerMessage, type PipelineResult, type PipelineSink } from './message-pipeline.service.js';
+import { escalationWaitingMessage } from './owner-workflow.service.js';
+import { withoutRepeatedIntroduction } from '../utils/assistant-text.js';
+import { HttpError } from '../utils/http-error.js';
+import { allowedRecipient } from '../utils/incoming-policy.js';
 
-export interface SimulationResult { reply:string; agent:string; source:'faq'|'model'|'reception'|'fallback'; }
-type SimulatorSession={conversation:ConversationRow;messages:Array<{fromMe:boolean;text:string;createdAt:string}>;introduced:boolean;lastActive:number};
-const simulatorSessions=new Map<string,SimulatorSession>();
+export type SimulationResult = PipelineResult;
+type SessionState = { introduced: boolean; routed_agent: string | null; route_selected_at: string | null;
+  source_label: string | null; reception_message_count: number; client_time_zone: string | null };
 
-function sessionFor(tenantId:string,sessionId:string,retentionHours:number,now:Date):SimulatorSession{
-  const cutoff=now.getTime()-retentionHours*3600000;
-  for(const [key,value] of simulatorSessions)if(value.lastActive<cutoff)simulatorSessions.delete(key);
-  const key=`${tenantId}:${sessionId}`,existing=simulatorSessions.get(key);
-  if(existing){existing.lastActive=now.getTime();return existing;}
-  const created:SimulatorSession={conversation:{id:randomUUID(),tenant_id:tenantId,client_id:randomUUID(),status:'active',routed_agent:null,route_selected_at:null,source_label:null,reception_message_count:0,last_message_at:null} as ConversationRow,messages:[],introduced:false,lastActive:now.getTime()};
-  simulatorSessions.set(key,created);return created;
+async function sessionState(db: DatabaseClient, tenantId: string, sessionId: string): Promise<SessionState> {
+  const find = () => db.from('simulator_sessions').select('*').eq('tenant_id', tenantId).eq('id', sessionId).maybeSingle();
+  let row = await find();
+  if (row.error) throw new HttpError(500, 'Could not load simulator session');
+  if (!row.data) {
+    const inserted = await db.from('simulator_sessions').insert({ tenant_id: tenantId, id: sessionId });
+    if (inserted.error && inserted.error.code !== '23505') throw new HttpError(500, 'Could not create simulator session');
+    row = await find();
+  }
+  if (row.error || !row.data) throw new HttpError(500, 'Could not load simulator session');
+  return row.data as SessionState;
 }
 
-function remember(session:SimulatorSession,fromMe:boolean,text:string,count:number,now:Date){
-  session.messages.push({fromMe,text,createdAt:now.toISOString()});
-  if(session.messages.length>count)session.messages.splice(0,session.messages.length-count);
-  session.conversation.last_message_at=now.toISOString();session.lastActive=now.getTime();
-}
+export async function simulateCustomerMessage(db: DatabaseClient, tenantId: string, sessionId: string, text: string,
+  ai: AIProvider | null = createAIProvider(), limitOptions?: { now?: Date; root?: string }): Promise<SimulationResult> {
+  const settings = await loadOwnerSettings(db, tenantId);
+  const config = behavior(settings);
+  const now = limitOptions?.now ?? new Date();
+  const reservation = await reserveSimulatorCall(tenantId, config.simulator_hourly_limit, config.simulator_daily_limit, now, limitOptions?.root);
+  if (!reservation.allowed) throw new HttpError(429, reservation.period === 'hour' ? 'Simulator hourly limit reached' : 'Simulator daily limit reached',
+    { code: reservation.period === 'hour' ? 'simulator_hourly_limit' : 'simulator_daily_limit' });
 
-export async function simulateCustomerMessage(db:DatabaseClient,tenantId:string,sessionId:string,text:string,ai:AIProvider|null=createAIProvider(),limitOptions?:{now?:Date;root?:string}):Promise<SimulationResult>{
-  const [settings,context]=await Promise.all([loadOwnerSettings(db,tenantId),loadContext(db,tenantId)]);
-  const config=behavior(settings),now=limitOptions?.now??new Date(),reservation=await reserveSimulatorCall(tenantId,config.simulator_hourly_limit,config.simulator_daily_limit,now,limitOptions?.root);
-  if(!reservation.allowed)throw new HttpError(429,reservation.period==='hour'?'Simulator hourly limit reached':'Simulator daily limit reached',{code:reservation.period==='hour'?'simulator_hourly_limit':'simulator_daily_limit'});
-  const session=sessionFor(tenantId,sessionId,config.context_retention_hours,now),history=[...session.messages];
-  remember(session,false,text,config.context_message_count,now);
-  const exact=findExactKnowledgeAnswer(text,context.knowledge);
-  if(exact.matched){remember(session,true,exact.answer,config.context_message_count,now);session.introduced=true;return{reply:exact.answer,agent:'CORE',source:'faq'};}
-  context.materials=await findSemanticKnowledge(db,tenantId,text);
-
-  const classificationUsage:Record<string,unknown>[]=[];
-  const route=await routeConversation(db,tenantId,session.conversation,text,settings,ai,usage=>classificationUsage.push(usage),history.length===0,false);
-  for(const metadata of classificationUsage)await agentContext.run({agent:'RECEPTION'},()=>recordUsageEvent(db,{tenantId,eventType:'model_call',eventKey:randomUUID(),metadata:{...metadata,purpose:'intent_classification',simulation:true}}));
-
-  if(route.kind==='agent')session.conversation.routed_agent=route.agent.name;
-  else if(route.kind==='reception')session.conversation.routed_agent='RECEPTION';
-  let result:SimulationResult;
-  if(route.kind==='escalate')result={reply:renderText(settings,'client.reception_question',languageOf(text)),agent:'RECEPTION',source:'fallback'};
-  else{
-  const agent=route.kind==='agent'?route.agent.name:'RECEPTION';
-  const model=meterAI(db,tenantId,ai,{simulation:true,purpose:'simulator_reply'});
-  if(route.kind==='reception'){
-    const prompt=renderText(settings,'client.reception_question',languageOf(text));
-    const reception=await agentContext.run({agent},()=>generateReceptionReply(context,text,prompt,model,history,session.introduced));
-    session.conversation.reception_message_count=Number(session.conversation.reception_message_count??0)+1;
-    result={reply:reception.reply||prompt,agent,source:reception.reply?'reception':'fallback'};
-  }else{
-    const reply=await agentContext.run({agent},()=>generateKnowledgeReply(context,text,model,route.agent.systemPrompt,history,session.introduced));
-    result={reply:reply||renderText(settings,'client.reception_question',languageOf(text)),agent,source:reply?'model':'fallback'};
-  }
-  }
-  remember(session,true,result.reply,config.context_message_count,now);session.introduced=true;
-  return result;
+  const state = await sessionState(db, tenantId, sessionId);
+  const cutoff = new Date(now.getTime() - config.context_retention_hours * 3600000).toISOString();
+  const history = await db.from('simulator_messages').select('from_me,body,created_at')
+    .eq('tenant_id', tenantId).eq('session_id', sessionId).gte('created_at', cutoff)
+    .order('sequence', { ascending: false }).limit(config.context_message_count);
+  if (history.error) throw new HttpError(500, 'Could not load simulator history');
+  const previous: ConversationMemory[] = (history.data ?? []).reverse().map(row => ({ fromMe: row.from_me === true,
+    text: String(row.body), createdAt: String(row.created_at) }));
+  const inserted = await db.from('simulator_messages').insert({ tenant_id: tenantId, session_id: sessionId,
+    from_me: false, body: text, created_at: now.toISOString() });
+  if (inserted.error) throw new HttpError(500, 'Could not save simulator message');
+  const memory = { messages: [...previous, { fromMe: false, text, createdAt: now.toISOString() }].slice(-config.context_message_count),
+    introduced: state.introduced };
+  const conversation: ConversationRow = { id: sessionId, tenant_id: tenantId, client_id: sessionId, status: 'active',
+    routed_agent: state.routed_agent, route_selected_at: state.route_selected_at, source_label: state.source_label,
+    reception_message_count: state.reception_message_count, last_message_at: previous.at(-1)?.createdAt ?? null };
+  const client: ClientRow = { id: sessionId, tenant_id: tenantId, phone: '', name: null, time_zone: state.client_time_zone };
+  let sentReply: string | null = null;
+  const saveReply = async (reply: string): Promise<void> => {
+    const saved = await db.from('simulator_messages').insert({ tenant_id: tenantId, session_id: sessionId,
+      from_me: true, body: reply, created_at: now.toISOString() });
+    if (saved.error) throw new HttpError(500, 'Could not save simulator reply');
+  };
+  const sink: PipelineSink = {
+    mode: 'simulation',
+    isConversationPaused: async () => false,
+    onClientOptOut: async () => {},
+    admit: async () => {
+      const summary = await db.rpc('tenant_usage_summary', { p_tenant_id: tenantId, p_default_messages: 0,
+        p_default_voice_seconds: 0, p_now: now.toISOString() });
+      if (summary.error || !summary.data) return { allowed: true, duplicate: false, unavailable: true };
+      return { allowed: Number(summary.data.messages_used) < Number(summary.data.messages_limit), duplicate: false };
+    },
+    afterAdmission: async () => {},
+    sendToClient: async reply => { sentReply = reply; return null; },
+    persistAssistantMessage: async answer => { await saveReply(answer); },
+    createEscalation: async language => {
+      const destination = ownerDestination(settings);
+      if (!destination || !allowedRecipient(destination)) return null;
+      const waiting = escalationWaitingMessage(text, settings, client.time_zone, language, now);
+      const reply = withoutRepeatedIntroduction(waiting.text, memory.introduced);
+      sentReply = reply;
+      return reply;
+    },
+    markIntroduced: async () => { memory.introduced = true; },
+    recordUsage: async (eventType, options) => {
+      if (eventType !== 'model_call') return;
+      await recordUsageEvent(db, { tenantId, eventType, ...(options?.eventKey ? { eventKey: options.eventKey } : {}),
+        metadata: { ...options?.metadata, simulation: true } });
+    },
+    recordAgentAction: async () => {},
+    updateClientTimeZone: async zone => { client.time_zone = zone; },
+    incrementReceptionCounter: async () => { conversation.reception_message_count = Number(conversation.reception_message_count ?? 0) + 1; },
+  };
+  const model = meterAI(db, tenantId, ai, { simulation: true, purpose: 'simulator_reply' });
+  const response = await processCustomerMessage({ db, tenantId, text, client, conversation, memory, settings, ai, model,
+    usageKey: randomUUID(), sink, now });
+  const updated = await db.from('simulator_sessions').update({ introduced: memory.introduced,
+    routed_agent: conversation.routed_agent, route_selected_at: now.toISOString(), source_label: conversation.source_label,
+    reception_message_count: conversation.reception_message_count ?? 0, client_time_zone: client.time_zone, updated_at: now.toISOString() })
+    .eq('tenant_id', tenantId).eq('id', sessionId);
+  if (updated.error) throw new HttpError(500, 'Could not save simulator session');
+  return { ...response, reply: sentReply ?? response.reply };
 }

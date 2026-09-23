@@ -92,8 +92,19 @@ export async function createEscalation(db:DatabaseClient,provider:WhatsAppProvid
   // Quiet with no working window ahead: schedule and notify now, promise a callback — never a far-future date.
   const scheduledAt=quietEnd??now;
   const {error:jobError}=await db.from('scheduled_jobs').insert({tenant_id:e.tenant_id,job_type:JOB,payload:{escalation_id:e.id},scheduled_at:scheduledAt.toISOString(),status:'pending'});check(jobError);
-  await sendClient(db,provider,e,waitingText(e.question,quiet?{at:quietEnd,ownerZone:settings.time_zone??'UTC',clientZone:clientZone??null}:undefined,settings,e.response_language??languageOf(e.question)));
+  const waiting=escalationWaitingMessage(e.question,settings,clientZone,e.response_language??languageOf(e.question),now);
+  await sendClient(db,provider,e,waiting.text);
   if(!quiet||!quietEnd) await notifyOwner(db,provider,e,settings);
+  return waiting.text;
+}
+
+export function escalationWaitingMessage(question:string,settings:OwnerSettings,clientZone:string|null|undefined,responseLanguage:string,now=new Date()):{text:string;quietHours?:{active:true;until:string}} {
+  const quiet=isWithinQuietHours(settings,now);
+  const at=quiet?nextQuietHoursEnd(settings,now):null;
+  return {
+    text:waitingText(question,quiet?{at,ownerZone:settings.time_zone??'UTC',clientZone:clientZone??null}:undefined,settings,responseLanguage),
+    ...(quiet&&at?{quietHours:{active:true as const,until:at.toISOString()}}:{}),
+  };
 }
 async function requestLearning(db:DatabaseClient,provider:WhatsAppProvider,e:Escalation,from:string,settings:OwnerSettings) {
   const {data,error}=await db.from('escalations').update({learning_state:'prompting'}).eq('tenant_id',e.tenant_id).eq('id',e.id).eq('status','delivered').eq('learning_state','none').select('id');check(error);

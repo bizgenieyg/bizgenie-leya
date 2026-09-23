@@ -1,32 +1,213 @@
 import assert from 'node:assert/strict';
-import {mkdtemp,rm} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
 import test from 'node:test';
-import {PGlite} from '@electric-sql/pglite';
-import type {AIProvider} from '../providers/ai/ai-provider.interface.js';
-import type {DatabaseClient} from '../db/supabase.js';
-import {simulateCustomerMessage} from './simulator.service.js';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { AIProvider } from '../providers/ai/ai-provider.interface.js';
+import type { WhatsAppProvider } from '../providers/whatsapp/whatsapp-provider.interface.js';
+import { handleWebhookEvent } from '../workers/webhook.worker.js';
+import { createTestDatabase, pgliteDatabaseClient } from './test-support/pglite-harness.js';
+import { simulateCustomerMessage } from './simulator.service.js';
+import { purgeExpiredSimulatorMessages } from './simulator-retention.service.js';
 
-type Filter={column:string;notNull?:boolean;value?:unknown};
-class PgQuery{
- private columns='*';private filters:Filter[]=[];private maximum:number|null=null;private inserted:Record<string,unknown>|null=null;
- constructor(private db:PGlite,private table:string){}
- select(columns='*'){this.columns=columns;return this;} eq(column:string,value:unknown){this.filters.push({column,value});return this;}
- not(column:string,_operator:string,value:unknown){if(value===null)this.filters.push({column,notNull:true});return this;} order(){return this;} limit(value:number){this.maximum=value;return this;}
- insert(value:Record<string,unknown>){this.inserted=value;return this;} async maybeSingle(){const result=await this.execute();return{data:result.data?.[0]??null,error:result.error};}
- then(resolve:any,reject?:any){return this.execute().then(resolve,reject);}
- private async execute(){try{if(this.inserted){const keys=Object.keys(this.inserted),params=keys.map(key=>this.inserted![key]);await this.db.query(`insert into ${this.table}(${keys.join(',')}) values(${keys.map((_,i)=>'$'+(i+1)).join(',')})`,params);return{data:[this.inserted],error:null};}
-  const params:unknown[]=[],where=this.filters.map(filter=>{if(filter.notNull)return`${filter.column} is not null`;params.push(filter.value);return`${filter.column}=$${params.length}`;}).join(' and '),result=await this.db.query(`select ${this.columns} from ${this.table}${where?' where '+where:''}${this.maximum!==null?' limit '+this.maximum:''}`,params);return{data:result.rows,error:null};
- }catch(error){throw error;}}
+async function fixture() {
+  const pg = await createTestDatabase();
+  const db = pgliteDatabaseClient(pg);
+  const tenant = await db.from('tenants').insert({ name: 'Даниэль', business_name: 'BizGenie', language: 'ru', tier: 'basic', status: 'active' }).select('id').single();
+  assert.equal(tenant.error, null);
+  const tenantId = (tenant.data as { id: string }).id;
+  await pg.query("insert into notification_settings(tenant_id,mode,time_zone,auto_replies_paused,owner_phone,behavior) values($1,'mute_all','Asia/Jerusalem',false,'+972500000002',$2)",
+    [tenantId, JSON.stringify({ enabled_agents: ['SALE', 'SUPPORT'], reception_max_messages: 0, simulator_hourly_limit: 30, simulator_daily_limit: 100 })]);
+  await pg.query("insert into plans(code,display_name,messages_per_month,voice_minutes_per_month,warning_percent,unlimited) values('basic','Базовый',500,60,80,false) on conflict(code) do nothing");
+  await pg.query("insert into tenant_usage_limits(tenant_id,plan,messages_per_month,voice_minutes_per_month,warning_percent,messages_overridden,voice_overridden,warning_overridden) values($1,'basic',500,60,80,false,false,false)", [tenantId]);
+  await pg.query("insert into assistant_profiles(tenant_id,assistant_name,allowed_languages,tone) values($1,'Leya',array['ru'],'friendly_professional')", [tenantId]);
+  const root = await mkdtemp(join(tmpdir(), 'leya-sim-'));
+  return { pg, db, tenantId, root, async close() { await pg.close(); await rm(root, { recursive: true, force: true }); } };
 }
-const adapter=(db:PGlite)=>({from:(table:string)=>new PgQuery(db,table)}) as unknown as DatabaseClient;
-async function fixture(){const db=new PGlite();await db.exec(`create table tenants(id uuid primary key,name text,business_name text,business_sector text,language text);create table notification_settings(tenant_id uuid primary key,owner_phone text,owner_chat_id text,owner_pairing_hash text,owner_pairing_expires_at timestamptz,quiet_hours_start time,quiet_hours_end time,mode text,time_zone text,auto_replies_paused boolean,translate_owner_answer boolean,behavior jsonb,templates jsonb);create table schedule_exceptions(id uuid,start_date date,end_date date,kind text,work_start time,work_end time,name text,recurs_annually boolean,tenant_id uuid);create table assistant_profiles(tenant_id uuid,assistant_name text,allowed_languages text[],tone text,mode text,system_rules text,style_profile_md text);create table knowledge_items(id uuid default gen_random_uuid(),tenant_id uuid,type text,question text,answer text,active boolean);create table escalations(id uuid default gen_random_uuid(),tenant_id uuid,conversation_id uuid,status text);create table usage_events(id uuid default gen_random_uuid(),tenant_id uuid,event_type text,quantity numeric,event_key text,agent text,metadata jsonb);`);const tenant='10000000-0000-4000-8000-000000000001';await db.query("insert into tenants(id,name,business_name,language)values($1,'Даниэль','BizGenie','ru')",[tenant]);await db.query(`insert into notification_settings(tenant_id,mode,time_zone,auto_replies_paused,behavior,templates)values($1,'mute_all','Asia/Jerusalem',false,$2,'{}')`,[tenant,JSON.stringify({enabled_agents:['SALE','SUPPORT'],intent_confidence_threshold:.7,reception_max_messages:0,simulator_hourly_limit:30,simulator_daily_limit:100})]);await db.query("insert into assistant_profiles(tenant_id,assistant_name,allowed_languages,tone)values($1,'Leya',array['ru'],'friendly_professional')",[tenant]);return{db,tenant,client:adapter(db)};}
 
-test('arbitrary non-FAQ simulation works against PostgreSQL UUID types without persistence',async()=>{const {db,tenant,client}=await fixture(),root=await mkdtemp(join(tmpdir(),'leya-sim-'));try{const ai:AIProvider={async generateReply(input){return input.systemPrompt.includes('классификатор')?{text:'{"agent":"SALE","confidence":0.9}'}:{text:'Стоимость зависит от выбранной услуги.'};}};const result=await simulateCustomerMessage(client,tenant,'20000000-0000-4000-8000-000000000001','Здравствуйте, сколько стоит консультация и как записаться?',ai,{root});assert.ok(result.reply.length>0);assert.equal((await db.query<{count:number}>('select count(*)::int count from escalations')).rows[0]!.count,0);assert.ok((await db.query<{count:number}>('select count(*)::int count from usage_events')).rows[0]!.count>=1);}finally{await db.close();await rm(root,{recursive:true,force:true});}});
-test('exact FAQ avoids Gemini and customer usage events',async()=>{const {db,tenant,client}=await fixture(),root=await mkdtemp(join(tmpdir(),'leya-sim-'));try{await db.query("insert into knowledge_items(tenant_id,type,question,answer,active)values($1,'faq','Сколько стоит?','500 шекелей',true)",[tenant]);let calls=0;const ai:AIProvider={async generateReply(){calls++;return{text:'unused'}}};const result=await simulateCustomerMessage(client,tenant,'20000000-0000-4000-8000-000000000002','Сколько стоит?',ai,{root});assert.equal(result.reply,'500 шекелей');assert.equal(calls,0);assert.equal((await db.query<{count:number}>('select count(*)::int count from usage_events')).rows[0]!.count,0);}finally{await db.close();await rm(root,{recursive:true,force:true});}});
-test('simulator enforces independent hourly and daily limits',async()=>{const {db,tenant,client}=await fixture(),root=await mkdtemp(join(tmpdir(),'leya-sim-')),session='20000000-0000-4000-8000-000000000003';try{await db.query("update notification_settings set behavior=behavior||'{\"simulator_hourly_limit\":1,\"simulator_daily_limit\":2}'::jsonb where tenant_id=$1",[tenant]);const ai:AIProvider={async generateReply(){return{text:'ok'}}};await simulateCustomerMessage(client,tenant,session,'Привет',ai,{root,now:new Date('2026-09-12T10:00:00Z')});await assert.rejects(simulateCustomerMessage(client,tenant,session,'Ещё',ai,{root,now:new Date('2026-09-12T10:10:00Z')}),/hourly/);await simulateCustomerMessage(client,tenant,session,'Позже',ai,{root,now:new Date('2026-09-12T11:00:00Z')});await assert.rejects(simulateCustomerMessage(client,tenant,session,'Снова',ai,{root,now:new Date('2026-09-12T12:00:00Z')}),/daily/);}finally{await db.close();await rm(root,{recursive:true,force:true});}});
-test('simulator remains fully available while customer replies are paused',async()=>{const {db,tenant,client}=await fixture(),root=await mkdtemp(join(tmpdir(),'leya-sim-'));try{await db.query('update notification_settings set auto_replies_paused=true where tenant_id=$1',[tenant]);const ai:AIProvider={async generateReply(input){return input.systemPrompt.includes('классификатор')?{text:'{"agent":"SUPPORT","confidence":0.95}'}:{text:'Пробный ответ работает.'};}};const result=await simulateCustomerMessage(client,tenant,'20000000-0000-4000-8000-000000000004','Помогите с услугой',ai,{root});assert.ok(result.reply.length>0);assert.ok(['SUPPORT','RECEPTION'].includes(result.agent));}finally{await db.close();await rm(root,{recursive:true,force:true});}});
-test('first reception reply introduces the assistant naturally and never exposes routing codes',async()=>{const {db,tenant,client}=await fixture(),root=await mkdtemp(join(tmpdir(),'leya-sim-'));try{const ai:AIProvider={async generateReply(input){return input.systemPrompt.includes('классификатор')?{text:'{"agent":"SALE","confidence":0.1}'}:{text:'Выберите SUPPORT / SALE'};}};const result=await simulateCustomerMessage(client,tenant,'20000000-0000-4000-8000-000000000005','Привет',ai,{root});assert.match(result.reply,/ассистент владельца/i);assert.match(result.reply,/что вам нужно/i);assert.doesNotMatch(result.reply,/\b(?:SALE|SUPPORT|RECEPTION|CORE)\b/);}finally{await db.close();await rm(root,{recursive:true,force:true});}});
+test('051 persists isolated simulator messages and keeps customer tables untouched', async () => {
+  const f = await fixture();
+  try {
+    await f.pg.query("insert into knowledge_items(tenant_id,type,question,answer,active) values($1,'faq','Часы работы?','<b>С 9 до 18.</b>',true)", [f.tenantId]);
+    const session = crypto.randomUUID();
+    const ai: AIProvider = { async generateReply() { throw new Error('FAQ must not call AI'); } };
+    const first = await simulateCustomerMessage(f.db, f.tenantId, session, 'Часы работы?', ai, { root: f.root });
+    assert.deepEqual(first, { reply: 'С 9 до 18.', outcome: 'answered' });
+    const rows = await f.pg.query<{ from_me: boolean; body: string }>('select from_me,body from simulator_messages where tenant_id=$1 and session_id=$2 order by sequence', [f.tenantId, session]);
+    assert.equal(rows.rows.length, 2);
+    assert.equal(rows.rows.find(row => row.from_me)?.body, '<b>С 9 до 18.</b>');
+    for (const table of ['messages', 'conversations', 'clients', 'escalations']) {
+      const count = await f.pg.query<{ n: number }>(`select count(*)::int n from ${table} where tenant_id=$1`, [f.tenantId]);
+      assert.equal(count.rows[0]!.n, 0, table);
+    }
+    for (const role of ['anon', 'authenticated']) {
+      await f.pg.exec(`set role ${role}`);
+      await assert.rejects(f.pg.query('select * from simulator_messages'), /permission denied/);
+      await assert.rejects(f.pg.query('select * from simulator_sessions'), /permission denied/);
+      await f.pg.exec('reset role');
+    }
+  } finally { await f.close(); }
+});
 
-test('simulator reuses memory and introduction state only inside one session',async()=>{const {db,tenant,client}=await fixture(),root=await mkdtemp(join(tmpdir(),'leya-sim-')),session='20000000-0000-4000-8000-000000000006',prompts:string[]=[];try{const ai:AIProvider={async generateReply(input){if(input.systemPrompt.includes('классификатор'))return{text:'{"agent":"SALE","confidence":0.1}'};prompts.push(input.systemPrompt+'\n'+input.userMessage);return{text:'Ответ'};}};await simulateCustomerMessage(client,tenant,session,'Первый вопрос',ai,{root});await simulateCustomerMessage(client,tenant,session,'Уточнение',ai,{root});assert.match(prompts[1]??'',/Первый вопрос/);assert.match(prompts[1]??'',/Ответ/);assert.match(prompts[1]??'',/уже представлялся/);await simulateCustomerMessage(client,tenant,'20000000-0000-4000-8000-000000000007','Новый чат',ai,{root});assert.doesNotMatch(prompts[2]??'',/Первый вопрос/);}finally{await db.close();await rm(root,{recursive:true,force:true});}});
+test('simulator preserves history after a service call and marks paused previews', async () => {
+  const f = await fixture();
+  try {
+    await f.pg.query('update notification_settings set auto_replies_paused=true where tenant_id=$1', [f.tenantId]);
+    const session = crypto.randomUUID();
+    const prompts: string[] = [];
+    const ai: AIProvider = { async generateReply(input) {
+      if (input.systemPrompt.includes('классификатор')) return { text: '{"agent":"SALE","confidence":0.1}' };
+      prompts.push(input.systemPrompt + input.userMessage);
+      return { text: 'Ответ' };
+    } };
+    const first = await simulateCustomerMessage(f.db, f.tenantId, session, 'Первый вопрос', ai, { root: f.root });
+    assert.equal(first.outcome, 'answered');
+    assert.equal(first.pausedNote, true);
+    const second = await simulateCustomerMessage(f.db, f.tenantId, session, 'Уточнение', ai, { root: f.root });
+    assert.match(prompts.at(-1) ?? '', /Первый вопрос/);
+    assert.match(prompts.at(-1) ?? '', /уже представлялся/);
+    assert.equal(second.pausedNote, true);
+  } finally { await f.close(); }
+});
+
+test('simulator message retention removes only expired rows for the chosen tenant', async () => {
+  const f = await fixture();
+  try {
+    const session = crypto.randomUUID();
+    await f.pg.query('insert into simulator_sessions(tenant_id,id) values($1,$2)', [f.tenantId, session]);
+    await f.pg.query("insert into simulator_messages(tenant_id,session_id,from_me,body,created_at) values($1,$2,false,'old',$3),($1,$2,true,'new',$4)",
+      [f.tenantId, session, '2026-09-20T00:00:00Z', '2026-09-23T00:00:00Z']);
+    assert.equal(await purgeExpiredSimulatorMessages(f.db, f.tenantId, 48, new Date('2026-09-23T12:00:00Z')), 1);
+    const remaining = await f.pg.query<{ body: string }>('select body from simulator_messages where tenant_id=$1', [f.tenantId]);
+    assert.deepEqual(remaining.rows.map(row => row.body), ['new']);
+  } finally { await f.close(); }
+});
+
+test('two-turn WhatsApp and simulator replies are byte-for-byte equivalent', async () => {
+  const f = await fixture();
+  try {
+    const sent: string[] = [];
+    const provider: WhatsAppProvider = {
+      async sendMessage(input) { sent.push(input.text); return { id: `sent-${sent.length}` }; },
+      async getSessionStatus() { return { status: 'WORKING' }; },
+    };
+    const ai: AIProvider = { async generateReply(input) {
+      if (input.systemPrompt.includes('классификатор')) return { text: '{"agent":"SALE","confidence":0.1}' };
+      return { text: 'Я ассистент владельца. Расскажите подробнее об услуге.' };
+    } };
+    const session = crypto.randomUUID();
+    for (const text of ['Здравствуйте, помогите выбрать услугу', 'Мне нужна консультация']) {
+      await handleWebhookEvent(f.tenantId, { event: 'message', payload: { from: '972500000001@c.us', fromMe: false,
+        hasMedia: false, body: text, author: null, replyTo: null, _data: { Info: { PushName: 'Тест' } } } }, f.db, provider, ai);
+      const simulation = await simulateCustomerMessage(f.db, f.tenantId, session, text, ai, { root: f.root });
+      assert.equal(simulation.reply, sent.at(-1));
+    }
+    assert.doesNotMatch(sent[1] ?? '', /^Я ассистент владельца\./);
+  } finally { await f.close(); }
+});
+
+test('agent answer uses knowledge and records only simulated model usage', async () => {
+  const f = await fixture();
+  try {
+    await f.pg.query("insert into knowledge_items(tenant_id,type,question,answer,active) values($1,'faq','Какие услуги?','Консультация.',true)", [f.tenantId]);
+    const ai: AIProvider = { async generateReply(input) {
+      return { text: input.systemPrompt.includes('классификатор') ? '{"agent":"SALE","confidence":0.99}' : 'Мы предлагаем консультацию.' };
+    } };
+    const result = await simulateCustomerMessage(f.db, f.tenantId, crypto.randomUUID(), 'Расскажите об услугах', ai, { root: f.root });
+    assert.equal(result.outcome, 'answered');
+    assert.equal(result.reply, 'Мы предлагаем консультацию.');
+    const usage = await f.pg.query<{ metadata: { simulation?: boolean } }>('select metadata from usage_events where tenant_id=$1 and event_type=$2', [f.tenantId, 'model_call']);
+    assert.ok(usage.rows.length > 0);
+    assert.ok(usage.rows.every(row => row.metadata.simulation === true));
+  } finally { await f.close(); }
+});
+
+test('reception ESCALATE_OWNER and missing knowledge return the client waiting text', async () => {
+  const f = await fixture();
+  try {
+    const receptionAI: AIProvider = { async generateReply(input) {
+      return { text: input.systemPrompt.includes('классификатор') ? '{"agent":"SALE","confidence":0.1}' : 'ESCALATE_OWNER' };
+    } };
+    const reception = await simulateCustomerMessage(f.db, f.tenantId, crypto.randomUUID(), 'Хочу поговорить с владельцем', receptionAI, { root: f.root });
+    assert.equal(reception.outcome, 'escalated');
+    assert.ok(reception.reply);
+    assert.notEqual(reception.reply, 'ESCALATE_OWNER');
+    const agentAI: AIProvider = { async generateReply() { return { text: '{"agent":"SALE","confidence":0.99}' }; } };
+    const missing = await simulateCustomerMessage(f.db, f.tenantId, crypto.randomUUID(), 'Какая цена услуги?', agentAI, { root: f.root });
+    assert.equal(missing.outcome, 'escalated');
+    assert.equal(missing.reply, reception.reply);
+  } finally { await f.close(); }
+});
+
+test('escalation preview matches the actual WhatsApp customer message', async () => {
+  const f = await fixture();
+  try {
+    const customer = '972500000001@c.us';
+    const sent: Array<{ chatId: string; text: string }> = [];
+    const provider: WhatsAppProvider = {
+      async sendMessage(input) { sent.push({ chatId: input.chatId, text: input.text }); return { id: `sent-${sent.length}` }; },
+      async getSessionStatus() { return { status: 'WORKING', me: { id: '972500000003@c.us' } }; },
+    };
+    const ai: AIProvider = { async generateReply(input) {
+      return { text: input.systemPrompt.includes('классификатор') ? '{"agent":"SALE","confidence":0.1}' : 'ESCALATE_OWNER' };
+    } };
+    const question = 'Мне нужен ответ владельца';
+    await handleWebhookEvent(f.tenantId, { event: 'message', payload: { from: customer, fromMe: false,
+      hasMedia: false, body: question, author: null, replyTo: null, _data: { Info: { PushName: 'Тест' } } } }, f.db, provider, ai);
+    const simulation = await simulateCustomerMessage(f.db, f.tenantId, crypto.randomUUID(), question, ai, { root: f.root });
+    assert.equal(simulation.outcome, 'escalated');
+    assert.equal(simulation.reply, sent.find(message => message.chatId === customer)?.text);
+  } finally { await f.close(); }
+});
+
+test('quiet hours and client timezone command use the live reply rules', async () => {
+  const f = await fixture();
+  try {
+    await f.pg.query("update notification_settings set quiet_hours_start='22:00',quiet_hours_end='06:00' where tenant_id=$1", [f.tenantId]);
+    const now = new Date('2026-09-23T21:00:00Z');
+    const ai: AIProvider = { async generateReply(input) {
+      return { text: input.systemPrompt.includes('классификатор') ? '{"agent":"SALE","confidence":0.1}' : 'ESCALATE_OWNER' };
+    } };
+    const quiet = await simulateCustomerMessage(f.db, f.tenantId, crypto.randomUUID(), 'Нужна помощь', ai, { root: f.root, now });
+    assert.equal(quiet.outcome, 'escalated');
+    assert.equal(quiet.quietHours?.active, true);
+    assert.ok(quiet.quietHours?.until);
+    const agentAI: AIProvider = { async generateReply() { return { text: '{"agent":"SALE","confidence":0.99}' }; } };
+    const zone = await simulateCustomerMessage(f.db, f.tenantId, crypto.randomUUID(), 'часовой пояс UTC+3', agentAI, { root: f.root, now });
+    assert.equal(zone.outcome, 'answered');
+    assert.match(zone.reply ?? '', /UTC\+3/);
+  } finally { await f.close(); }
+});
+
+test('exhausted customer quota is previewed without charging a simulator call to it', async () => {
+  const f = await fixture();
+  try {
+    const before = await f.pg.query<{ n: number }>('select count(*)::int n from tenant_monthly_usage where tenant_id=$1', [f.tenantId]);
+    const now = new Date();
+    const month = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-01`;
+    await f.pg.query("update tenant_usage_limits set messages_per_month=1,messages_overridden=true where tenant_id=$1", [f.tenantId]);
+    await f.pg.query("insert into tenant_monthly_usage(tenant_id,month,time_zone,messages_used) values($1,$2,'Asia/Jerusalem',1)", [f.tenantId, month]);
+    const result = await simulateCustomerMessage(f.db, f.tenantId, crypto.randomUUID(), 'Привет', null, { root: f.root, now });
+    assert.equal(result.outcome, 'limit');
+    assert.ok(result.reply);
+    const after = await f.pg.query<{ n: number; messages_used: number }>('select count(*)::int n,max(messages_used)::int messages_used from tenant_monthly_usage where tenant_id=$1', [f.tenantId]);
+    assert.equal(after.rows[0]!.n, before.rows[0]!.n + 1);
+    assert.equal(after.rows[0]!.messages_used, 1);
+  } finally { await f.close(); }
+});
+
+test('simulator hourly and daily limits remain independent of customer quota', async () => {
+  const f = await fixture();
+  try {
+    await f.pg.query("update notification_settings set behavior=behavior||'{\"simulator_hourly_limit\":1,\"simulator_daily_limit\":2}'::jsonb where tenant_id=$1", [f.tenantId]);
+    await f.pg.query("insert into knowledge_items(tenant_id,type,question,answer,active) values($1,'faq','Время?','С 9 до 18.',true)", [f.tenantId]);
+    const session = crypto.randomUUID();
+    const run = (time: string) => simulateCustomerMessage(f.db, f.tenantId, session, 'Время?', null, { root: f.root, now: new Date(time) });
+    await run('2026-09-23T10:00:00Z');
+    await assert.rejects(run('2026-09-23T10:10:00Z'), /hourly/);
+    await run('2026-09-23T11:00:00Z');
+    await assert.rejects(run('2026-09-23T12:00:00Z'), /daily/);
+    const usage = await f.pg.query<{ n: number }>('select count(*)::int n from tenant_monthly_usage where tenant_id=$1', [f.tenantId]);
+    assert.equal(usage.rows[0]!.n, 0);
+  } finally { await f.close(); }
+});
