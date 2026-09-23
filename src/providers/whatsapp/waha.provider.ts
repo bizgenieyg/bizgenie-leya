@@ -197,11 +197,11 @@ function normalizeGroup(value: unknown): WhatsAppGroup[] {
   if (!isRecord(value)) return [];
   const id = firstString(value.id, value.JID, value.jid);
   if (!id) return [];
-  const name = firstString(value.subject, value.Name, value.name) || id.split("@")[0] || id;
+  const name = firstString(value.subject, value.Name, value.name) || "Без названия";
   const participants = value.participants ?? value.Participants;
   const explicitCount = value.size ?? value.ParticipantCount ?? value.participantsCount;
-  const participantsCount = typeof explicitCount === "number" && Number.isFinite(explicitCount)
-    ? Math.max(0, Math.trunc(explicitCount))
+  const participantsCount = typeof explicitCount === "number" && Number.isFinite(explicitCount) && explicitCount > 0
+    ? Math.trunc(explicitCount)
     : Array.isArray(participants) ? participants.length : 0;
   const rawActivity = value.lastActivityAt ?? value.lastMessageAt ?? value.timestamp;
   const lastActivityAt = normalizeTimestamp(rawActivity);

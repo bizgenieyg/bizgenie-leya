@@ -140,6 +140,7 @@ test("group list uses the GOWS endpoint and normalizes current response shapes",
     return Response.json([
       { JID: "1203631@g.us", Name: "Pilot team", ParticipantCount: 12 },
       { id: "1203632@g.us", subject: "Sales", participants: [{ id: "1" }, { id: "2" }], timestamp: 1_700_000_000 },
+      { JID: "1203633@g.us", Name: "", ParticipantCount: 0, Participants: [{ id: "1" }, { id: "2" }, { id: "3" }] },
     ]);
   };
   try {
@@ -148,6 +149,7 @@ test("group list uses the GOWS endpoint and normalizes current response shapes",
     assert.deepEqual(groups, [
       { id: "1203631@g.us", name: "Pilot team", participantsCount: 12 },
       { id: "1203632@g.us", name: "Sales", participantsCount: 2, lastActivityAt: "2023-11-14T22:13:20.000Z" },
+      { id: "1203633@g.us", name: "Без названия", participantsCount: 3 },
     ]);
   } finally { globalThis.fetch = originalFetch; }
 });
