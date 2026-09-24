@@ -3,6 +3,7 @@ import { supabase, type DatabaseClient } from "../db/supabase.js";
 import { createWhatsAppProvider, type WhatsAppProvider } from "../providers/whatsapp/index.js";
 import { HttpError } from "../utils/http-error.js";
 import { enqueueMessage } from '../workers/outbound-queue.js';
+import { sendPlatformAlert, safeAlertLabel, redactPhoneNumbers } from './platform-alerts.service.js';
 
 export async function submitPlatformFeedback(
   tenantId: string,
@@ -13,6 +14,13 @@ export async function submitPlatformFeedback(
 ): Promise<{ saved: true }> {
   const { error } = await db.from("platform_feedback").insert({ tenant_id: tenantId, message });
   if (error) throw new HttpError(500, "Could not save feedback");
+
+  // Telegram and WhatsApp are independent delivery channels. Every review is sent.
+  try {
+    const tenant = await db.from('tenants').select('business_name,name').eq('id', tenantId).maybeSingle();
+    const businessName = safeAlertLabel(tenant.data?.business_name ?? tenant.data?.name ?? tenantId);
+    await sendPlatformAlert('feedback', `Отзыв от ${businessName} (${tenantId}): ${redactPhoneNumbers(message).slice(0, 3500)}`, tenantId, { every: true });
+  } catch { console.error('platform_feedback_telegram_failed', { tenantId }); }
 
   try {
     if (!ownerChatId || !/^\d{8,15}@c\.us$/.test(ownerChatId)) {

@@ -34,6 +34,8 @@ export const env = Object.freeze({
   publicBaseUrl: leyaEnvironment.apiUrl ?? process.env.PUBLIC_BASE_URL,
   credentialEncryptionKey: process.env.CREDENTIAL_ENCRYPTION_KEY,
   platformOwnerWhatsAppNumber: process.env.PLATFORM_OWNER_WHATSAPP_NUMBER,
+  telegramAlertBotToken: process.env.TELEGRAM_ALERT_BOT_TOKEN,
+  telegramAlertChatId: process.env.TELEGRAM_ALERT_CHAT_ID,
 });
 
 export function requireSupabaseEnv(): {

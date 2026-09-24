@@ -1,4 +1,5 @@
 import { SessionNotFoundError } from "../providers/whatsapp/whatsapp-provider.interface.js";
+import { updateSessionStatus } from './session-status.service.js';
 import { randomBytes } from "node:crypto";
 import { decryptCredential, encryptCredential } from "../utils/crypto.js";
 import { requireEnv } from "../config/env.js";
@@ -288,11 +289,7 @@ export class WahaAdminService {
   }
 
   private async updateInstanceStatus(tenantId: string, status: string): Promise<void> {
-    const { error } = await this.db
-      .from("whatsapp_instances")
-      .update({ status })
-      .eq("tenant_id", tenantId);
-    if (error) throw new HttpError(500, "Could not update WhatsApp session");
+    await updateSessionStatus(this.db, tenantId, status);
     if(status === 'WORKING' && !this.summarySeeded.has(tenantId)){
       try{
         const {loadOwnerSettings}=await import('./owner-settings.service.js');

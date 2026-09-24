@@ -27,8 +27,8 @@ test("create persists the matching encrypted secret before WAHA starts; reconnec
       const query = {
         select() { return query; },
         eq(column: string, value: string) {
-          assert.equal(value, tenantId);
-          assert.ok(column === "id" || column === "tenant_id");
+          if (column === 'status') assert.equal(value, row?.status);
+          else { assert.equal(value, tenantId); assert.ok(column === "id" || column === "tenant_id"); }
           return query;
         },
         is(column: string, value: null) {
@@ -42,7 +42,7 @@ test("create persists the matching encrypted secret before WAHA starts; reconnec
           if (!failWrites) row ??= { ...values };
           return { error: failWrites ? {} : null };
         },
-        async maybeSingle() { return { data: table === "tenants" ? { id: tenantId } : row, error: null }; },
+        async maybeSingle() { if (patch && row) Object.assign(row, patch); return { data: table === "tenants" ? { id: tenantId } : row, error: null }; },
         async single() { return { data: row, error: null }; },
         then(resolve: (value: unknown) => unknown) {
           if (patch && row && (!onlyNull || row.webhook_secret_encrypted == null)) Object.assign(row, patch);
@@ -133,8 +133,8 @@ function makeInstanceDb(tenantId: string) {
       const query = {
         select() { return query; },
         eq(column: string, value: string) {
-          assert.equal(value, tenantId);
-          assert.ok(column === "id" || column === "tenant_id");
+          if (column === 'status') assert.equal(value, row.status);
+          else { assert.equal(value, tenantId); assert.ok(column === "id" || column === "tenant_id"); }
           return query;
         },
         is(column: string, value: null) {
@@ -147,7 +147,7 @@ function makeInstanceDb(tenantId: string) {
           if (table === "whatsapp_instances") Object.assign(row, values);
           return { error: null };
         },
-        async maybeSingle() { return { data: table === "tenants" ? { id: tenantId } : { ...row }, error: null }; },
+        async maybeSingle() { if (patch) Object.assign(row, patch); return { data: table === "tenants" ? { id: tenantId } : { ...row }, error: null }; },
         async single() { return { data: { ...row }, error: null }; },
         then(resolve: (value: unknown) => unknown) {
           if (patch && (!onlyNull || row.webhook_secret_encrypted == null)) Object.assign(row, patch);

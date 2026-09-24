@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { supabase, type DatabaseClient } from '../db/supabase.js';
 import { filterIncoming, logRejectedIncoming } from '../utils/incoming-policy.js';
 import { voiceUsage } from '../services/voice-usage.service.js';
@@ -8,6 +8,7 @@ import { observeOwnerOutgoing } from '../services/outgoing-owner.service.js';
 import { createWhatsAppProvider } from '../providers/whatsapp/index.js';
 import { getTenantRouting } from '../services/tenant.service.js';
 import { handleVoiceUsage } from '../services/voice-usage.service.js';
+import { sessionStatusFromWebhook, updateSessionStatus } from '../services/session-status.service.js';
 
 export interface InboundRow {
   id: string; tenant_id: string; waha_event_id: string; chat_id: string;
@@ -27,6 +28,13 @@ export function wakeInbound(at: Date): void { activeProcessor?.wake(at); }
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 export function inboundEventId(body: Record<string, unknown>): string {
   const payload = record(body.payload);
+  if (body.event === 'session.status') {
+    const status = typeof payload.status === 'string' ? payload.status : String(body.status ?? '');
+    const stamp = typeof body.id === 'string' && body.id !== payload.id ? body.id
+      : typeof body.timestamp === 'number' || typeof body.timestamp === 'string' ? String(body.timestamp) : randomUUID();
+    // A session ID is stable across transitions, unlike a message ID.
+    return createHash('sha256').update(`${String(body.session ?? '')}:${status}:${stamp}`).digest('hex');
+  }
   const raw = payload.id ?? body.id;
   if (typeof raw === 'string' && raw) return raw;
   // Non-message events need a stable value across WAHA retries too.
@@ -61,6 +69,8 @@ export async function enqueueInbound(db: DatabaseClient, tenantId: string, body:
 
 async function processRows(db: DatabaseClient, rows: InboundRow[]): Promise<void> {
   const first = rows[0]!;
+  const sessionStatus = sessionStatusFromWebhook(first.payload);
+  if (sessionStatus) { await updateSessionStatus(db, first.tenant_id, sessionStatus); return; }
   const decision = filterIncoming(first.payload);
   if (decision.allowed || voiceUsage(first.payload)) {
     const messages: Record<string, unknown>[] = [];
