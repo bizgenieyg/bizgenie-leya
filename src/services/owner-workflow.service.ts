@@ -5,7 +5,8 @@ import { renderText } from "./templates.service.js";
 import { languageOf } from "./templates.service.js";
 import { enqueueMessage, type OutboundKind } from '../workers/outbound-queue.js';
 import type { AIProvider } from "../providers/ai/ai-provider.interface.js";
-import { translateOwnerAnswer } from "./ai-fallback.service.js";
+import { polishOwnerAnswer, translateOwnerAnswer } from "./ai-fallback.service.js";
+import { loadContext } from "./context.service.js";
 import type { DatabaseClient } from '../db/supabase.js';
 import type { WhatsAppProvider } from '../providers/whatsapp/whatsapp-provider.interface.js';
 import { allowedRecipient, ownerIdentityField, readSessionIdentity } from '../utils/incoming-policy.js';
@@ -40,6 +41,17 @@ async function sendClient(db:DatabaseClient,provider:WhatsAppProvider,e:Escalati
  const c=await db.from('conversations').select('assistant_introduced_at').eq('tenant_id',e.tenant_id).eq('id',e.conversation_id).maybeSingle();check(c.error);
  const id=await send(db,e.tenant_id,provider,e.session,e.client_chat_id,withoutRepeatedIntroduction(text,!!c.data?.assistant_introduced_at),kind,dedupeKey,inboundMessageIds);
  const marked=await db.from('conversations').update({assistant_introduced_at:new Date().toISOString()}).eq('tenant_id',e.tenant_id).eq('id',e.conversation_id).is('assistant_introduced_at',null);check(marked.error);return id;
+}
+/** The exact client text for an owner answer; shared by real delivery and the simulator. */
+export async function composeOwnerAnswer(db:DatabaseClient,tenantId:string,input:{question:string;answer:string;language:string;introduced:boolean},settings:OwnerSettings,ai?:AIProvider|null):Promise<string> {
+  if(behavior(settings).polish_owner_answer&&ai){
+    let context=null;
+    try{context=await loadContext(db,tenantId);}catch{console.warn('owner_answer_polish_context_unavailable');}
+    const polished=context?await polishOwnerAnswer(input.question,input.answer,context,input.language,ai,input.introduced):null;
+    if(polished)return withoutRepeatedIntroduction(polished,input.introduced);
+  }
+  const translated=(settings.translate_owner_answer ?? BEHAVIOR_DEFAULTS.translate_owner_answer) ? await translateOwnerAnswer(input.language,input.answer,ai) : input.answer;
+  return withoutRepeatedIntroduction(ownerAnswerText(input.question,translated,settings,input.language),input.introduced);
 }
 export async function conversationPaused(db:DatabaseClient,tenantId:string,conversationId:string,settings?:OwnerSettings,now=new Date()):Promise<boolean> {
   const {data,error}=await db.from('conversations').select('bot_paused,owner_last_activity_at').eq('tenant_id',tenantId).eq('id',conversationId).maybeSingle();check(error);
@@ -206,7 +218,8 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
   await patch(db,e,{answer});
   try {
     const responseLanguage=e.response_language??languageOf(e.question);
-    const id=await sendClient(db,provider,e,ownerAnswerText(e.question,(settings.translate_owner_answer ?? BEHAVIOR_DEFAULTS.translate_owner_answer) ? await translateOwnerAnswer(responseLanguage,answer,ai) : answer,settings,responseLanguage),'owner_answer_delivery',inboundMessageId?[inboundMessageId]:[],`escalation:${e.id}:answer`);
+    const c=await db.from('conversations').select('assistant_introduced_at').eq('tenant_id',tenantId).eq('id',e.conversation_id).maybeSingle();check(c.error);
+    const id=await sendClient(db,provider,e,await composeOwnerAnswer(db,tenantId,{question:e.question,answer,language:responseLanguage,introduced:!!c.data?.assistant_introduced_at},settings,ai),'owner_answer_delivery',inboundMessageId?[inboundMessageId]:[],`escalation:${e.id}:answer`);
     await patch(db,e,{status:'delivered',client_message_id:id,delivered_at:new Date().toISOString()});
     await cancelEscalationTimeout(db,e);
     const route=await db.from('conversations').update({routed_agent:null,route_selected_at:null}).eq('tenant_id',tenantId).eq('id',e.conversation_id);check(route.error);

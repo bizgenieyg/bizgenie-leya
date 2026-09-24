@@ -362,7 +362,7 @@ test('owner answer translation preserves original for learning and falls back sa
 test('owner translation is opt-in: disabled makes zero model calls', async () => {
   for (const enabled of [false, true]) {
     const h = await pgHarness();
-    const settings = { ...h.settings, translate_owner_answer: enabled };
+    const settings = { ...h.settings, translate_owner_answer: enabled, behavior: { polish_owner_answer: false } };
     const input = { tenant_id: h.tenant, conversation_id: h.conversationId, client_chat_id: customer, client_name: 'Тестовый клиент', question: 'Можно завтра?', session: 'session', inbound_id: 'incoming' };
     await createEscalation(h.db, h.provider, input, settings);
     const e = await h.escalation((await h.pg.query<{ id: string }>('select id from escalations limit 1')).rows[0]!.id);
@@ -448,4 +448,67 @@ test('voice opt-out exits before download, STT, admission or client response', a
   assert.equal(downloads, 0); assert.equal(transcriptions, 0); assert.equal(await h.admissions(), 0); assert.equal(h.sent.length, 0);
   const first = (await h.pg.query<{ metadata: { reason: string } }>('select metadata from usage_events limit 1')).rows[0]!;
   assert.equal(first.metadata.reason, 'client_opt_out');
+});
+
+async function ownerAnswerRun(settings: Partial<OwnerSettings>, question: string, answer: string, ai: Parameters<typeof handleOwnerMessage>[8]) {
+  const h = await pgHarness();
+  await h.pg.query("insert into knowledge_items(tenant_id,type,question,answer,active) values($1,'faq','Сколько стоит маникюр?','Маникюр 120 шекелей',true)", [h.tenant]);
+  const input = { tenant_id: h.tenant, conversation_id: h.conversationId, client_chat_id: customer, client_name: 'Клиент', question, session: 'session', inbound_id: 'incoming' };
+  await createEscalation(h.db, h.provider, input, { ...h.settings, ...settings });
+  const e = await h.escalation((await h.pg.query<{ id: string }>('select id from escalations limit 1')).rows[0]!.id);
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, answer, e.owner_message_ids[0]!, { ...h.settings, ...settings }, ai);
+  const delivered = await h.escalation(e.id);
+  return { h, delivered, text: h.sent.filter(m => m.chatId === customer).at(-1)!.text };
+}
+
+test('polish: terse yes/no becomes a finished reply with the same meaning and reaches delivery', async () => {
+  const seen: string[] = [];
+  const ai = { async generateReply(input: { systemPrompt: string; userMessage: string }) {
+    const data = JSON.parse(input.userMessage); seen.push(input.systemPrompt);
+    assert.equal(data.customerQuestion, 'Можно в субботу?');
+    assert.deepEqual(data.knowledge, [{ question: 'Сколько стоит маникюр?', answer: 'Маникюр 120 шекелей' }]);
+    return { text: data.ownerAnswer === 'да' ? 'Да, в субботу можно.' : 'К сожалению, в субботу нельзя.' };
+  } };
+  const yes = await ownerAnswerRun({}, 'Можно в субботу?', 'да', ai);
+  assert.equal(yes.delivered.status, 'delivered'); assert.equal(yes.delivered.answer, 'да');
+  assert.equal(yes.text, 'Да, в субботу можно.');
+  const no = await ownerAnswerRun({}, 'Можно в субботу?', 'нет', ai);
+  assert.equal(no.text, 'К сожалению, в субботу нельзя.');
+  assert.match(seen[0]!, /язык ответа: ru/i);
+});
+
+test('polish: invented price or flipped meaning falls back to the owner text', async () => {
+  const price = await ownerAnswerRun({}, 'Можно в субботу?', 'да', { async generateReply() { return { text: 'Да, в субботу можно, стоимость 200 шекелей.' }; } });
+  assert.match(price.text, /Передаю ответ владельца/); assert.match(price.text, /«да»/);
+  const known = await ownerAnswerRun({}, 'Сколько стоит маникюр?', 'как в прайсе', { async generateReply() { return { text: 'Маникюр стоит 120 шекелей.' }; } });
+  assert.equal(known.text, 'Маникюр стоит 120 шекелей.');
+  const flipped = await ownerAnswerRun({}, 'Можно в субботу?', 'нет', { async generateReply() { return { text: 'Да, приходите в субботу.' }; } });
+  assert.match(flipped.text, /«нет»/);
+});
+
+test('polish: unavailable model and disabled setting keep the current owner text', async () => {
+  const down = await ownerAnswerRun({}, 'Можно в субботу?', 'да', { async generateReply() { throw new Error('down'); } });
+  assert.equal(down.delivered.status, 'delivered'); assert.match(down.text, /Передаю ответ владельца:\s+«да»/);
+  let calls = 0;
+  const off = await ownerAnswerRun({ behavior: { polish_owner_answer: false } }, 'Можно в субботу?', 'да', { async generateReply() { calls++; return { text: 'Да, можно.' }; } });
+  assert.equal(calls, 0); assert.match(off.text, /«да»/);
+});
+
+test('polish: simulator returns exactly the text real delivery sends for the same input', async () => {
+  const { simulateOwnerAnswer } = await import('./simulator.service.js');
+  const { mkdtemp, rm } = await import('node:fs/promises'); const { tmpdir } = await import('node:os'); const { join } = await import('node:path');
+  const ai = { async generateReply(input: { userMessage: string }) { return { text: JSON.parse(input.userMessage).ownerAnswer === 'да' ? 'Да, в субботу можно.' : 'Уточню.' }; } };
+  const real = await ownerAnswerRun({}, 'Можно в субботу?', 'да', ai);
+  const session = randomUUID(), root = await mkdtemp(join(tmpdir(), 'leya-owner-sim-'));
+  try {
+    await real.h.pg.query('insert into simulator_sessions(tenant_id,id,introduced) values($1,$2,true)', [real.h.tenant, session]);
+    await real.h.pg.query('insert into simulator_messages(tenant_id,session_id,from_me,body) values($1,$2,false,$3)', [real.h.tenant, session, 'Можно в субботу?']);
+    const simulated = await simulateOwnerAnswer(real.h.db, real.h.tenant, session, 'да', ai, { root });
+    assert.equal(simulated.reply, real.text);
+    const saved = await real.h.pg.query<{ body: string }>('select body from simulator_messages where session_id=$1 and from_me order by sequence desc limit 1', [session]);
+    assert.equal(saved.rows[0]!.body, real.text);
+    const events = await real.h.pg.query<{ n: number }>("select count(*)::int n from usage_events where tenant_id=$1 and event_type='model_call' and metadata->>'purpose'='simulator_owner_answer'", [real.h.tenant]);
+    assert.equal(events.rows[0]!.n, 1);
+    await assert.rejects(simulateOwnerAnswer(real.h.db, real.h.tenant, randomUUID(), 'да', ai, { root }), (e: { status?: number }) => e.status === 409);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

@@ -10,7 +10,8 @@ import { meterAI } from './metered-providers.js';
 import { recordUsageEvent, usageAllowsMessage } from './usage.service.js';
 import { reserveSimulatorCall } from './simulator-rate-limit.js';
 import { processCustomerMessage, type PipelineResult, type PipelineSink } from './message-pipeline.service.js';
-import { escalationWaitingMessage } from './owner-workflow.service.js';
+import { composeOwnerAnswer, escalationWaitingMessage } from './owner-workflow.service.js';
+import { languageOf } from './templates.service.js';
 import { withoutRepeatedIntroduction } from '../utils/assistant-text.js';
 import { HttpError } from '../utils/http-error.js';
 import { allowedRecipient } from '../utils/incoming-policy.js';
@@ -104,4 +105,32 @@ export async function simulateCustomerMessage(db: DatabaseClient, tenantId: stri
     .eq('tenant_id', tenantId).eq('id', sessionId);
   if (updated.error) throw new HttpError(500, 'Could not save simulator session');
   return { ...response, reply: sentReply ?? response.reply };
+}
+
+/** Owner answers the last simulated customer question; returns exactly what the client would get. */
+export async function simulateOwnerAnswer(db: DatabaseClient, tenantId: string, sessionId: string, answer: string,
+  ai: AIProvider | null = createAIProvider(), limitOptions?: { now?: Date; root?: string }): Promise<{ reply: string }> {
+  const settings = await loadOwnerSettings(db, tenantId);
+  const config = behavior(settings);
+  const now = limitOptions?.now ?? new Date();
+  const session = await db.from('simulator_sessions').select('introduced').eq('tenant_id', tenantId).eq('id', sessionId).maybeSingle();
+  if (session.error) throw new HttpError(500, 'Could not load simulator session');
+  const question = await db.from('simulator_messages').select('body').eq('tenant_id', tenantId).eq('session_id', sessionId)
+    .eq('from_me', false).order('sequence', { ascending: false }).limit(1).maybeSingle();
+  if (question.error) throw new HttpError(500, 'Could not load simulator history');
+  if (!session.data || !question.data) throw new HttpError(409, 'No simulated question to answer', { code: 'simulator_no_question' });
+  const reservation = await reserveSimulatorCall(tenantId, config.simulator_hourly_limit, config.simulator_daily_limit, now, limitOptions?.root);
+  if (!reservation.allowed) throw new HttpError(429, reservation.period === 'hour' ? 'Simulator hourly limit reached' : 'Simulator daily limit reached',
+    { code: reservation.period === 'hour' ? 'simulator_hourly_limit' : 'simulator_daily_limit' });
+  const text = String(question.data.body);
+  const model = meterAI(db, tenantId, ai, { simulation: true, purpose: 'simulator_owner_answer' });
+  const reply = await composeOwnerAnswer(db, tenantId, { question: text, answer, language: languageOf(text),
+    introduced: session.data.introduced === true }, settings, model);
+  const saved = await db.from('simulator_messages').insert({ tenant_id: tenantId, session_id: sessionId,
+    from_me: true, body: reply, created_at: now.toISOString() });
+  if (saved.error) throw new HttpError(500, 'Could not save simulator reply');
+  const updated = await db.from('simulator_sessions').update({ introduced: true, updated_at: now.toISOString() })
+    .eq('tenant_id', tenantId).eq('id', sessionId);
+  if (updated.error) throw new HttpError(500, 'Could not save simulator session');
+  return { reply };
 }
