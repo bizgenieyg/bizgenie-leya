@@ -15,7 +15,8 @@ export async function fetchChatHistory(provider: WhatsAppProvider, session: stri
   try { rows = await provider.getChatMessages(session, chatId, { limit: options.limit, timeoutMs: options.timeoutSeconds * 1000 }); }
   catch { console.warn('chat_history_unavailable'); return []; }
   const excluded = new Set(excludeIds.map(replyId));
-  const texts = rows.filter(row => row.body.trim() && !excluded.has(replyId(row.id)))
+  // Text only: media is excluded even when it carries a caption.
+  const texts = rows.filter(row => !row.hasMedia && row.body.trim() && !excluded.has(replyId(row.id)))
     .sort((a, b) => a.timestamp - b.timestamp);
   const kept: ConversationMemory[] = [];
   let used = 0;

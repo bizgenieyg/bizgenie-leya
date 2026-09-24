@@ -3,7 +3,7 @@ import test from 'node:test';
 import type { WhatsAppProvider } from '../providers/whatsapp/whatsapp-provider.interface.js';
 import { createTestDatabase, pgliteDatabaseClient } from './test-support/pglite-harness.js';
 import { submitPlatformFeedback } from './platform-feedback.service.js';
-import { stopOutboundQueue } from '../workers/outbound-queue.js';
+import { settleAllOutboundQueues, stopOutboundQueue } from '../workers/outbound-queue.js';
 
 async function fixture() {
   const pg = await createTestDatabase();
@@ -25,7 +25,7 @@ test('feedback is persisted before its WhatsApp notification enters the outbound
         return { id: 'feedback-sent' };
       },
     };
-    assert.deepEqual(await submitPlatformFeedback(h.tenantId, 'Очень удобно', h.db, provider, '972500000001@c.us'), { saved: true });
+    assert.deepEqual(await submitPlatformFeedback(h.tenantId, 'Очень удобно', h.db, provider, '972500000001@c.us'), { saved: true }); await settleAllOutboundQueues();
     assert.equal(calls.length, 1);
     const feedback = await h.pg.query<{ count: string }>('select count(*)::text count from platform_feedback where tenant_id=$1', [h.tenantId]);
     assert.equal(feedback.rows[0]!.count, '1');
@@ -41,7 +41,7 @@ test('notification failure does not lose saved feedback', async () => {
     const provider: WhatsAppProvider = { async getSessionStatus() { return { status: 'WORKING' }; },
       async sendMessage() { attempts++; throw new Error('offline'); } };
     const originalError = console.error; console.error = () => {};
-    try { assert.deepEqual(await submitPlatformFeedback(h.tenantId, 'Saved', h.db, provider, '972500000001@c.us'), { saved: true }); }
+    try { assert.deepEqual(await submitPlatformFeedback(h.tenantId, 'Saved', h.db, provider, '972500000001@c.us'), { saved: true }); await settleAllOutboundQueues(); }
     finally { console.error = originalError; }
     const saved = await h.pg.query<{ count: string }>('select count(*)::text count from platform_feedback where tenant_id=$1', [h.tenantId]);
     assert.equal(saved.rows[0]!.count, '1');

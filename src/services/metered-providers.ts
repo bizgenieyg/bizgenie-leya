@@ -4,15 +4,24 @@ import type { AIProvider } from '../providers/ai/ai-provider.interface.js';
 import type { DatabaseClient } from '../db/supabase.js';
 import { recordUsageEvent } from './usage.service.js';
 const tenantMeter=Symbol('tenant-meter');
+const meterSource=Symbol('meter-source');
+type Metered=AIProvider&{[tenantMeter]?:string;[meterSource]?:{provider:AIProvider;metadata:Record<string,unknown>}};
+/** Re-metering an already metered provider with new metadata (e.g. a purpose) wraps the raw provider once, never twice. */
 export function meterAI(db:DatabaseClient,tenantId:string,provider:AIProvider|null,metadata:Record<string,unknown>={}):AIProvider|null {
   if(!provider)return null;
-  if((provider as AIProvider & {[tenantMeter]?:string})[tenantMeter]===tenantId)return provider;
-  return { [tenantMeter]:tenantId, async generateReply(input){
+  const existing=provider as Metered;
+  if(existing[tenantMeter]===tenantId){
+    if(!Object.keys(metadata).length)return provider;
+    const source=existing[meterSource]!;
+    return meterAI(db,tenantId,source.provider,{...source.metadata,...metadata});
+  }
+  const wrapped:Metered={ [tenantMeter]:tenantId, [meterSource]:{provider,metadata}, async generateReply(input){
     const eventKey=randomUUID();
     try{
       const result=await provider.generateReply(input);
       await recordUsageEvent(db,{tenantId,eventType:'model_call',eventKey,metadata:{...metadata,status:'success',...(result.usage??{})}});
       return result;
     }catch(error){await recordUsageEvent(db,{tenantId,eventType:'model_call',eventKey,metadata:{...metadata,status:'failed',...(error instanceof AIProviderError?error.usage??{}:{})}});throw error;}
-  }} as AIProvider;
+  }};
+  return wrapped;
 }

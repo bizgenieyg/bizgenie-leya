@@ -14,7 +14,7 @@ Express + TypeScript backend, Supabase migrations, Setup Layer, WAHA GOWS webhoo
 
 ## Out of scope
 
-Do not implement Booking, Payments, Email, History Scanner, CRM, Full Admin Dashboard, Google Calendar, Morning/GreenInvoice, Marketing campaigns, Voice/OCR, Billing automation, multi-staff routing (`tenant_staff`), mixed-line contact classification.
+Do not implement Booking, Payments, Email, History Scanner (bulk scan of chats to draft FAQ/profiles/classifications). Allowed by owner decision 2026-09-23: on first contact, read recent messages of that same chat from WAHA into model context only, not stored. Also out of scope: CRM, Google Calendar, Morning/GreenInvoice, Marketing campaigns, OCR, Billing automation, multi-staff routing (`tenant_staff`), mixed-line contact classification.
 
 ## Architecture rules
 

@@ -6,6 +6,7 @@ import { HttpError } from '../utils/http-error.js';
 import { DEFAULT_TIME_ZONE,SUPPORTED_TIME_ZONES,supportedTimeZone } from '../config/time-zones.js';
 import type { WeeklySchedule } from '../config/behavior.js';
 import { logSystemEvent } from './logging.service.js';
+import { invalidateTenantRouting } from './tenant.service.js';
 export function behavior(settings:OwnerSettings) {
  const stored=settings.behavior&&typeof settings.behavior==='object'&&!Array.isArray(settings.behavior)?settings.behavior:{};
  return Object.fromEntries(Object.entries(BEHAVIOR_DEFAULTS).map(([key,fallback])=>[key,stored[key]??fallback])) as typeof BEHAVIOR_DEFAULTS;
@@ -131,6 +132,7 @@ export async function saveRuntimeSettings(db:DatabaseClient,tenantId:string,inpu
   const sector=typeof business_sector==='string'?business_sector.trim():'';
   const result=await db.from('tenants').update({business_sector:sector||null}).eq('id',tenantId);
   if(result.error)throw new Error('Business sector save failed');
+  invalidateTenantRouting(db,tenantId);
  }
  if(['summary_frequency','summary_time','summary_weekday','time_zone'].some(key=>key in runtimeInput)){
   const {rescheduleOwnerSummary}=await import('./owner-summary.service.js');

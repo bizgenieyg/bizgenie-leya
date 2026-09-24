@@ -30,7 +30,10 @@ export interface PipelineSink {
   admit(): Promise<{ allowed: boolean; duplicate: boolean; unavailable?: boolean }>;
   afterAdmission(admission: { allowed: boolean; unavailable?: boolean }): Promise<void>;
   sendToClient(text: string): Promise<string | null>;
-  persistAssistantMessage(text: string, wahaId: string | null): Promise<void>;
+  /** `outboundId` is the queue row id; the sender stamps the WhatsApp id on the stored message later. */
+  persistAssistantMessage(text: string, outboundId: string | null): Promise<void>;
+  /** WhatsApp only, called after admission: prior chat history for a first contact. Never persisted. */
+  loadChatHistory?: (() => Promise<{ messages: ConversationMemory[]; introduced: boolean }>) | undefined;
   createEscalation(responseLanguage: string): Promise<string | null>;
   markIntroduced(): Promise<void>;
   recordUsage(eventType: string, options?: { eventKey?: string; metadata?: Record<string, unknown> }): Promise<void>;
@@ -59,6 +62,7 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
   const { db, tenantId, text, client, conversation, memory, settings, ai, model, usageKey, sink } = input;
   const now = input.now ?? new Date();
   const language = replyLanguage(text, client);
+  const firstInWindow = memory.messages.length === 1;
   const clientReply = (value: string) => withoutRepeatedIntroduction(value, memory.introduced);
   const pausedNote = sink.mode === 'simulation' && settings.auto_replies_paused ? true : undefined;
   const result = (reply: string | null, outcome: PipelineOutcome, quietHours?: { active: true; until: string }): PipelineResult =>
@@ -76,7 +80,7 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
     let routedAgent = exact.matched ? 'FAQ' : conversation.routed_agent;
     if (!exact.matched) {
       const classification: Record<string, unknown>[] = [];
-      const route = await routeConversation(db, tenantId, conversation, text, settings, ai, usage => classification.push(usage), memory.messages.length === 1);
+      const route = await routeConversation(db, tenantId, conversation, text, settings, ai, usage => classification.push(usage), firstInWindow);
       for (const metadata of classification) await agentContext.run({ agent: 'RECEPTION' }, () => sink.recordUsage('model_call', { eventKey: randomUUID(), metadata: { ...metadata, purpose: 'intent_classification', replies_paused: true } }));
       routedAgent = route.kind === 'agent' ? route.agent.name : 'RECEPTION';
     }
@@ -95,6 +99,12 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
     return result(reply, 'limit');
   }
 
+  const history = sink.loadChatHistory ? await sink.loadChatHistory() : null;
+  if (history?.messages.length) {
+    memory.messages = [...history.messages, ...memory.messages];
+    if (history.introduced && !memory.introduced) { await sink.markIntroduced(); memory.introduced = true; }
+  }
+
   const context = await loadContext(db, tenantId);
   const exact = findExactKnowledgeAnswer(text, context.knowledge);
   if (exact.matched) return agentContext.run({ agent: conversation.routed_agent ?? 'CORE' }, async () => {
@@ -111,10 +121,10 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
 
   context.materials = await findSemanticKnowledge(db, tenantId, text);
   const classification: Record<string, unknown>[] = [];
-  const route = await routeConversation(db, tenantId, conversation, text, settings, ai, usage => classification.push(usage), memory.messages.length === 1, sink.mode === 'whatsapp');
+  const route = await routeConversation(db, tenantId, conversation, text, settings, ai, usage => classification.push(usage), firstInWindow, sink.mode === 'whatsapp');
   for (const metadata of classification) await agentContext.run({ agent: 'RECEPTION' }, () => sink.recordUsage('model_call', { eventKey: randomUUID(), metadata: { ...metadata, purpose: 'intent_classification' } }));
   conversation.routed_agent = route.kind === 'agent' ? route.agent.name : 'RECEPTION';
-  if (sink.mode === 'simulation' && memory.messages.length === 1) conversation.source_label = entrySource(text);
+  if (sink.mode === 'simulation' && firstInWindow) conversation.source_label = entrySource(text);
   const escalate = async (): Promise<PipelineResult> => {
     const reply = await sink.createEscalation(language);
     await sink.recordUsage('escalation_created');

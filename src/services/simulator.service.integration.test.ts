@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AIProvider } from '../providers/ai/ai-provider.interface.js';
 import type { WhatsAppProvider } from '../providers/whatsapp/whatsapp-provider.interface.js';
-import { stopOutboundQueue } from '../workers/outbound-queue.js';
+import { settleOutboundQueue, stopOutboundQueue } from '../workers/outbound-queue.js';
 import { handleWebhookEvent } from '../workers/webhook.worker.js';
 import { createTestDatabase, pgliteDatabaseClient } from './test-support/pglite-harness.js';
 import { simulateCustomerMessage } from './simulator.service.js';
@@ -222,6 +222,7 @@ test('exhausted customer quota is previewed without charging a simulator call to
     };
     await handleWebhookEvent(f.tenantId, { event: 'message', payload: { from: '972500000001@c.us', fromMe: false,
       hasMedia: false, body: 'Привет', author: null, replyTo: null, _data: { Info: { PushName: 'Тест' } } } }, f.db, provider, null);
+    await settleOutboundQueue(f.db);
     assert.equal(result.reply, sent.at(-1));
     const after = await f.pg.query<{ n: number; messages_used: number }>('select count(*)::int n,max(messages_used)::int messages_used from tenant_monthly_usage where tenant_id=$1', [f.tenantId]);
     assert.equal(after.rows[0]!.n, before.rows[0]!.n + 1);

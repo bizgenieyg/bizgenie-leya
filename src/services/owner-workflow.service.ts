@@ -3,10 +3,11 @@ import { behavior } from './runtime-settings.service.js';
 import { activeElapsedMs } from './escalation.service.js';
 import { renderText } from "./templates.service.js";
 import { languageOf } from "./templates.service.js";
-import { enqueueMessage, type OutboundKind } from '../workers/outbound-queue.js';
+import { enqueueMessage, outboundIdsForProviderId, type OutboundKind } from '../workers/outbound-queue.js';
 import type { AIProvider } from "../providers/ai/ai-provider.interface.js";
 import { polishOwnerAnswer, translateOwnerAnswer } from "./ai-fallback.service.js";
 import { loadContext } from "./context.service.js";
+import { meterAI } from "./metered-providers.js";
 import type { DatabaseClient } from '../db/supabase.js';
 import type { WhatsAppProvider } from '../providers/whatsapp/whatsapp-provider.interface.js';
 import { allowedRecipient, ownerIdentityField, readSessionIdentity } from '../utils/incoming-policy.js';
@@ -21,6 +22,7 @@ export interface Escalation {
   response_language?:string|null;
   pending_since?:string|null;reminded_at?:string|null;created_at?:string;
   inbound_id:string|null;status:string;owner_message_ids:string[];answer:string|null;learning_state:string;learning_message_ids:string[];
+  client_message_id?:string|null;
 }
 const JOB='owner_escalation';
 const TIMEOUT_JOB='escalation_timeout';
@@ -47,7 +49,8 @@ export async function composeOwnerAnswer(db:DatabaseClient,tenantId:string,input
   if(behavior(settings).polish_owner_answer&&ai){
     let context=null;
     try{context=await loadContext(db,tenantId);}catch{console.warn('owner_answer_polish_context_unavailable');}
-    const polished=context?await polishOwnerAnswer(input.question,input.answer,context,input.language,ai,input.introduced):null;
+    const polished=context?await polishOwnerAnswer(input.question,input.answer,context,input.language,
+      meterAI(db,tenantId,ai,{purpose:'owner_answer_polish'}),input.introduced,meterAI(db,tenantId,ai,{purpose:'owner_answer_verify'})):null;
     if(polished)return withoutRepeatedIntroduction(polished,input.introduced);
   }
   const translated=(settings.translate_owner_answer ?? BEHAVIOR_DEFAULTS.translate_owner_answer) ? await translateOwnerAnswer(input.language,input.answer,ai) : input.answer;
@@ -116,7 +119,7 @@ export async function notifyOwner(db:DatabaseClient,provider:WhatsAppProvider,e:
   try {
     const id=await send(db,e.tenant_id,provider,e.session,destination,buildEscalationText(e.client_name,e.question,settings),'owner_notice',`escalation:${e.id}:notice`);
     pendingSince=new Date();
-    await patch(db,e,{status:'pending',pending_since:pendingSince.toISOString(),owner_message_ids:[...new Set([...e.owner_message_ids,replyId(id)])]});
+    await patch(db,e,{status:'pending',pending_since:pendingSince.toISOString(),owner_message_ids:[...new Set([...e.owner_message_ids,id])]});
   } catch {
     // Ambiguous network result: do not resend automatically and create duplicate questions.
     console.error('escalation_notification_uncertain',{tenantId:e.tenant_id,escalationId:e.id});
@@ -152,11 +155,19 @@ export function escalationWaitingMessage(question:string,settings:OwnerSettings,
     ...(quiet&&at?{quietHours:{active:true as const,until:at.toISOString()}}:{}),
   };
 }
+const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** client_message_id is the outbound row (legacy: a WhatsApp id, already delivered). */
+async function answerDelivered(db:DatabaseClient,e:Escalation):Promise<boolean>{
+  const id=e.client_message_id;if(!id||!UUID.test(id))return true;
+  const row=await db.from('outbound_messages').select('status').eq('tenant_id',e.tenant_id).eq('id',id).maybeSingle();check(row.error);
+  return !row.data||row.data.status==='sent';
+}
 async function requestLearning(db:DatabaseClient,provider:WhatsAppProvider,e:Escalation,from:string,settings:OwnerSettings) {
+  if(!await answerDelivered(db,e))return;
   const {data,error}=await db.from('escalations').update({learning_state:'prompting'}).eq('tenant_id',e.tenant_id).eq('id',e.id).eq('status','delivered').eq('learning_state','none').select('id');check(error);
   if(!data?.length) return;
   const id=await send(db,e.tenant_id,provider,e.session,from,renderText(settings,'owner.learning',behavior(settings).owner_language,{question:e.question,answer:e.answer??''}));
-  await patch(db,e,{learning_state:'awaiting',learning_message_ids:[replyId(id)]});
+  await patch(db,e,{learning_state:'awaiting',learning_message_ids:[id]});
 }
 export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProvider,tenantId:string,session:string,from:string,text:string,quoted:string|null,settings:OwnerSettings,ai?:AIProvider|null,inboundMessageId?:string|null):Promise<boolean> {
   if(await pairOwner(db,tenantId,from,text,settings)) return true;
@@ -186,9 +197,13 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
     await send(db,tenantId,provider,session,from,result.data?.length?(paused?renderText(settings,'owner.owner_reply_12',behavior(settings).owner_language):renderText(settings,'owner.short_1',behavior(settings).owner_language)):renderText(settings,'owner.short_2',behavior(settings).owner_language));return true;
   }
   if(!quoted) {await send(db,tenantId,provider,session,from,renderText(settings,'owner.owner_reply_15',behavior(settings).owner_language));return true;}
-  const key=replyId(quoted);
-  const learning=await db.from('escalations').select('*').eq('tenant_id',tenantId).contains('learning_message_ids',[key]).limit(1);check(learning.error);
-  const learned=learning.data?.[0] as Escalation|undefined;
+  // Stored ids are outbound queue row ids (legacy rows: WhatsApp ids); a quote carries the WhatsApp id.
+  const keys=[replyId(quoted),...await outboundIdsForProviderId(db,tenantId,quoted)];
+  const byIds=async(column:'learning_message_ids'|'owner_message_ids')=>{
+    for(const key of keys){const r=await db.from('escalations').select('*').eq('tenant_id',tenantId).contains(column,[key]).limit(1);check(r.error);if(r.data?.[0])return r.data[0] as Escalation;}
+    return undefined;
+  };
+  const learned=await byIds('learning_message_ids');
   if(learned){
     if(learned.learning_state!=='awaiting') return true;
     if(['да','сохранить','yes','כן'].includes(command)){
@@ -197,8 +212,7 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
     }else if(['нет','no','לא'].includes(command)){await patch(db,learned,{learning_state:'declined'});}
     return true;
   }
-  const found=await db.from('escalations').select('*').eq('tenant_id',tenantId).contains('owner_message_ids',[key]).limit(1);check(found.error);
-  const e=found.data?.[0] as Escalation|undefined;
+  const e=await byIds('owner_message_ids');
   if(!e) return true;
   if(['беру на себя','пауза','продолжить'].includes(command)) {
     const paused=command!=='продолжить';
@@ -229,8 +243,19 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
     console.error('escalation_client_delivery_uncertain',{tenantId,escalationId:e.id});
     await send(db,tenantId,provider,session,from,renderText(settings,'owner.owner_reply_26',behavior(settings).owner_language));return true;
   }
-  await requestLearning(db,provider,{...e,answer},from,settings);
+  // Learning is offered once the sender confirms delivery (onOwnerAnswerDeliveryOutcome).
   return true;
+}
+
+/** Called by the outbound sender when an owner-answer delivery reaches a final state. */
+export async function onOwnerAnswerDeliveryOutcome(db:DatabaseClient,provider:WhatsAppProvider,row:{id:string;tenant_id:string;session:string},outcome:'sent'|'failed'):Promise<void>{
+  const found=await db.from('escalations').select('*').eq('tenant_id',row.tenant_id).eq('client_message_id',row.id).eq('status','delivered').maybeSingle();check(found.error);
+  const e=found.data as Escalation|null;if(!e)return;
+  const settings=await loadOwnerSettings(db,row.tenant_id),owner=ownerDestination(settings);
+  if(outcome==='sent'){if(owner&&allowedRecipient(owner))await requestLearning(db,provider,e,owner,settings);return;}
+  await patch(db,e,{status:'delivery_uncertain'});
+  console.error('escalation_client_delivery_uncertain',{tenantId:row.tenant_id,escalationId:e.id});
+  if(owner&&allowedRecipient(owner))await send(db,row.tenant_id,provider,row.session,owner,renderText(settings,'owner.owner_reply_26',behavior(settings).owner_language));
 }
 export async function runDueScheduledEscalations(db:DatabaseClient,providerFor:()=>WhatsAppProvider,now=new Date(),tenantId?:string,jobId?:string):Promise<number> {
   let jobs=db.from('scheduled_jobs').select('id,tenant_id,payload').eq('job_type',JOB)
@@ -289,7 +314,7 @@ export async function runEscalationTimeouts(db:DatabaseClient,providerFor:()=>Wh
     if(!to||!me.id||ownerIdentityField(to,me)||ownerIdentityField(`${settings.owner_phone}@c.us`,me))continue;
     if(!await claim(db,e,'pending','reminding'))continue;
     try{const id=await send(db,e.tenant_id,provider,e.session,to,renderText(settings,'owner.remind',config.owner_language,{name:e.client_name,question:e.question}),'reminder',`escalation:${e.id}:remind`);
-     await patch(db,e,{status:'pending',reminded_at:now.toISOString(),owner_message_ids:[...e.owner_message_ids,replyId(id)]});
+     await patch(db,e,{status:'pending',reminded_at:now.toISOString(),owner_message_ids:[...e.owner_message_ids,id]});
     }catch{await patch(db,e,{status:'pending',reminded_at:now.toISOString()});console.error('escalation_reminder_uncertain',{tenantId:e.tenant_id,escalationId:e.id});}
    }
   }catch{console.error('escalation_timeout_failed',{tenantId:e.tenant_id,escalationId:e.id});}

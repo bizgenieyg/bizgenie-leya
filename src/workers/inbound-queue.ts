@@ -20,7 +20,6 @@ export interface InboundRow {
 const MAX_CONCURRENT = 5;
 const MAX_DELAY = 2_147_000_000;
 const RETRY_MS = 30_000;
-const LEASE_MS = 2 * 60_000;
 
 let activeProcessor: InboundProcessor | null = null;
 export function wakeInbound(at: Date): void { activeProcessor?.wake(at); }
@@ -112,9 +111,11 @@ export class InboundProcessor {
     await this.refresh();
   }
 
+  // Only at process start: leya-api runs as a single PM2 instance, so every `processing` row
+  // left behind belongs to a dead process. Never reclaim rows while this process is alive.
   private async recoverStale(): Promise<void> {
     const stale = await this.db.from('inbound_events').update({ status: 'pending', process_after: new Date().toISOString(), started_at: null })
-      .eq('status', 'processing').lte('started_at', new Date(Date.now() - LEASE_MS).toISOString());
+      .eq('status', 'processing');
     if (stale.error) throw new Error('Inbound recovery failed');
   }
 
@@ -153,14 +154,10 @@ export class InboundProcessor {
       const next = await this.db.from('inbound_events').select('tenant_id,chat_id,process_after').eq('status', 'pending')
         .order('process_after', { ascending: true }).limit(200);
       if (next.error) throw new Error('Inbound next-event lookup failed');
-      const processing = await this.db.from('inbound_events').select('started_at').eq('status', 'processing')
-        .order('started_at', { ascending: true }).limit(1);
-      if (processing.error) throw new Error('Inbound lease lookup failed');
       if (this.stopped) return;
       const ready = (next.data ?? []).find(row => !this.chats.has(`${row.tenant_id}:${row.chat_id}`));
       const pendingAt = ready ? new Date(String(ready.process_after)).getTime() : Number.POSITIVE_INFINITY;
-      const leaseAt = processing.data?.length ? new Date(String(processing.data[0]!.started_at)).getTime() + LEASE_MS : Number.POSITIVE_INFINITY;
-      const target = Math.min(pendingAt, leaseAt);
+      const target = pendingAt;
       if (version !== this.wakeVersion && this.timerAt < target) return;
       if (!Number.isFinite(target)) {
         if (this.timer) clearTimeout(this.timer);
@@ -174,7 +171,6 @@ export class InboundProcessor {
     if (this.scanning || this.active >= MAX_CONCURRENT) { this.scanAgain = true; return; }
     this.scanning = true;
     try {
-      await this.recoverStale();
       const now = new Date();
       const due = await this.db.from('inbound_events').select('id,tenant_id,waha_event_id,chat_id,kind,payload,received_at,process_after,status,attempts')
         .eq('status', 'pending').lte('process_after', now.toISOString())

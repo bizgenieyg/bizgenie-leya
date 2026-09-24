@@ -22,7 +22,8 @@ test('WAHA seen and typing endpoints use GOWS payloads and every request has a t
     await provider.stopTyping({ session: 'business', chatId: '972500000001@c.us' });
     await provider.sendMessage({ session: 'business', chatId: '972500000001@c.us', text: 'Hello' });
     assert.deepEqual(calls.map(call => call.url.replace('http://waha.internal', '')), ['/api/sendSeen','/api/startTyping','/api/stopTyping','/api/sendText']);
-    assert.deepEqual(calls[0]!.body.messagesIds, ['incoming-1']);
+    assert.deepEqual(calls[0]!.body.messageIds, ['incoming-1']);
+    assert.equal(calls[0]!.body.messagesIds, undefined);
     assert.ok(calls.every(call => call.signal instanceof AbortSignal));
   } finally { globalThis.fetch = originalFetch; }
 });

@@ -27,11 +27,13 @@ test("create persists the matching encrypted secret before WAHA starts; reconnec
       const query = {
         select() { return query; },
         eq(column: string, value: string) {
+          if (column === 'last_session_alert') return query;
           if (column === 'status') assert.equal(value, row?.status);
           else { assert.equal(value, tenantId); assert.ok(column === "id" || column === "tenant_id"); }
           return query;
         },
         is(column: string, value: null) {
+          if (column === 'last_session_alert') return query;
           assert.equal(column, "webhook_secret_encrypted");
           assert.equal(value, null);
           onlyNull = true; return query;
@@ -138,6 +140,7 @@ function makeInstanceDb(tenantId: string) {
           return query;
         },
         is(column: string, value: null) {
+          if (column === 'last_session_alert') return query;
           assert.equal(column, "webhook_secret_encrypted");
           assert.equal(value, null);
           onlyNull = true; return query;

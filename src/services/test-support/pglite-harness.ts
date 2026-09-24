@@ -68,6 +68,8 @@ const MIGRATIONS_IN_APPLICATION_ORDER = [
   '20260923182010_052_event_driven_scheduler.sql',
   '20260924064650_053_inbound_events.sql',
   '20260924072304_054_outbound_messages.sql',
+  '20260924112804_055_session_status_changed_at.sql',
+  '20260924160000_056_outbound_links_and_session_alerts.sql',
 ];
 
 /** PGlite has no real `auth` schema/GoTrue; stub just enough for RLS-authoring
@@ -109,7 +111,7 @@ export async function createTestDatabase(): Promise<PGlite> {
 // ---------------------------------------------------------------------------
 
 type Filter =
-  | { kind: 'eq' | 'neq' | 'gte' | 'lte' | 'gt' | 'lt'; column: string; value: unknown }
+  | { kind: 'eq' | 'neq' | 'gte' | 'lte' | 'gt' | 'lt' | 'like'; column: string; value: unknown }
   | { kind: 'in'; column: string; value: unknown[] }
   | { kind: 'is'; column: string; value: null | boolean }
   | { kind: 'not_is'; column: string; value: null }
@@ -128,12 +130,14 @@ class PgliteQueryBuilder {
   private payload: Record<string, unknown> | Record<string, unknown>[] | null = null;
   private wantSingle: 'maybe' | 'strict' | null = null;
   private conflictColumn = 'id';
+  private ignoreDuplicates = false;
 
   constructor(private pg: PGlite, private table: string) {}
 
   select(columns = '*'): this { if (this.mode === 'select') this.columns = columns; else this.columns = columns; return this; }
   eq(column: string, value: unknown): this { this.filters.push({ kind: 'eq', column, value }); return this; }
   neq(column: string, value: unknown): this { this.filters.push({ kind: 'neq', column, value }); return this; }
+  like(column: string, value: string): this { this.filters.push({ kind: 'like', column, value }); return this; }
   gte(column: string, value: unknown): this { this.filters.push({ kind: 'gte', column, value }); return this; }
   lte(column: string, value: unknown): this { this.filters.push({ kind: 'lte', column, value }); return this; }
   gt(column: string, value: unknown): this { this.filters.push({ kind: 'gt', column, value }); return this; }
@@ -146,7 +150,7 @@ class PgliteQueryBuilder {
   limit(n: number): this { this.limitN = n; return this; }
   insert(value: Record<string, unknown> | Record<string, unknown>[]): this { this.mode = 'insert'; this.payload = value; return this; }
   update(value: Record<string, unknown>): this { this.mode = 'update'; this.payload = value; return this; }
-  upsert(value: Record<string, unknown>, options?: { onConflict?: string }): this { this.mode = 'upsert'; this.payload = value; this.conflictColumn = options?.onConflict ?? 'id'; return this; }
+  upsert(value: Record<string, unknown>, options?: { onConflict?: string; ignoreDuplicates?: boolean }): this { this.mode = 'upsert'; this.payload = value; this.conflictColumn = options?.onConflict ?? 'id'; this.ignoreDuplicates = options?.ignoreDuplicates === true; return this; }
   delete(): this { this.mode = 'delete'; return this; }
   maybeSingle() { this.wantSingle = 'maybe'; return this.execute(); }
   single() { this.wantSingle = 'strict'; return this.execute(); }
@@ -173,7 +177,7 @@ class PgliteQueryBuilder {
         params.push(JSON.stringify(filter.value));
         return `${quoteIdent(filter.column)} @> $${params.length}::jsonb`;
       }
-      const operator = { eq: '=', neq: '<>', gte: '>=', lte: '<=', gt: '>', lt: '<' }[filter.kind];
+      const operator = { eq: '=', neq: '<>', gte: '>=', lte: '<=', gt: '>', lt: '<', like: 'like' }[filter.kind];
       params.push(filter.value);
       return `${quoteIdent(filter.column)} ${operator} $${params.length}`;
     });
@@ -200,8 +204,10 @@ class PgliteQueryBuilder {
         const keys = Object.keys(row);
         const params = keys.map(key => row[key]);
         const placeholders = keys.map((_, i) => `$${i + 1}`).join(',');
-        const updateSet = keys.filter(key => key !== this.conflictColumn).map(key => `${quoteIdent(key)} = excluded.${quoteIdent(key)}`).join(',');
-        const sql = `insert into ${quoteIdent(this.table)} (${keys.map(quoteIdent).join(',')}) values (${placeholders}) on conflict (${quoteIdent(this.conflictColumn)}) do update set ${updateSet} returning ${this.columns === '*' ? '*' : this.columns}`;
+        const conflict = this.conflictColumn.split(',').map(column => column.trim());
+        const updateSet = keys.filter(key => !conflict.includes(key)).map(key => `${quoteIdent(key)} = excluded.${quoteIdent(key)}`).join(',');
+        const action = this.ignoreDuplicates || !updateSet ? 'do nothing' : `do update set ${updateSet}`;
+        const sql = `insert into ${quoteIdent(this.table)} (${keys.map(quoteIdent).join(',')}) values (${placeholders}) on conflict (${conflict.map(quoteIdent).join(',')}) ${action} returning ${this.columns === '*' ? '*' : this.columns}`;
         const result = await this.pg.query(sql, params);
         return this.shapeResult(result.rows as Record<string, unknown>[]);
       }
@@ -252,14 +258,16 @@ class PgliteQueryBuilder {
         existingParams.push(JSON.stringify(filter.value));
         return `${quoteIdent(filter.column)} @> $${existingParams.length}::jsonb`;
       }
-      const operator = { eq: '=', neq: '<>', gte: '>=', lte: '<=', gt: '>', lt: '<' }[filter.kind];
+      const operator = { eq: '=', neq: '<>', gte: '>=', lte: '<=', gt: '>', lt: '<', like: 'like' }[filter.kind];
       existingParams.push(filter.value);
       return `${quoteIdent(filter.column)} ${operator} $${existingParams.length}`;
     });
     return ' where ' + clauses.join(' and ');
   }
 
-  private shapeResult(rows: Record<string, unknown>[]): { data: unknown; error: unknown } {
+  private shapeResult(input: Record<string, unknown>[]): { data: unknown; error: unknown } {
+    // PostgREST serializes timestamps as ISO strings over JSON; PGlite hands back Date objects.
+    const rows = input.map(row => Object.fromEntries(Object.entries(row).map(([key, value]) => [key, value instanceof Date ? value.toISOString() : value])));
     if (this.wantSingle === 'maybe') return { data: rows[0] ?? null, error: null };
     if (this.wantSingle === 'strict') {
       if (rows.length !== 1) return { data: null, error: { message: `Expected exactly 1 row, got ${rows.length}` } };

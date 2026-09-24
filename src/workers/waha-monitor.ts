@@ -47,9 +47,8 @@ export class WahaMonitor {
     this.lastSignature = signature;
     const byName = new Map(sessions.map(session => [session.name, session.status]));
     for (const instance of instances.data ?? []) {
-      const current = String(instance.status ?? '').toUpperCase();
+      // Always reconcile: alert state is evaluated from the DB even when the status is unchanged.
       const observed = byName.get(String(instance.session_name)) ?? 'NOT_CREATED';
-      if (current === observed) continue;
       try { await updateSessionStatus(this.db, String(instance.tenant_id), observed); }
       catch { console.error('waha_monitor_status_failed', { tenantId: instance.tenant_id }); }
     }

@@ -100,3 +100,31 @@ test('runtime settings save invalidates the warm owner-settings cache', async ()
   await saveRuntimeSettings(h.db, h.tenantId, { inbound_quiet_seconds: 4 });
   assert.equal(behavior(await loadOwnerSettings(h.db, h.tenantId)).inbound_quiet_seconds, 4);
 });
+
+test('processing longer than the old 2-minute lease runs the pipeline exactly once and ends done', async () => {
+  const h = await harness();
+  const calls: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const worker = new InboundProcessor(h.db, async (_db, rows) => {
+    calls.push(rows.map(row => row.waha_event_id).join(','));
+    if (rows[0]!.waha_event_id === 'slow') {
+      // Age the lease past 2 minutes while still holding the chat, then let other chats wake the scanner.
+      await h.pg.query("update inbound_events set started_at=now()-interval '3 minutes' where waha_event_id='slow'");
+      await enqueueInbound(h.db, h.tenantId, envelope('other', '972500000002@c.us'), 0);
+      await delay(150);
+      await enqueueInbound(h.db, h.tenantId, envelope('another', '972500000003@c.us'), 0);
+      await delay(150);
+      await gate;
+    }
+  });
+  await worker.start();
+  await enqueueInbound(h.db, h.tenantId, envelope('slow'), 0);
+  for (let i = 0; i < 80 && calls.length < 3; i++) await delay(25);
+  release();
+  for (let i = 0; i < 80; i++) { const r = await h.pg.query<{ n: number }>("select count(*)::int n from inbound_events where status<>'done'"); if (!r.rows[0]!.n) break; await delay(25); }
+  worker.stop();
+  assert.equal(calls.filter(c => c === 'slow').length, 1);
+  const rows = await h.pg.query<{ waha_event_id: string; status: string }>('select waha_event_id,status from inbound_events order by waha_event_id');
+  assert.deepEqual(rows.rows.map(r => [r.waha_event_id, r.status]), [['another', 'done'], ['other', 'done'], ['slow', 'done']]);
+});

@@ -26,3 +26,8 @@ test('provider error, missing capability or empty history yields no history', as
   const bare: WhatsAppProvider = { async sendMessage() { return { id: 'x' }; }, async getSessionStatus() { return { status: 'WORKING' }; } };
   assert.deepEqual(await fetchChatHistory(bare, 's', '1@lid', [], options), []);
 });
+
+test('media rows are excluded even when they carry a caption', async () => {
+  const result = await fetchChatHistory(provider([row('a', 1, 'Фото с подписью', false, true), row('b', 2, 'Текст')]), 's', '1@lid', [], { ...options, maxCharacters: 1000 });
+  assert.deepEqual(result.map(m => m.text), ['Текст']);
+});

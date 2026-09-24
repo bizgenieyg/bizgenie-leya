@@ -31,6 +31,7 @@ export class OnboardingService {
       .select("id")
       .single();
     if (tenantError || !tenant) databaseError("Could not create tenant", tenantError);
+    invalidateTenantRouting(this.db, tenant.id as string);
 
     const { error: sessionError } = await this.db.from("onboarding_sessions").insert({
       tenant_id: tenant.id,
@@ -40,6 +41,7 @@ export class OnboardingService {
     });
     if (sessionError) {
       await this.db.from("tenants").delete().eq("id", tenant.id);
+      invalidateTenantRouting(this.db, tenant.id as string);
       databaseError("Could not create onboarding session", sessionError);
     }
 
@@ -200,6 +202,7 @@ export class OnboardingService {
         .update({ status: "completed", completed_at: completedAt, current_step: "completed" })
         .eq("id", session.id),
     ]);
+    invalidateTenantRouting(this.db, tenantId);
     if (tenantResult.error) databaseError("Could not activate tenant trial", tenantResult.error);
     if (sessionResult.error) databaseError("Could not complete onboarding", sessionResult.error);
     return { tenantId, status: "trial", completedAt };
@@ -251,6 +254,7 @@ export class OnboardingService {
       .select()
       .single();
     if (error) databaseError(`Could not update ${step}`, error);
+    invalidateTenantRouting(this.db, String(session.tenant_id));
     await this.completeStep(session, step);
     return data;
   }

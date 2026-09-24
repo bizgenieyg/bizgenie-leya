@@ -39,7 +39,7 @@ export class WahaProvider implements WhatsAppProvider, WhatsAppSessionProvider {
 
   async sendSeen(input: { session: string; chatId: string; messageIds?: string[] }): Promise<void> {
     await this.request('POST', '/api/sendSeen', { session: input.session, chatId: input.chatId,
-      ...(input.messageIds?.length ? { messagesIds: input.messageIds } : {}) });
+      ...(input.messageIds?.length ? { messageIds: input.messageIds } : {}) });
   }
 
   async startTyping(input: { session: string; chatId: string }): Promise<void> {

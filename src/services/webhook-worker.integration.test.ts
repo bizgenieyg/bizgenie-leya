@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { WhatsAppProvider } from "../providers/whatsapp/whatsapp-provider.interface.js";
 import { createTestDatabase, pgliteDatabaseClient } from "./test-support/pglite-harness.js";
-import { stopOutboundQueue } from '../workers/outbound-queue.js';
+import { stopOutboundQueue, settleAllOutboundQueues } from '../workers/outbound-queue.js';
 process.env.GEMINI_API_KEY = "";
 process.env.SUPABASE_URL = "https://database.invalid";
 process.env.SUPABASE_SERVICE_ROLE_KEY = "test-only";
@@ -46,7 +46,7 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
     let aiCalls = 0;
     const ai = { async generateReply(input: { systemPrompt: string }) { aiCalls++; return { text: input.systemPrompt.includes('классификатор намерений') ? '{"agent":"SUPPORT","confidence":0.9}' : "Открыты с 9 до 18." }; } };
 
-    await handleWebhookEvent(tenantId, body, db, provider, ai as never);
+    await handleWebhookEvent(tenantId, body, db, provider, ai as never); await settleAllOutboundQueues();
     assert.equal(aiCalls, 0);
     assert.deepEqual(sent, ["С 9 до 18."]);
     const actions = (await pg.query<{ action_type: string }>("select action_type from agent_actions where tenant_id=$1", [tenantId])).rows;
@@ -57,23 +57,23 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
     console.warn = (...args: unknown[]) => { warnings.push(args); };
     console.info = (...args: unknown[]) => { warnings.push(args); };
     try {
-      await handleWebhookEvent(tenantId, { ...body, payload: { ...body.payload, body: null } }, db, provider, undefined);
-      await handleWebhookEvent(tenantId, { ...body, payload: { ...body.payload, body: "Нет в FAQ" } }, db, provider, undefined);
+      await handleWebhookEvent(tenantId, { ...body, payload: { ...body.payload, body: null } }, db, provider, undefined); await settleAllOutboundQueues();
+      await handleWebhookEvent(tenantId, { ...body, payload: { ...body.payload, body: "Нет в FAQ" } }, db, provider, undefined); await settleAllOutboundQueues();
       assert.equal(sent.length, 1);
       assert.match(JSON.stringify(warnings), /missing_text/);
       assert.match(JSON.stringify(warnings), /missing_owner_phone/);
       assert.doesNotMatch(JSON.stringify(warnings), /Нет в FAQ|972500000001/);
 
-      await handleWebhookEvent(tenantId, { ...body, payload: { ...body.payload, body: "Когда вы открыты?" } }, db, provider, ai as never);
+      await handleWebhookEvent(tenantId, { ...body, payload: { ...body.payload, body: "Когда вы открыты?" } }, db, provider, ai as never); await settleAllOutboundQueues();
       assert.equal(aiCalls, 2);
       assert.equal(sent[1], "Открыты с 9 до 18.");
 
-      await handleWebhookEvent(tenantId, { ...body, payload: { ...body.payload, body: "Другой вопрос" } }, db, provider, { async generateReply() { throw new Error("private error"); } } as never);
+      await handleWebhookEvent(tenantId, { ...body, payload: { ...body.payload, body: "Другой вопрос" } }, db, provider, { async generateReply() { throw new Error("private error"); } } as never); await settleAllOutboundQueues();
       assert.equal(sent.length, 2);
 
       const lid = "261885798707406@lid";
-      await handleWebhookEvent(tenantId, { ...body, payload: { ...body.payload, from: lid } }, db, provider, ai as never);
-      await handleWebhookEvent(tenantId, { ...body, payload: { ...body.payload, from: lid, body: "Переформулированный вопрос" } }, db, provider, ai as never);
+      await handleWebhookEvent(tenantId, { ...body, payload: { ...body.payload, from: lid } }, db, provider, ai as never); await settleAllOutboundQueues();
+      await handleWebhookEvent(tenantId, { ...body, payload: { ...body.payload, from: lid, body: "Переформулированный вопрос" } }, db, provider, ai as never); await settleAllOutboundQueues();
       assert.deepEqual(recipients.slice(-2), [lid, lid]);
       const lidClient = await pg.query<{ count: string }>("select count(*)::text as count from clients where tenant_id=$1 and whatsapp_jid=$2", [tenantId, lid]);
       assert.equal(lidClient.rows[0]!.count, "1", "the @lid contact resolves to exactly one client row across both messages");
@@ -81,13 +81,13 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
       // into the @lid client, even though it looks like the same contact: two real
       // contacts can share a name, so only an exact JID match counts (findOrCreateClient
       // no longer has a name-based fallback — see tenant.service.ts).
-      await handleWebhookEvent(tenantId, { ...body, payload: { ...body.payload, from: "261885798707406@c.us", body: "Тот же контакт" } }, db, provider, ai as never);
+      await handleWebhookEvent(tenantId, { ...body, payload: { ...body.payload, from: "261885798707406@c.us", body: "Тот же контакт" } }, db, provider, ai as never); await settleAllOutboundQueues();
       const aliasedClients = await pg.query<{ count: string }>("select count(*)::text as count from clients where tenant_id=$1 and regexp_replace(whatsapp_jid,'@.*$','')='261885798707406'", [tenantId]);
       assert.equal(aliasedClients.rows[0]!.count, "2", "matching digits under a different JID suffix create a separate client card, not a merge");
       assert.ok(aiCalls >= 2);
 
       const realPayload = JSON.parse(readFileSync("src/services/fixtures/gows-incoming-lid.json", "utf8"));
-      await handleWebhookEvent(tenantId, realPayload, db, provider, ai as never);
+      await handleWebhookEvent(tenantId, realPayload, db, provider, ai as never); await settleAllOutboundQueues();
       assert.equal(recipients.at(-1), realPayload.payload.from);
       assert.equal(sent.at(-1), "С 9 до 18.");
       const realClient = await pg.query<{ count: string }>("select count(*)::text as count from clients where tenant_id=$1 and whatsapp_jid=$2", [tenantId, realPayload.payload.from]);
@@ -101,18 +101,18 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
       }};
       const languageClient='972500000006@c.us';
       for(const [question,expected] of [['שלום, אפשר עזרה?','תשובה בעברית.'],['Нужна помощь','Ответ по-русски.'],['Can you help?','Answer in English.'],['שוב בעברית','תשובה בעברית.']] as const){
-        await handleWebhookEvent(tenantId,{...body,payload:{...body.payload,from:languageClient,body:question}},db,provider,multilingualAi as never);
+        await handleWebhookEvent(tenantId,{...body,payload:{...body.payload,from:languageClient,body:question}},db,provider,multilingualAi as never); await settleAllOutboundQueues();
         assert.equal(sent.at(-1),expected);
       }
       const observed=await pg.query<{language:string}>("select language from clients where tenant_id=$1 and whatsapp_jid=$2",[tenantId,languageClient]);
       assert.equal(observed.rows[0]!.language,'he','the card observes the latest incoming language');
       await pg.query("update clients set language='ru',language_overridden=true where tenant_id=$1 and whatsapp_jid=$2",[tenantId,languageClient]);
-      await handleWebhookEvent(tenantId,{...body,payload:{...body.payload,from:languageClient,body:'עוד שאלה'}},db,provider,multilingualAi as never);
+      await handleWebhookEvent(tenantId,{...body,payload:{...body.payload,from:languageClient,body:'עוד שאלה'}},db,provider,multilingualAi as never); await settleAllOutboundQueues();
       assert.equal(sent.at(-1),'Ответ по-русски.','an explicit owner override remains authoritative');
 
       const groupJid='120363400030260280@c.us';
       const sentBeforeGroup=sent.length;
-      await handleWebhookEvent(tenantId,{...body,payload:{...body.payload,from:groupJid,participant:'972500000007@lid',_data:{Info:{Chat:groupJid,IsGroup:true,IsFromMe:false}},body:'Сообщение группы'}},db,provider,ai as never);
+      await handleWebhookEvent(tenantId,{...body,payload:{...body.payload,from:groupJid,participant:'972500000007@lid',_data:{Info:{Chat:groupJid,IsGroup:true,IsFromMe:false}},body:'Сообщение группы'}},db,provider,ai as never); await settleAllOutboundQueues();
       assert.equal(sent.length,sentBeforeGroup);
       const groupClients=await pg.query<{count:string}>("select count(*)::text as count from clients where tenant_id=$1 and whatsapp_jid=$2",[tenantId,groupJid]);
       assert.equal(groupClients.rows[0]!.count,'0','a GOWS group event cannot create a client card');
@@ -122,14 +122,14 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
         const ownerPayload = structuredClone(realPayload);
         ownerPayload.payload.from = ownerPayload.me[field];
         ownerPayload.payload._data.Info.Chat = ownerPayload.me[field];
-        await handleWebhookEvent(tenantId, ownerPayload, db, provider, ai as never);
+        await handleWebhookEvent(tenantId, ownerPayload, db, provider, ai as never); await settleAllOutboundQueues();
         assert.equal(sent.length, sentBefore, `an inbound event matching session.me.${field} must be filtered as the bot's own identity, not a client`);
       }
 
       await pg.query("update tenant_usage_limits set messages_per_month=0,messages_overridden=true where tenant_id=$1", [tenantId]);
       const callsBefore = aiCalls;
       for (const question of ["Часы работы?", "Неизвестный вопрос"]) {
-        await handleWebhookEvent(tenantId, { ...body, payload: { ...body.payload, body: question } }, db, provider, ai as never);
+        await handleWebhookEvent(tenantId, { ...body, payload: { ...body.payload, body: question } }, db, provider, ai as never); await settleAllOutboundQueues();
         assert.match(sent.at(-1)!, /автоматические ответы недоступны/);
       }
       assert.equal(aiCalls, callsBefore);
@@ -165,8 +165,9 @@ test('one batched pipeline call stores every incoming message and sends one answ
     const sent: string[] = [];
     const provider: WhatsAppProvider = { async sendMessage(input) { sent.push(input.text); return { id: 'reply-1' }; },
       async getSessionStatus() { return { status: 'WORKING' }; } };
-    await handleWebhookEvent(tenantId, bodies[0]!, db, provider, null, undefined, bodies, ids);
-    const messages = await pg.query<{ body: string }>('select body from messages where tenant_id=$1 and from_me=false order by created_at,id', [tenantId]);
+    await handleWebhookEvent(tenantId, bodies[0]!, db, provider, null, undefined, bodies, ids); await settleAllOutboundQueues();
+    // Order by the inbound event the row came from: rows inserted within one millisecond tie on created_at.
+    const messages = await pg.query<{ body: string }>('select m.body from messages m join inbound_events e on e.id=m.inbound_event_id where m.tenant_id=$1 and m.from_me=false order by e.waha_event_id', [tenantId]);
     assert.deepEqual(messages.rows.map(row => row.body), ['Первое', 'Второе', 'Третье']);
     assert.deepEqual(sent, ['Один ответ.']);
   } finally { await stopOutboundQueue(db); await pg.close(); }

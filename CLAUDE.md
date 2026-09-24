@@ -30,3 +30,9 @@ After coding, run npm install, npm run build, npm run typecheck. If scripts are 
 ## Review rule (Claude Code в роли ревьюера)
 
 При ревью диффа от Codex выполнять проверки самостоятельно через shell (git status/diff/grep/build/typecheck) — не просить владельца выполнять и вставлять вывод в чат. Отчёт владельцу — короткий pass/fail с конкретикой, не сырой вывод.
+
+## Инфраструктура
+
+Очереди и блокировки (`inbound_events`, `outbound_messages`, блокировка «одна сессия — одно сообщение»)
+рассчитаны на один экземпляр `leya-api`, cluster mode запрещён. Зависшие строки `processing`/`sending`
+забираются только при старте процесса.

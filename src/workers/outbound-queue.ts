@@ -10,6 +10,9 @@ import { logSystemEvent } from '../services/logging.service.js';
 import { recordUsageEvent } from '../services/usage.service.js';
 import { intlTimeZone } from '../config/time-zones.js';
 import { allowedRecipient } from '../utils/incoming-policy.js';
+import { replyId } from '../utils/assistant-text.js';
+import { senderKey } from '../utils/whatsapp-id.js';
+import { BEHAVIOR_DEFAULTS } from '../config/behavior.js';
 
 export type OutboundKind = 'reply' | 'owner_notice' | 'owner_answer_delivery' | 'summary' | 'reminder' | 'broadcast';
 export interface OutboundRow {
@@ -19,19 +22,12 @@ export interface OutboundRow {
 }
 export interface EnqueueOptions {
   kind?: OutboundKind; dedupeKey?: string; notBefore?: Date; deadlineAt?: Date;
-  inboundMessageIds?: string[]; waitForDelivery?: boolean;
+  inboundMessageIds?: string[];
 }
 const MAX_CONCURRENT = 5;
-const LEASE_MS = 2 * 60_000;
 const MAX_DELAY = 2_147_000_000;
 const processors = new WeakMap<DatabaseClient, OutboundProcessor>();
-const pendingResults = new Map<string, Array<{ resolve: (id: string) => void; reject: (error: Error) => void }>>();
-function settle(id: string, result: string | Error): void {
-  for (const waiter of pendingResults.get(id) ?? []) {
-    if (result instanceof Error) waiter.reject(result); else waiter.resolve(result);
-  }
-  pendingResults.delete(id);
-}
+const liveDatabases = new Set<DatabaseClient>();
 
 export const outboundPriority = (kind: OutboundKind): number =>
   kind === 'reply' || kind === 'owner_answer_delivery' ? 0 : kind === 'owner_notice' ? 1 : kind === 'broadcast' ? 3 : 2;
@@ -60,6 +56,10 @@ export function gapMs(kind: OutboundKind, config: ReturnType<typeof behavior>, r
 
 function delay(ms: number): Promise<void> { return new Promise(resolve => { setTimeout(resolve, ms); }); }
 
+/**
+ * Accept → persist → release: never waits for delivery. Returns the `outbound_messages` row id;
+ * the sender later stamps `waha_msg_id` on that row and on any `messages` row linked to it.
+ */
 export async function enqueueMessage(db: DatabaseClient, tenantId: string, provider: WhatsAppProvider,
   input: SendMessageInput, options: EnqueueOptions = {}): Promise<{ id: string }> {
   if (!allowedRecipient(input.chatId) || !input.text.trim()) throw new Error('Outbound recipient or text invalid');
@@ -74,22 +74,26 @@ export async function enqueueMessage(db: DatabaseClient, tenantId: string, provi
     .eq('tenant_id', tenantId).eq('dedupe_key', dedupeKey).single();
   if (result.error || !result.data) throw new Error('Outbound enqueue failed');
   const row = result.data as { id: string; status: string; waha_msg_id: string | null };
-  if (row.status === 'sent') return { id: row.waha_msg_id ?? '' };
   if (['failed', 'cancelled', 'expired'].includes(row.status)) throw new Error('Outbound message unavailable');
+  if (row.status === 'sent') return { id: row.id };
   let processor = processors.get(db);
   if (!processor) {
     processor = new OutboundProcessor(db, provider);
-    processors.set(db, processor);
+    processors.set(db, processor); liveDatabases.add(db);
   }
   processor.launch();
-  if (options.waitForDelivery === false) { processor.wake(new Date(payload.not_before)); return { id: row.id }; }
-  const waiting = new Promise<{ id: string }>((resolve, reject) => {
-    const waiters = pendingResults.get(row.id) ?? [];
-    waiters.push({ resolve: id => resolve({ id }), reject });
-    pendingResults.set(row.id, waiters);
-  });
   processor.wake(new Date(payload.not_before));
-  return waiting;
+  return { id: row.id };
+}
+
+/** Provider ids and ids of our own outbound rows that a quoted/echoed WhatsApp id may refer to. */
+export async function outboundIdsForProviderId(db: DatabaseClient, tenantId: string, providerId: string): Promise<string[]> {
+  if (!providerId) return [];
+  const short = replyId(providerId);
+  const rows = await db.from('outbound_messages').select('id,waha_msg_id').eq('tenant_id', tenantId).like('waha_msg_id', `%${short}`);
+  if (rows.error) throw new Error('Outbound id lookup failed');
+  return (rows.data ?? []).filter(row => typeof row.waha_msg_id === 'string' && (row.waha_msg_id === providerId || replyId(row.waha_msg_id) === short))
+    .map(row => String(row.id));
 }
 
 /** Scheduled client reminders may move earlier but never past the event they describe. */
@@ -98,16 +102,22 @@ export async function enqueuePlannedReminder(db: DatabaseClient, tenantId: strin
   const settings = await loadOwnerSettings(db, tenantId);
   const notBefore = plannedNotBefore(new Date(), schedule.sendAt, behavior(settings).outbound_reminder_spread_minutes);
   return enqueueMessage(db, tenantId, provider, input, { kind: 'reminder', dedupeKey: schedule.dedupeKey,
-    notBefore, deadlineAt: schedule.eventAt, waitForDelivery: false });
+    notBefore, deadlineAt: schedule.eventAt });
 }
 
-export async function cancelPendingReplies(db: DatabaseClient, tenantId: string, chatId: string): Promise<void> {
-  const cancelled = await db.from('outbound_messages').update({ status: 'cancelled' })
-    .eq('tenant_id', tenantId).eq('chat_id', chatId).eq('kind', 'reply').eq('status', 'pending').select('id');
+/**
+ * Cancel pending replies to one contact. A contact may be addressed as `@lid` or `@c.us`
+ * (`@s.whatsapp.net`); callers pass every id known for it and rows match through senderKey.
+ */
+export async function cancelPendingReplies(db: DatabaseClient, tenantId: string, chatIds: string | string[]): Promise<void> {
+  const pending = await db.from('outbound_messages').select('id,chat_id')
+    .eq('tenant_id', tenantId).eq('kind', 'reply').eq('status', 'pending');
+  if (pending.error) throw new Error('Outbound cancellation failed');
+  const keys = new Set((Array.isArray(chatIds) ? chatIds : [chatIds]).filter(Boolean).map(senderKey));
+  const ids = (pending.data ?? []).filter(row => keys.has(senderKey(String(row.chat_id)))).map(row => String(row.id));
+  if (!ids.length) return;
+  const cancelled = await db.from('outbound_messages').update({ status: 'cancelled' }).in('id', ids).eq('status', 'pending');
   if (cancelled.error) throw new Error('Outbound cancellation failed');
-  for (const row of cancelled.data ?? []) {
-    settle(String(row.id), new Error('Outbound reply cancelled by owner'));
-  }
 }
 
 export class OutboundProcessor {
@@ -146,9 +156,10 @@ export class OutboundProcessor {
     this.started = true;
   }
 
+  // Only at process start (single leya-api instance): a `sending` row belongs to a dead process.
   private async recoverStale(): Promise<void> {
     const stale = await this.db.from('outbound_messages').update({ status: 'pending', started_at: null })
-      .eq('status', 'sending').lte('started_at', new Date(Date.now() - LEASE_MS).toISOString());
+      .eq('status', 'sending');
     if (stale.error) throw new Error('Outbound recovery failed');
   }
 
@@ -159,14 +170,13 @@ export class OutboundProcessor {
     if (this.stopped) return;
     if (this.scanning && at.getTime() <= Date.now()) this.scanAgain = true;
     if (at.getTime() < this.timerAt) this.arm(at.getTime());
-    else if (pendingResults.size) this.timer?.ref();
   }
   private arm(at: number): void {
     if (this.timer) clearTimeout(this.timer);
     this.timerAt = at;
     this.timer = setTimeout(() => { this.timer = null; if (at > Date.now()) this.arm(at); else void this.fire(); },
       Math.min(Math.max(0, at - Date.now()), MAX_DELAY));
-    if (!pendingResults.size) this.timer.unref();
+    this.timer.unref();
   }
   private async refresh(): Promise<void> {
     if (this.stopped) return;
@@ -174,14 +184,10 @@ export class OutboundProcessor {
     const next = await this.db.from('outbound_messages').select('session,not_before').eq('status', 'pending')
       .order('not_before', { ascending: true }).limit(200);
     if (next.error) throw new Error('Outbound next-event lookup failed');
-    const processing = await this.db.from('outbound_messages').select('started_at').eq('status','sending')
-      .order('started_at',{ascending:true}).limit(1);
-    if (processing.error) throw new Error('Outbound lease lookup failed');
     const pending = (next.data ?? []).filter(row => !this.sessions.has(String(row.session)));
     const pendingAt = pending.reduce((earliest, row) => Math.min(earliest,
       Math.max(new Date(String(row.not_before)).getTime(), this.cooldowns.get(String(row.session)) ?? 0)), Number.POSITIVE_INFINITY);
-    const leaseAt = processing.data?.length ? new Date(String(processing.data[0]!.started_at)).getTime() + LEASE_MS : Number.POSITIVE_INFINITY;
-    const target = Math.min(pendingAt, leaseAt);
+    const target = pendingAt;
     if (this.stopped || (version !== this.wakeVersion && this.timerAt < target)) return;
     if (!Number.isFinite(target)) { if (this.timer) clearTimeout(this.timer); this.timer = null; this.timerAt = Number.POSITIVE_INFINITY; }
     else this.arm(target);
@@ -191,7 +197,6 @@ export class OutboundProcessor {
     if (this.scanning || this.active >= MAX_CONCURRENT) { this.scanAgain = true; return; }
     this.scanning = true;
     try {
-      await this.recoverStale();
       const due = await this.db.from('outbound_messages').select('*').eq('status', 'pending')
         .lte('not_before', new Date().toISOString()).order('priority', { ascending: true })
         .limit(200);
@@ -255,6 +260,9 @@ export class OutboundProcessor {
       const done = await this.db.from('outbound_messages').update({ status: 'sent', sent_at: new Date().toISOString(), waha_msg_id: sent.id, started_at: null })
         .eq('id', row.id).eq('status', 'sending');
       if (done.error) throw new Error('Outbound completion failed');
+      const linked = await this.db.from('messages').update({ waha_msg_id: sent.id }).eq('tenant_id', row.tenant_id).eq('outbound_message_id', row.id);
+      if (linked.error) console.error('outbound_message_link_failed');
+      if (row.kind === 'owner_answer_delivery') await this.ownerAnswerOutcome(row, 'sent');
       try { await recordUsageEvent(this.db, { tenantId: row.tenant_id, eventType: 'message_sent', eventKey: sent.id }); }
       catch { console.error('outbound_usage_record_failed'); }
       let gap = this.provider.startTyping ? gapMs(row.kind, config) : 0;
@@ -264,23 +272,21 @@ export class OutboundProcessor {
       this.cooldowns.set(row.session, readyAt.getTime());
       if (gap) {
         const delayed = await this.db.from('outbound_messages').update({ not_before: readyAt.toISOString() })
-          .eq('session', row.session).eq('status', 'pending').lt('not_before', readyAt.toISOString());
+          .eq('session', row.session).eq('status', 'pending').is('deadline_at', null).lt('not_before', readyAt.toISOString());
         if (delayed.error) console.error('outbound_gap_persistence_failed');
       }
-      settle(row.id, sent.id);
     } catch {
       if (sentId) {
         // A confirmed WAHA send must never be retried merely because local accounting failed.
         const uncertain = await this.db.from('outbound_messages').update({ status: 'failed', attempts: row.attempts + 1,
           last_error: 'sent_state_uncertain', waha_msg_id: sentId, started_at: null }).eq('id', row.id);
         if (uncertain.error) console.error('outbound_sent_state_persistence_failed');
-        settle(row.id, new Error('Outbound sent state unavailable'));
         await logSystemEvent(this.db, { tenantId: row.tenant_id, level: 'error', event: 'outbound_sent_state_uncertain', details: { outboundId: row.id } });
         return;
       }
       const attempts = row.attempts + 1;
-      const delays = (await loadOwnerSettings(this.db, row.tenant_id)).behavior?.outbound_retry_delays_seconds;
-      const configured = Array.isArray(delays) && delays.length === 3 ? delays : [30, 120, 300];
+      const delays = behavior(await loadOwnerSettings(this.db, row.tenant_id)).outbound_retry_delays_seconds;
+      const configured = Array.isArray(delays) && delays.length === 3 ? delays : BEHAVIOR_DEFAULTS.outbound_retry_delays_seconds;
       const retrySeconds = configured[attempts - 1];
       const next = retrySeconds === undefined ? null : new Date(Date.now() + Number(retrySeconds) * 1000);
       if (next && row.deadline_at && next.getTime() > Date.parse(row.deadline_at)) { await this.expire(row); return; }
@@ -289,15 +295,21 @@ export class OutboundProcessor {
       if (result.error) console.error('outbound_retry_persistence_failed');
       if (next) this.wake(next);
       else {
-        settle(row.id, new Error('Outbound send failed'));
         await logSystemEvent(this.db, { tenantId: row.tenant_id, level: 'error', event: 'outbound_send_failed', details: { outboundId: row.id } });
+        if (row.kind === 'owner_answer_delivery') await this.ownerAnswerOutcome(row, 'failed');
       }
     }
+  }
+  private async ownerAnswerOutcome(row: OutboundRow, outcome: 'sent' | 'failed'): Promise<void> {
+    try {
+      const { onOwnerAnswerDeliveryOutcome } = await import('../services/owner-workflow.service.js');
+      await onOwnerAnswerDeliveryOutcome(this.db, this.provider, row, outcome);
+    } catch { console.error('owner_answer_outcome_failed', { tenantId: row.tenant_id }); }
   }
   private async expire(row: OutboundRow): Promise<void> {
     const result = await this.db.from('outbound_messages').update({ status: 'expired', started_at: null }).eq('id', row.id);
     if (result.error) throw new Error('Outbound expiry failed');
-    settle(row.id, new Error('Outbound deadline expired'));
+    if (row.kind === 'owner_answer_delivery') await this.ownerAnswerOutcome(row, 'failed');
     if (!row.deadline_at || row.kind === 'owner_notice') return;
     const settings = await loadOwnerSettings(this.db, row.tenant_id);
     const to = ownerDestination(settings);
@@ -310,20 +322,43 @@ export class OutboundProcessor {
       .format(new Date(row.deadline_at));
     await enqueueMessage(this.db, row.tenant_id, this.provider, { session: row.session, chatId: to,
       text: renderText(settings, 'owner.reminder_missed', behavior(settings).owner_language, { name, time }) },
-    { kind: 'owner_notice', dedupeKey: `missed:${row.id}`, waitForDelivery: false });
+    { kind: 'owner_notice', dedupeKey: `missed:${row.id}` });
   }
 }
 
 export function startOutboundQueue(db: DatabaseClient = supabase, provider: WhatsAppProvider = createWhatsAppProvider()): () => void {
   let worker = processors.get(db);
-  if (!worker) { worker = new OutboundProcessor(db, provider); processors.set(db, worker); }
+  if (!worker) { worker = new OutboundProcessor(db, provider); processors.set(db, worker); liveDatabases.add(db); }
   worker.launch();
   return () => { stopOutboundQueue(db); };
+}
+
+/** Wait until every due outbound row has been processed (tests, graceful shutdown). */
+export async function settleOutboundQueue(db: DatabaseClient, maxRounds = 500): Promise<void> {
+  for (let round = 0; round < maxRounds; round++) {
+    const worker = processors.get(db);
+    if (!worker) return;
+    await worker.drain();
+    const due = await db.from('outbound_messages').select('id').in('status', ['pending', 'sending'])
+      .lte('not_before', new Date().toISOString()).limit(1);
+    if (due.error) throw new Error('Outbound settle lookup failed');
+    if (!due.data?.length) return;
+    worker.wake(new Date());
+    await delay(5);
+  }
+  throw new Error('Outbound queue did not settle');
 }
 
 export async function stopOutboundQueue(db: DatabaseClient): Promise<void> {
   const worker = processors.get(db);
   worker?.stop();
   await worker?.drain();
-  processors.delete(db);
+  processors.delete(db); liveDatabases.delete(db);
+}
+
+/** Test helper: settle every running outbound queue in this process. */
+export async function settleAllOutboundQueues(): Promise<void> {
+  for (const db of [...liveDatabases]) {
+    try { await settleOutboundQueue(db); } catch { liveDatabases.delete(db); }
+  }
 }

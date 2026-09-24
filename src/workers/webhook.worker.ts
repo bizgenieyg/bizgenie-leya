@@ -98,19 +98,6 @@ export async function handleWebhookEvent(tenantId: string, body: Record<string, 
   const memory = client.auto_reply_allowed === false ? { messages: [], introduced: false } :
     await loadConversationMemory(db, tenantId, conversation.id, config.context_message_count, config.context_retention_hours);
   const currentTexts = messageRows.filter(row => typeof row.body === 'string').length;
-  if (client.auto_reply_allowed !== false && memory.messages.length <= currentTexts) {
-    const history = await fetchChatHistory(provider, session, from,
-      pieces.flatMap(piece => piece.kind === 'message' && piece.incomingMsgId ? [piece.incomingMsgId] : []),
-      { limit: config.history_fetch_limit, maxCharacters: config.history_max_characters, timeoutSeconds: config.history_timeout_seconds });
-    if (history.length) {
-      memory.messages = [...history, ...memory.messages];
-      if (!memory.introduced && history.some(item => item.fromMe)) {
-        const marked = await db.from('conversations').update({ assistant_introduced_at: new Date().toISOString() }).eq('tenant_id', tenantId).eq('id', conversation.id).is('assistant_introduced_at', null);
-        if (marked.error) console.error('history_introduced_mark_failed', { tenantId, conversationId: conversation.id });
-        memory.introduced = true;
-      }
-    }
-  }
   const sink: PipelineSink = {
     mode: 'whatsapp',
     isConversationPaused: () => conversationPaused(db, tenantId, conversation.id, settings),
@@ -120,7 +107,14 @@ export async function handleWebhookEvent(tenantId: string, body: Record<string, 
     sendToClient: async reply => (await enqueueMessage(db, tenantId, provider, { session, chatId: from, text: reply },
       { kind: 'reply', dedupeKey: `inbound-reply:${inboundEventIds?.[0] ?? randomUUID()}`,
         inboundMessageIds: pieces.flatMap(piece => piece.kind === 'message' && piece.incomingMsgId ? [piece.incomingMsgId] : []) })).id || null,
-    persistAssistantMessage: async (answer, id) => { await db.from('messages').insert({ conversation_id: conversation.id, tenant_id: tenantId, from_me: true, body: answer, msg_type: 'text', waha_msg_id: id }); },
+    persistAssistantMessage: async (answer, outboundId) => { await db.from('messages').insert({ conversation_id: conversation.id, tenant_id: tenantId, from_me: true, body: answer, msg_type: 'text', outbound_message_id: outboundId }); },
+    loadChatHistory: async () => {
+      if (memory.messages.length > currentTexts) return { messages: [], introduced: false };
+      const history = await fetchChatHistory(provider, session, from,
+        pieces.flatMap(piece => piece.kind === 'message' && piece.incomingMsgId ? [piece.incomingMsgId] : []),
+        { limit: config.history_fetch_limit, maxCharacters: config.history_max_characters, timeoutSeconds: config.history_timeout_seconds });
+      return { messages: history, introduced: history.some(item => item.fromMe) };
+    },
     createEscalation: async language => {
       const answer = await createEscalation(db, provider, { tenant_id: tenantId, session, conversation_id: conversation.id,
         client_chat_id: from, client_name: pushName || client.name || clientPhone, question: text,
