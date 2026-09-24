@@ -1,5 +1,6 @@
 import { SessionNotFoundError } from "./whatsapp-provider.interface.js";
 import type {
+  WhatsAppChatMessage,
   SendMessageInput,
   SendMessageResult,
   SessionStatus,
@@ -170,6 +171,17 @@ export class WahaProvider implements WhatsAppProvider, WhatsAppSessionProvider {
       const timestamp = value.conversationTimestamp;
       return [{ id: value.id, ...(typeof timestamp === "number" && Number.isFinite(timestamp) && timestamp > 0
         ? { conversationTimestamp: timestamp } : {}) }];
+    });
+  }
+
+  async getChatMessages(session: string, chatId: string, options: { limit: number; timeoutMs: number }): Promise<WhatsAppChatMessage[]> {
+    const params = new URLSearchParams({ limit: String(options.limit), offset: "0", downloadMedia: "false" });
+    const data = await this.request("GET", `/api/${encodeURIComponent(session)}/chats/${encodeURIComponent(chatId)}/messages?${params}`, undefined, AbortSignal.timeout(options.timeoutMs));
+    if (!Array.isArray(data)) throw new Error("WAHA chat messages endpoint returned a non-array response");
+    return data.flatMap((value): WhatsAppChatMessage[] => {
+      if (!isRecord(value) || typeof value.id !== "string" || typeof value.timestamp !== "number" || !Number.isFinite(value.timestamp)) return [];
+      return [{ id: value.id, timestamp: value.timestamp, fromMe: value.fromMe === true,
+        body: typeof value.body === "string" ? value.body : "", hasMedia: value.hasMedia === true }];
     });
   }
 

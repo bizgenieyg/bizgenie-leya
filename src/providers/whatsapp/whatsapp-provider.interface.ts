@@ -60,12 +60,22 @@ export interface WhatsAppChatActivity {
   conversationTimestamp?: number;
 }
 
+export interface WhatsAppChatMessage {
+  id: string;
+  /** Unix seconds. */
+  timestamp: number;
+  fromMe: boolean;
+  body: string;
+  hasMedia: boolean;
+}
+
 export interface WhatsAppProvider {
   sendMessage(input: SendMessageInput): Promise<SendMessageResult>;
   sendSeen?(input: { session: string; chatId: string; messageIds?: string[] }): Promise<void>;
   startTyping?(input: { session: string; chatId: string }): Promise<void>;
   stopTyping?(input: { session: string; chatId: string }): Promise<void>;
   getSessionStatus(session: string): Promise<SessionStatus>;
+  getChatMessages?(session: string, chatId: string, options: { limit: number; timeoutMs: number }): Promise<WhatsAppChatMessage[]>;
 }
 
 /** Administrative lifecycle operations for sessions in the shared WAHA container. */

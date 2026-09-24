@@ -5,6 +5,7 @@ import { createAIProvider } from '../providers/ai/index.js';
 import type { WhatsAppProvider } from '../providers/whatsapp/whatsapp-provider.interface.js';
 import { createWhatsAppProvider } from '../providers/whatsapp/index.js';
 import { loadConversationMemory } from '../services/context.service.js';
+import { fetchChatHistory } from '../services/chat-history.service.js';
 import { meterAI } from '../services/metered-providers.js';
 import { enqueueMessage } from './outbound-queue.js';
 import { notifyUsageFailure, deliverUsageNotices } from '../services/usage-notifications.service.js';
@@ -96,6 +97,20 @@ export async function handleWebhookEvent(tenantId: string, body: Record<string, 
   const config = behavior(settings);
   const memory = client.auto_reply_allowed === false ? { messages: [], introduced: false } :
     await loadConversationMemory(db, tenantId, conversation.id, config.context_message_count, config.context_retention_hours);
+  const currentTexts = messageRows.filter(row => typeof row.body === 'string').length;
+  if (client.auto_reply_allowed !== false && memory.messages.length <= currentTexts) {
+    const history = await fetchChatHistory(provider, session, from,
+      pieces.flatMap(piece => piece.kind === 'message' && piece.incomingMsgId ? [piece.incomingMsgId] : []),
+      { limit: config.history_fetch_limit, maxCharacters: config.history_max_characters, timeoutSeconds: config.history_timeout_seconds });
+    if (history.length) {
+      memory.messages = [...history, ...memory.messages];
+      if (!memory.introduced && history.some(item => item.fromMe)) {
+        const marked = await db.from('conversations').update({ assistant_introduced_at: new Date().toISOString() }).eq('tenant_id', tenantId).eq('id', conversation.id).is('assistant_introduced_at', null);
+        if (marked.error) console.error('history_introduced_mark_failed', { tenantId, conversationId: conversation.id });
+        memory.introduced = true;
+      }
+    }
+  }
   const sink: PipelineSink = {
     mode: 'whatsapp',
     isConversationPaused: () => conversationPaused(db, tenantId, conversation.id, settings),
