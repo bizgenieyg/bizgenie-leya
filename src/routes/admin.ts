@@ -38,6 +38,12 @@ function queryTenantId(value: unknown): string {
   return value;
 }
 
+// Operator tool: move existing sessions to the target webhook events. Restarts each running session (no QR).
+adminRouter.post("/waha/sync-webhooks", async (request, response) => {
+  const tenantId = request.query.tenantId === undefined ? undefined : queryTenantId(request.query.tenantId);
+  response.setHeader("Cache-Control", "no-store");
+  response.json(await waha.syncAllWebhookEvents(tenantId));
+});
 adminRouter.post("/waha/create", async (request, response) => {
   const tenantId = requiredString(objectBody(request.body), "tenantId");
   if (!isUuid(tenantId)) throw new HttpError(400, "tenantId must be a UUID");

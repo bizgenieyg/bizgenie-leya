@@ -75,9 +75,9 @@ export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
     "en": "I'm still checking the remaining questions with the owner and will write as soon as I have an answer."
   },
   "owner.remind": {
-    "ru": "Напоминание: клиент {name} ждёт ответа.\n\n{question}\n\nОтветьте реплеем на это сообщение.",
-    "en": "Reminder: {name} is waiting for an answer.\n\n{question}\n\nReply to this message.",
-    "he": "תזכורת: {name} ממתין לתשובה.\n\n{question}\n\nנא להשיב בציטוט להודעה זו."
+    "ru": "Напоминание: клиент {name} ({phone}) ждёт ответа.\n\n{question}\n\nОтветьте реплеем на это сообщение.",
+    "en": "Reminder: {name} ({phone}) is waiting for an answer.\n\n{question}\n\nReply to this message.",
+    "he": "תזכורת: {name} ({phone}) ממתין לתשובה.\n\n{question}\n\nנא להשיב בציטוט להודעה זו."
   },
   "owner.reminder_missed": {
     "ru": "Напоминание клиенту {name} на {time} не отправлено вовремя.",

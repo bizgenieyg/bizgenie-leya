@@ -18,7 +18,17 @@ import {
   reconnectWahaSession,
   sessionConfigForTenant,
   sessionNameForTenant,
+  WEBHOOK_EVENTS,
+  WEBHOOK_SYNC_PAUSE_MS,
+  WEBHOOK_SYNC_POLL_MS,
+  WEBHOOK_SYNC_WAIT_MS,
 } from "./waha-admin.utils.js";
+
+export type WebhookSyncResult = { tenantId: string; session: string; before: string[]; after: string[]; status: string;
+  result: 'updated' | 'unchanged' | 'requires_reconnect' | 'failed' };
+const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+const sameEvents = (a: string[], b: readonly string[]) => a.length === b.length && b.every(event => a.includes(event));
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 function upstreamError(): never {
   throw new HttpError(502, "WAHA request failed");
@@ -40,6 +50,10 @@ export class WahaAdminService {
     let existing = await this.readStatus(session);
     if (existing.status !== "NOT_CREATED") {
       await this.ensureWebhookSecret(tenantId);
+      // Reconnect from the cabinet also repairs an outdated webhook subscription (no waiting here).
+      try { await this.syncWebhookEvents(tenantId, { waitMs: 0 }); }
+      catch { console.error('waha_webhook_sync_failed', { tenantId }); }
+      existing = await this.readStatus(session);
       await this.updateInstanceStatus(tenantId, existing.status);
       return { session, ...existing, created: false };
     }
@@ -61,6 +75,66 @@ export class WahaAdminService {
     await this.updateInstanceStatus(tenantId, normalized.status);
     invalidateSessionIdentity(session);
     return { session, ...normalized, created: true };
+  }
+
+  /**
+   * Bring an existing session's webhook to WEBHOOK_EVENTS, keeping the rest of its current config
+   * (url, X-Webhook-Token, retries, metadata). WAHA's PUT stops and starts a running session with
+   * the new config without logging out, so no QR is needed; we then wait for WORKING again.
+   * Sessions waiting for a QR or failed are left untouched: they get the config on reconnect.
+   */
+  async syncWebhookEvents(tenantId: string, options: { waitMs?: number; pollMs?: number } = {}): Promise<WebhookSyncResult> {
+    const instance = await this.db.from("whatsapp_instances").select("session_name").eq("tenant_id", tenantId).maybeSingle();
+    if (instance.error) throw new HttpError(500, "WhatsApp instance lookup failed");
+    const session = typeof instance.data?.session_name === "string" && instance.data.session_name ? instance.data.session_name : sessionNameForTenant(tenantId);
+    const base = { tenantId, session, before: [] as string[], after: [] as string[], status: 'unknown' };
+    if (!this.provider.getSessionConfig || !this.provider.updateSessionConfig) return { ...base, result: 'failed' };
+    let config: Record<string, unknown> | null;
+    let status: string;
+    try { config = await this.provider.getSessionConfig(session); status = (await this.readStatus(session)).status; }
+    catch { return { ...base, result: 'failed' }; }
+    if (!config) return { ...base, status: 'NOT_CREATED', result: 'requires_reconnect' };
+    const webhooks = Array.isArray(config.webhooks) ? config.webhooks.map(record) : [];
+    const index = webhooks.findIndex(hook => typeof hook.url === 'string' && hook.url.replace(/\/+$/, '').endsWith(`/webhook/${tenantId}`));
+    if (index < 0) return { ...base, status, result: 'failed' };
+    const hook = webhooks[index]!;
+    const before = Array.isArray(hook.events) ? hook.events.filter((e): e is string => typeof e === 'string') : [];
+    if (sameEvents(before, WEBHOOK_EVENTS)) return { ...base, before, after: before, status, result: 'unchanged' };
+    // Never write a webhook without its authentication header: that would silence the tenant.
+    const headers = Array.isArray(hook.customHeaders) ? hook.customHeaders.map(record) : [];
+    if (!headers.some(h => h.name === 'X-Webhook-Token' && typeof h.value === 'string' && h.value.length > 0))
+      return { ...base, before, after: before, status, result: 'failed' };
+    if (['SCAN_QR_CODE', 'FAILED', 'NOT_CREATED'].includes(status)) return { ...base, before, after: before, status, result: 'requires_reconnect' };
+    const next = { ...config, webhooks: webhooks.map((h, i) => i === index ? { ...h, events: [...WEBHOOK_EVENTS] } : h) };
+    try { await this.provider.updateSessionConfig(session, next); }
+    catch { return { ...base, before, after: before, status, result: 'failed' }; }
+    invalidateSessionIdentity(session);
+    const waitMs = options.waitMs ?? WEBHOOK_SYNC_WAIT_MS, pollMs = options.pollMs ?? WEBHOOK_SYNC_POLL_MS;
+    let current = status;
+    if (status === 'WORKING' && waitMs > 0) {
+      const deadline = Date.now() + waitMs;
+      do { await sleep(pollMs); current = (await this.readStatus(session).catch(() => ({ status: 'unknown' }))).status; }
+      while (current !== 'WORKING' && current !== 'SCAN_QR_CODE' && Date.now() < deadline);
+      await this.updateInstanceStatus(tenantId, current);
+    }
+    const after = [...WEBHOOK_EVENTS];
+    if (current === 'SCAN_QR_CODE') return { ...base, before, after, status: current, result: 'requires_reconnect' };
+    if (status === 'WORKING' && waitMs > 0 && current !== 'WORKING') return { ...base, before, after, status: current, result: 'failed' };
+    return { ...base, before, after, status: current, result: 'updated' };
+  }
+
+  /** Sync every tenant's session (or one), pausing between sessions so WAHA restarts do not overlap. */
+  async syncAllWebhookEvents(tenantId?: string, options: { pauseMs?: number; waitMs?: number; pollMs?: number } = {}): Promise<WebhookSyncResult[]> {
+    let query = this.db.from("whatsapp_instances").select("tenant_id").order("created_at", { ascending: true });
+    if (tenantId) query = query.eq("tenant_id", tenantId);
+    const rows = await query;
+    if (rows.error) throw new HttpError(500, "WhatsApp instances lookup failed");
+    const results: WebhookSyncResult[] = [];
+    for (const [i, row] of (rows.data ?? []).entries()) {
+      if (i) await sleep(options.pauseMs ?? WEBHOOK_SYNC_PAUSE_MS);
+      results.push(await this.syncWebhookEvents(String(row.tenant_id), options));
+    }
+    return results;
   }
 
   async qr(tenantId: string): Promise<QrImage> {

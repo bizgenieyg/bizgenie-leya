@@ -79,6 +79,23 @@ export class WahaProvider implements WhatsAppProvider, WhatsAppSessionProvider {
     return result;
   }
 
+  /** Full current session config as WAHA stores it (webhooks with url, events, headers, retries; metadata). */
+  async getSessionConfig(session: string): Promise<Record<string, unknown> | null> {
+    let data: unknown;
+    try {
+      data = await this.request("GET", `/api/sessions/${encodeURIComponent(session)}`, undefined, AbortSignal.timeout(10000));
+    } catch (error) {
+      if (error instanceof WahaHttpError && error.status === 404) return null;
+      throw error;
+    }
+    return isRecord(data) && isRecord(data.config) ? data.config : null;
+  }
+
+  /** PUT /api/sessions/{name}: WAHA stops and starts a running session with the new config (no logout). */
+  async updateSessionConfig(session: string, config: Record<string, unknown>): Promise<void> {
+    await this.request("PUT", `/api/sessions/${encodeURIComponent(session)}`, { name: session, config }, AbortSignal.timeout(15000));
+  }
+
   async startSession(input: StartSessionInput): Promise<SessionStatus> {
     const data = await this.request("POST", "/api/sessions", { ...input, start: true });
     const record = isRecord(data) ? data : {};

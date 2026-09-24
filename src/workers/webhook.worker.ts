@@ -119,7 +119,7 @@ export async function handleWebhookEvent(tenantId: string, body: Record<string, 
     createEscalation: async (language, questions, answered) => {
       const answer = await createEscalation(db, provider, { tenant_id: tenantId, session, conversation_id: conversation.id,
         client_chat_id: from, client_name: pushName || client.name || formatPhone(client.phone) || '', question: text,
-        response_language: language, inbound_id: incomingMsgId }, settings, client.time_zone, { ...(questions ? { questions } : {}), answered: answered ?? null });
+        response_language: language, inbound_id: incomingMsgId, client_phone: client.phone }, settings, client.time_zone, { ...(questions ? { questions } : {}), answered: answered ?? null });
       return answer ? withoutRepeatedIntroduction(answer, memory.introduced) : null;
     },
     markIntroduced: async () => {

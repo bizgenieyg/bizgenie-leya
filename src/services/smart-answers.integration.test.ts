@@ -222,3 +222,25 @@ test('simulator keeps the escalation waiting text in its history', async () => {
     assert.equal(rows[1]!.body, result.reply);
   } finally { await f.close(); await rm(root, { recursive: true, force: true }); }
 });
+
+test('merged client: escalation from @lid shows the number although the card keeps the old @c.us jid', async () => {
+  const f = await fixture();
+  try {
+    const { handleWebhookEvent } = await import('../workers/webhook.worker.js');
+    await f.pg.query("insert into clients(tenant_id,phone,whatsapp_jid,name) values($1,'972501234567','972501234567@c.us','Дана')", [f.tenantId]);
+    const ai = { async generateReply(input: { systemPrompt: string }) {
+      if (input.systemPrompt.includes('классификатор')) return { text: classifier };
+      return { text: '{"reply":null,"unanswered":["Есть парковка?"]}' };
+    } };
+    await handleWebhookEvent(f.tenantId, f.incoming('m1', 'Есть парковка?'), f.db, f.provider, ai as never); await settleAllOutboundQueues();
+    assert.equal((await f.pg.query<{ n: number }>('select count(*)::int n from clients where tenant_id=$1', [f.tenantId])).rows[0]!.n, 1, 'one client for both ids');
+    assert.match(f.toOwner()[0]!.text, /^❓ Дана \(\+972 50-123-4567\):/);
+    const esc = (await f.pg.query<{ client_phone: string; client_chat_id: string }>('select client_phone,client_chat_id from escalations')).rows[0]!;
+    assert.deepEqual(esc, { client_phone: '972501234567', client_chat_id: customer });
+    // Without the snapshot (rows created before 058) the number comes through conversation → client.
+    await f.pg.query('update escalations set client_phone=null,reminded_at=null,pending_since=now()-interval \'3 hours\'');
+    const { runEscalationTimeouts } = await import('./owner-workflow.service.js');
+    await runEscalationTimeouts(f.db, () => f.provider, new Date()); await settleAllOutboundQueues();
+    assert.match(f.toOwner().at(-1)!.text, /Напоминание: клиент Дана \(\+972 50-123-4567\) ждёт ответа/);
+  } finally { await f.close(); }
+});

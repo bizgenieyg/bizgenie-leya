@@ -8,7 +8,7 @@ import type { AIProvider } from "../providers/ai/ai-provider.interface.js";
 import { polishOwnerAnswer, translateOwnerAnswer } from "./ai-fallback.service.js";
 import { loadContext } from "./context.service.js";
 import { handleSuggestionReply, proposeKnowledgeSuggestion } from "./knowledge-suggestions.service.js";
-import { formatPhone } from "../utils/whatsapp-id.js";
+import { formatPhone, storedPhone } from "../utils/whatsapp-id.js";
 import { randomUUID } from "node:crypto";
 import { meterAI } from "./metered-providers.js";
 import { createAIProvider } from "../providers/ai/index.js";
@@ -26,7 +26,7 @@ export interface Escalation {
   response_language?:string|null;
   pending_since?:string|null;reminded_at?:string|null;created_at?:string;
   inbound_id:string|null;status:string;owner_message_ids:string[];answer:string|null;learning_state:string;learning_message_ids:string[];
-  client_message_id?:string|null;batch_id?:string|null;batch_position?:number;
+  client_message_id?:string|null;batch_id?:string|null;batch_position?:number;client_phone?:string|null;
 }
 const JOB='owner_escalation';
 const TIMEOUT_JOB='escalation_timeout';
@@ -109,6 +109,17 @@ export async function rescheduleTenantEscalationTimeouts(db:DatabaseClient,tenan
     await scheduleEscalationTimeout(db,e,settings,now,settings.auto_replies_paused?expiry:undefined);
   }
 }
+/**
+ * The client's real number for owner messages: the snapshot taken when the escalation was created,
+ * else conversation → client (a merged @lid/@c.us client keeps its old whatsapp_jid, so never by chat id).
+ */
+async function escalationPhone(db:DatabaseClient,e:Escalation):Promise<string|null>{
+  if(storedPhone(e.client_phone))return e.client_phone!;
+  const conversation=await db.from('conversations').select('client_id').eq('tenant_id',e.tenant_id).eq('id',e.conversation_id).maybeSingle();check(conversation.error);
+  if(!conversation.data?.client_id)return null;
+  const client=await db.from('clients').select('phone').eq('tenant_id',e.tenant_id).eq('id',conversation.data.client_id).maybeSingle();check(client.error);
+  return storedPhone(client.data?.phone);
+}
 export async function notifyOwner(db:DatabaseClient,provider:WhatsAppProvider,e:Escalation,settings:OwnerSettings):Promise<boolean> {
   const now=new Date(),stale=await obsolete(db,e,settings,now);if(stale){await closeObsolete(db,e,stale,now);return false;}
   const destination=ownerDestination(settings);
@@ -121,8 +132,7 @@ export async function notifyOwner(db:DatabaseClient,provider:WhatsAppProvider,e:
   if(!await claim(db,e,'queued','notifying')) return false;
   let pendingSince:Date;
   try {
-    const client=await db.from('clients').select('phone').eq('tenant_id',e.tenant_id).eq('whatsapp_jid',e.client_chat_id).maybeSingle();check(client.error);
-    const id=await send(db,e.tenant_id,provider,e.session,destination,buildEscalationText(e.client_name,e.question,settings,formatPhone(client.data?.phone)),'owner_notice',`escalation:${e.id}:notice`);
+    const id=await send(db,e.tenant_id,provider,e.session,destination,buildEscalationText(e.client_name,e.question,settings,formatPhone(await escalationPhone(db,e))),'owner_notice',`escalation:${e.id}:notice`);
     pendingSince=new Date();
     await patch(db,e,{status:'pending',pending_since:pendingSince.toISOString(),owner_message_ids:[...new Set([...e.owner_message_ids,id])]});
   } catch {
@@ -362,7 +372,8 @@ export async function runEscalationTimeouts(db:DatabaseClient,providerFor:()=>Wh
     const to=ownerDestination(settings),me=readSessionIdentity((await provider.getSessionStatus(e.session)).me);
     if(!to||!me.id||ownerIdentityField(to,me)||ownerIdentityField(`${settings.owner_phone}@c.us`,me))continue;
     if(!await claim(db,e,'pending','reminding'))continue;
-    try{const id=await send(db,e.tenant_id,provider,e.session,to,renderText(settings,'owner.remind',config.owner_language,{name:e.client_name,question:e.question}),'reminder',`escalation:${e.id}:remind`);
+    try{const phone=formatPhone(await escalationPhone(db,e)),remind=renderText(settings,'owner.remind',config.owner_language,{name:e.client_name,phone:phone??'',question:e.question});
+     const id=await send(db,e.tenant_id,provider,e.session,to,phone?remind:remind.replace(/\s*\(\s*\)/,''),'reminder',`escalation:${e.id}:remind`);
      await patch(db,e,{status:'pending',reminded_at:now.toISOString(),owner_message_ids:[...e.owner_message_ids,id]});
     }catch{await patch(db,e,{status:'pending',reminded_at:now.toISOString()});console.error('escalation_reminder_uncertain',{tenantId:e.tenant_id,escalationId:e.id});}
     // Some questions of the batch are answered while this one still waits: send what we have.

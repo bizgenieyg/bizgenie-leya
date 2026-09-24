@@ -8,6 +8,12 @@ export function sessionNameForTenant(tenantId: string): string {
   return `tenant-${tenantId}`;
 }
 
+/** Target webhook subscription: message.any carries the owner's own sends (takeover) and all inbound. */
+export const WEBHOOK_EVENTS = ["message.any", "session.status"] as const;
+export const WEBHOOK_SYNC_PAUSE_MS = 2_500;
+export const WEBHOOK_SYNC_WAIT_MS = 60_000;
+export const WEBHOOK_SYNC_POLL_MS = 3_000;
+
 export function sessionConfigForTenant(
   tenantId: string,
   publicBaseUrl: string,
@@ -21,7 +27,7 @@ export function sessionConfigForTenant(
       webhooks: [
         {
           url: `${baseUrl}/webhook/${tenantId}`,
-          events: ["message.any", "session.status"],
+          events: [...WEBHOOK_EVENTS],
           retries: { policy: 'linear', delaySeconds: 2, attempts: 4 },
           customHeaders: [{ name: "X-Webhook-Token", value: webhookSecret }],
         },

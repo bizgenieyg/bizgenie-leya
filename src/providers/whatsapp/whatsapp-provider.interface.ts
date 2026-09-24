@@ -90,5 +90,7 @@ export interface WhatsAppSessionProvider {
   getSessionStatus(session: string): Promise<SessionStatus>;
   getQrImage(session: string): Promise<QrImage>;
   getGroups?(session: string): Promise<WhatsAppGroup[]>;
+  getSessionConfig?(session: string): Promise<Record<string, unknown> | null>;
+  updateSessionConfig?(session: string, config: Record<string, unknown>): Promise<void>;
   getChats?(session: string, options: { limit: number; offset: number; sortBy: "conversationTimestamp"; sortOrder: "desc" }): Promise<WhatsAppChatActivity[]>;
 }
