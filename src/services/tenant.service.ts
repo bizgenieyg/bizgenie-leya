@@ -28,6 +28,13 @@ export interface TenantRouting {
   instance: WhatsappInstanceRow | null;
 }
 
+const ROUTING_TTL_MS = 10 * 60_000;
+const UNKNOWN_ROUTING_TTL_MS = 60_000;
+const routingCaches = new WeakMap<DatabaseClient, Map<string, { value: TenantRouting | null; expiresAt: number }>>();
+export function invalidateTenantRouting(db: DatabaseClient, tenantId: string): void {
+  routingCaches.get(db)?.delete(tenantId);
+}
+
 export interface ClientRow {
   time_zone?: string | null;
   id: string;
@@ -59,6 +66,10 @@ export async function getTenantRouting(
   if (!isUuid(tenantId)) {
     return null;
   }
+  let cache = routingCaches.get(db);
+  if (!cache) { cache = new Map(); routingCaches.set(db, cache); }
+  const cached = cache.get(tenantId);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
 
   const { data: tenant, error: tenantError } = await db
     .from("tenants")
@@ -69,6 +80,7 @@ export async function getTenantRouting(
     throw new HttpError(500, "Tenant lookup failed");
   }
   if (!tenant) {
+    cache.set(tenantId, { value: null, expiresAt: Date.now() + UNKNOWN_ROUTING_TTL_MS });
     return null;
   }
 
@@ -83,10 +95,12 @@ export async function getTenantRouting(
     throw new HttpError(500, "WhatsApp instance lookup failed");
   }
 
-  return {
+  const routing = {
     tenant: tenant as TenantRow,
     instance: (instance as WhatsappInstanceRow | null) ?? null,
   };
+  cache.set(tenantId, { value: routing, expiresAt: Date.now() + ROUTING_TTL_MS });
+  return routing;
 }
 
 export function isTenantServiceable(status: string): boolean {

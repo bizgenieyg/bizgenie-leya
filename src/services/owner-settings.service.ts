@@ -19,12 +19,23 @@ export interface ScheduleException {
   id:string;start_date:string;end_date:string;kind:'day_off'|'special_hours';
   work_start:string|null;work_end:string|null;name:string;recurs_annually:boolean;
 }
+const SETTINGS_TTL_MS = 10 * 60_000;
+const settingsCaches = new WeakMap<DatabaseClient, Map<string, { value: OwnerSettings; expiresAt: number }>>();
+export function invalidateOwnerSettings(db: DatabaseClient, tenantId: string): void {
+  settingsCaches.get(db)?.delete(tenantId);
+}
 export async function loadOwnerSettings(db: DatabaseClient, tenantId: string): Promise<OwnerSettings> {
+  let cache = settingsCaches.get(db);
+  if (!cache) { cache = new Map(); settingsCaches.set(db, cache); }
+  const cached = cache.get(tenantId);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
   const { data, error } = await db.from("notification_settings").select("owner_phone,owner_chat_id,owner_pairing_hash,owner_pairing_expires_at,quiet_hours_start,quiet_hours_end,mode,time_zone,auto_replies_paused,translate_owner_answer,behavior,templates").eq("tenant_id",tenantId).maybeSingle();
   if (error) throw new Error("Owner settings lookup failed");
   const exceptions=await db.from('schedule_exceptions').select('id,start_date,end_date,kind,work_start,work_end,name,recurs_annually').eq('tenant_id',tenantId).order('start_date');
   if(exceptions.error)throw new Error('Schedule exceptions lookup failed');
-  return data ? {...data,exceptions:exceptions.data??[]} as unknown as OwnerSettings : { owner_phone:null,owner_chat_id:null,quiet_hours_start:null,quiet_hours_end:null,mode:"mute_all",time_zone:"Asia/Jerusalem",auto_replies_paused:false,exceptions:[] };
+  const value = data ? {...data,exceptions:exceptions.data??[]} as unknown as OwnerSettings : { owner_phone:null,owner_chat_id:null,quiet_hours_start:null,quiet_hours_end:null,mode:"mute_all",time_zone:"Asia/Jerusalem",auto_replies_paused:false,exceptions:[] };
+  cache.set(tenantId, { value, expiresAt: Date.now() + SETTINGS_TTL_MS });
+  return value;
 }
 export function ownerDestination(settings: OwnerSettings): string { return settings.owner_chat_id || toChatId(settings.owner_phone); }
 export function isBusinessOwner(from: string, settings: OwnerSettings): boolean {
@@ -55,6 +66,7 @@ export async function saveOwnerSettings(db: DatabaseClient, tenantId: string, in
   const { error } = await db.from("notification_settings").upsert({tenant_id:tenantId,owner_phone:phone,owner_chat_id:null,
     time_zone:timeZone,owner_pairing_hash:hash(code),owner_pairing_expires_at:new Date(Date.now()+ttlMinutes*60*1000).toISOString(),quiet_hours_start:start,quiet_hours_end:end,mode:"mute_all"},{onConflict:"tenant_id"});
   if(error) throw new Error("Owner settings save failed");
+  invalidateOwnerSettings(db,tenantId);
   if(settings.time_zone!==timeZone||settings.quiet_hours_start!==start||settings.quiet_hours_end!==end){
     const updated=await loadOwnerSettings(db,tenantId);
     const {rescheduleOwnerSummary}=await import('./owner-summary.service.js');
@@ -74,5 +86,6 @@ export async function pairOwner(db: DatabaseClient,tenantId:string,from:string,t
   const {error}=await db.from("notification_settings").update({owner_chat_id:from,owner_pairing_hash:null,owner_pairing_expires_at:null})
     .eq("tenant_id",tenantId).eq("owner_pairing_hash",settings.owner_pairing_hash);
   if(error) throw new Error("Owner pairing failed");
+  invalidateOwnerSettings(db,tenantId);
   return true;
 }

@@ -19,11 +19,13 @@ import { withoutRepeatedIntroduction } from '../utils/assistant-text.js';
 import { filterIncoming, incomingDiagnostics, logRejectedIncoming, ownerIdentityField, readSessionIdentity } from '../utils/incoming-policy.js';
 import { normalizeWebhookMessage, webhookEventType } from '../utils/webhook-message.js';
 import { isStatusBroadcast, senderKey } from '../utils/whatsapp-id.js';
+import { sessionIdentity } from '../services/session-identity.service.js';
 
 /** Transport and persistence boundary for an authenticated WAHA webhook. */
 export async function handleWebhookEvent(tenantId: string, body: Record<string, unknown>, db: DatabaseClient = supabase,
   whatsapp?: WhatsAppProvider, ai?: AIProvider | null,
-  voiceAdmission?: { key: string; seconds: number; unavailable?: boolean | undefined; sttKey: string; sttMetadata: Record<string, unknown> }): Promise<void> {
+  voiceAdmission?: { key: string; seconds: number; unavailable?: boolean | undefined; sttKey: string; sttMetadata: Record<string, unknown> },
+  batch?: Record<string, unknown>[], inboundEventIds?: string[]): Promise<void> {
   const decision = filterIncoming(body);
   if (!decision.allowed) { logRejectedIncoming(decision); return; }
   const event = webhookEventType(body);
@@ -35,7 +37,9 @@ export async function handleWebhookEvent(tenantId: string, body: Record<string, 
     await logSystemEvent(db, { tenantId, level: invalid ? 'warn' : 'info', event: invalid ? 'webhook_invalid_message' : 'webhook_ignored_event', details });
     return;
   }
-  const { from, text, incomingMsgId, pushName } = normalized;
+  const pieces = batch?.map(item => normalizeWebhookMessage(item)).filter(item => item.kind === 'message') ?? [normalized];
+  const { from, incomingMsgId, pushName } = normalized;
+  const text = pieces.map(item => item.kind === 'message' ? item.text : '').filter(Boolean).join('\n');
   if (isStatusBroadcast(from)) return;
   const routing = await getTenantRouting(db, tenantId);
   if (!routing) { await logSystemEvent(db, { tenantId, level: 'warn', event: 'webhook_unknown_tenant', details: {} }); return; }
@@ -46,7 +50,7 @@ export async function handleWebhookEvent(tenantId: string, body: Record<string, 
   const rawAI = ai === undefined ? createAIProvider() : ai;
   const model = meterAI(db, tenantId, rawAI);
   let me = readSessionIdentity(body.me);
-  try { me = { ...me, ...readSessionIdentity((await provider.getSessionStatus(session)).me) }; }
+  try { me = { ...me, ...await sessionIdentity(provider, session, !whatsapp) }; }
   catch { console.warn('webhook_session_identity_lookup_failed'); }
   const ownerField = ownerIdentityField(from, me);
   if (ownerField) {
@@ -72,9 +76,22 @@ export async function handleWebhookEvent(tenantId: string, body: Record<string, 
     const preference = await db.from('clients').update(clientPatch).eq('tenant_id', tenantId).eq('id', client.id);
     if (preference.error) console.error('client_preferences_update_failed', { tenantId, clientId: client.id });
   }
-  const { error: insertError } = await db.from('messages').insert({ conversation_id: conversation.id, tenant_id: tenantId,
-    from_me: false, body: text, msg_type: 'text', waha_msg_id: incomingMsgId, raw_payload: body });
-  if (insertError) { await logSystemEvent(db, { tenantId, level: 'error', event: 'message_persist_failed', details: { conversation_id: conversation.id } }); return; }
+  const messageRows = (batch ?? [body]).map((item,index) => {
+    const message = normalizeWebhookMessage(item);
+    return { conversation_id: conversation.id, tenant_id: tenantId, from_me: false,
+      body: message.kind === 'message' ? message.text : null, msg_type: 'text',
+      waha_msg_id: message.kind === 'message' ? message.incomingMsgId : null, raw_payload: item,
+      ...(inboundEventIds?.[index] ? { inbound_event_id: inboundEventIds[index] } : {}) };
+  });
+  for (const row of messageRows) {
+    const { error: insertError } = await db.from('messages').insert(row);
+    if (insertError?.code === '23505' && row.inbound_event_id) continue;
+    if (insertError) {
+      await logSystemEvent(db, { tenantId, level: 'error', event: 'message_persist_failed', details: { conversation_id: conversation.id } });
+      if (inboundEventIds?.length) throw new Error('Message persistence failed');
+      return;
+    }
+  }
   const config = behavior(settings);
   const memory = client.auto_reply_allowed === false ? { messages: [], introduced: false } :
     await loadConversationMemory(db, tenantId, conversation.id, config.context_message_count, config.context_retention_hours);

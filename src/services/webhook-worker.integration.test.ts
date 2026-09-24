@@ -137,3 +137,36 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
     } finally { console.warn = warn; console.info = info; }
   } finally { await pg.close(); }
 });
+
+test('one batched pipeline call stores every incoming message and sends one answer', async () => {
+  const { handleWebhookEvent } = await import('../workers/webhook.worker.js');
+  const pg = await createTestDatabase();
+  try {
+    const db = pgliteDatabaseClient(pg);
+    const tenant = (await db.from('tenants').insert({ name: 'Business', business_name: 'Business', phone: '972500000009', status: 'active' }).select('id').single()).data as { id: string };
+    const tenantId = tenant.id;
+    await pg.query("insert into notification_settings(tenant_id,mode,time_zone) values($1,'mute_all','Asia/Jerusalem')", [tenantId]);
+    await pg.query("insert into plans(code,display_name,messages_per_month,voice_minutes_per_month,warning_percent,unlimited) values('basic','Basic',500,60,80,false) on conflict(code) do nothing");
+    await pg.query("insert into tenant_usage_limits(tenant_id,plan,messages_per_month,voice_minutes_per_month,warning_percent,messages_overridden,voice_overridden,warning_overridden) values($1,'basic',500,60,80,false,false,false)", [tenantId]);
+    await pg.query("insert into assistant_profiles(tenant_id,assistant_name,allowed_languages,tone) values($1,'Leya',array['ru'],'friendly_professional')", [tenantId]);
+    await pg.query("insert into knowledge_items(tenant_id,type,question,answer,active) values($1,'faq','Первое\nВторое\nТретье','Один ответ.',true)", [tenantId]);
+    const bodies = ['Первое', 'Второе', 'Третье'].map((body, index) => ({ event: 'message', payload: {
+      id: `batch-${index}`, from: '972500000001@c.us', fromMe: false, hasMedia: false, body,
+      _data: { Info: { Chat: '972500000001@c.us', IsFromMe: false }, Message: { conversation: body } },
+    } }));
+    const ids: string[] = [];
+    for (const [index, body] of bodies.entries()) {
+      const inserted = await db.from('inbound_events').insert({ tenant_id: tenantId, waha_event_id: `batch-${index}`,
+        chat_id: '972500000001@c.us', kind: 'client', payload: body }).select('id').single();
+      assert.ifError(inserted.error);
+      ids.push((inserted.data as { id: string }).id);
+    }
+    const sent: string[] = [];
+    const provider: WhatsAppProvider = { async sendMessage(input) { sent.push(input.text); return { id: 'reply-1' }; },
+      async getSessionStatus() { return { status: 'WORKING' }; } };
+    await handleWebhookEvent(tenantId, bodies[0]!, db, provider, null, undefined, bodies, ids);
+    const messages = await pg.query<{ body: string }>('select body from messages where tenant_id=$1 and from_me=false order by created_at,id', [tenantId]);
+    assert.deepEqual(messages.rows.map(row => row.body), ['Первое', 'Второе', 'Третье']);
+    assert.deepEqual(sent, ['Один ответ.']);
+  } finally { await pg.close(); }
+});

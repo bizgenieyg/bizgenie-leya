@@ -9,18 +9,31 @@ export class GeminiProvider implements AIProvider {
   async generateReply(input: AIReplyInput): Promise<AIReplyResult> {
     let usage: AIUsage = { model: this.model };
     try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.model)}:generateContent`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": this.apiKey },
-        redirect: "error",
-        signal: AbortSignal.timeout(10000),
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: input.systemPrompt }] },
-          contents: [{ role: "user", parts: [{ text: input.userMessage }] }],
-          generationConfig: { maxOutputTokens: 1024 },
-        }),
-      });
-      if (!response.ok) throw new Error("Gemini request failed");
+      const overall = AbortSignal.timeout(20_000);
+      let response: Response | undefined;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.model)}:generateContent`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-goog-api-key": this.apiKey },
+            redirect: "error",
+            signal: AbortSignal.any([overall, AbortSignal.timeout(9_000)]),
+            body: JSON.stringify({
+              systemInstruction: { parts: [{ text: input.systemPrompt }] },
+              contents: [{ role: "user", parts: [{ text: input.userMessage }] }],
+              generationConfig: { maxOutputTokens: 1024 },
+            }),
+          });
+        } catch {
+          if (attempt || overall.aborted) throw new Error('Gemini network unavailable');
+          await new Promise(resolve => setTimeout(resolve, 1_500));
+          continue;
+        }
+        if (response.ok) break;
+        if (attempt || !(response.status === 429 || response.status >= 500) || overall.aborted) throw new Error('Gemini request failed');
+        await new Promise(resolve => setTimeout(resolve, 1_500));
+      }
+      if (!response?.ok) throw new Error("Gemini request failed");
       const data = await response.json() as { usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number; thoughtsTokenCount?: number; cachedContentTokenCount?: number }; candidates?: { finishReason?: string; content?: { parts?: { text?: string; thought?: boolean }[] } }[] };
       const tokens = data.usageMetadata;
       const safe = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;

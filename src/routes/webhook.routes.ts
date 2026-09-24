@@ -1,23 +1,32 @@
-import { handleVoiceUsage,voiceUsage } from "../services/voice-usage.service.js";
-import { createWhatsAppProvider } from "../providers/whatsapp/index.js";
-import { filterIncoming, logRejectedIncoming } from "../utils/incoming-policy.js";
-import { webhookFailureDetails } from "../utils/webhook-error.js";
+import { voiceUsage } from "../services/voice-usage.service.js";
+import { filterIncoming, ownerIdentityField, readSessionIdentity } from "../utils/incoming-policy.js";
 import { webhookAuthValid } from "../utils/webhook-auth.js";
 import { Router } from "express";
 
 import { requireEnv } from "../config/env.js";
 import { supabase } from "../db/supabase.js";
 import { getTenantRouting } from "../services/tenant.service.js";
+import { isBusinessOwner, loadOwnerSettings } from '../services/owner-settings.service.js';
+import { behavior } from '../services/runtime-settings.service.js';
 import { decryptCredential } from "../utils/crypto.js";
 import { HttpError } from "../utils/http-error.js";
 import { objectBody } from "../utils/validation.js";
-import { handleWebhookEvent } from "../workers/webhook.worker.js";
-import { observeOwnerOutgoing } from '../services/outgoing-owner.service.js';
+import { enqueueInbound } from '../workers/inbound-queue.js';
 
 export const webhookRouter = Router();
+const limits = new Map<string, { count: number; expiresAt: number }>();
+function checkWebhookRate(ip: string): void {
+  const now = Date.now();
+  const current = limits.get(ip);
+  const next = !current || current.expiresAt <= now ? { count: 1, expiresAt: now + 60_000 } : { ...current, count: current.count + 1 };
+  limits.set(ip, next);
+  if (next.count > 120) throw new HttpError(429, 'Webhook rate limited');
+  if (limits.size > 10_000) for (const [key, value] of limits) if (value.expiresAt <= now) limits.delete(key);
+}
 
 // POST /webhook/:tenantId
 webhookRouter.post("/:tenantId", async (request, response) => {
+  checkWebhookRate(request.ip ?? 'unknown');
   const tenantId = request.params.tenantId;
 
   const routing = await getTenantRouting(supabase, tenantId);
@@ -36,23 +45,16 @@ webhookRouter.post("/:tenantId", async (request, response) => {
 
   const body = objectBody(request.body);
 
-  // Acknowledge fast; do the resolve/answer/escalate work off the request path.
-  response.status(200).json({ received: true });
-
   const decision = filterIncoming(body);
-  if (!decision.allowed) {
-    logRejectedIncoming(decision);
-    if(decision.reason==='outgoing_message')setImmediate(()=>{observeOwnerOutgoing(supabase,tenantId,body).catch(error=>console.error('owner_outgoing_observation_failed',{tenantId,errorType:error instanceof Error?error.name:'UnknownError'}));});
-    if(voiceUsage(body)) setImmediate(()=>{handleVoiceUsage(supabase,routing,body,createWhatsAppProvider()).catch(()=>console.error('voice_usage_handler_failed'));});
-    return;
+  let quietSeconds = 0;
+  if (decision.allowed || voiceUsage(body)) {
+    const settings = await loadOwnerSettings(supabase, tenantId);
+    const message = body.payload && typeof body.payload === 'object' && !Array.isArray(body.payload) ? body.payload as Record<string, unknown> : {};
+    const from = typeof message.from === 'string' ? message.from : '';
+    const owner = isBusinessOwner(from, settings) || !!ownerIdentityField(from, readSessionIdentity(body.me)) ||
+      (from.endsWith('@lid') && !!settings.owner_pairing_hash && /^\D*\d{6}\D*$/.test(String(message.body ?? '')));
+    quietSeconds = owner ? 0 : behavior(settings).inbound_quiet_seconds;
   }
-
-  setImmediate(() => {
-    handleWebhookEvent(tenantId, body).catch((error) => {
-      console.error(
-        "webhook worker failed:",
-        { tenantId, ...webhookFailureDetails(error, body) },
-      );
-    });
-  });
+  await enqueueInbound(supabase, tenantId, body, quietSeconds);
+  response.status(200).json({ received: true });
 });

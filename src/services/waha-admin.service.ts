@@ -9,6 +9,8 @@ import {
 } from "../providers/whatsapp/index.js";
 import type { QrImage, SessionStatus, WhatsAppChatActivity, WhatsAppGroup } from "../providers/whatsapp/whatsapp-provider.interface.js";
 import { HttpError } from "../utils/http-error.js";
+import { invalidateTenantRouting } from './tenant.service.js';
+import { invalidateSessionIdentity } from './session-identity.service.js';
 import { canonicalIdentity, readSessionIdentity } from "../utils/incoming-policy.js";
 import {
   disconnectWahaSession,
@@ -56,6 +58,7 @@ export class WahaAdminService {
     }
     const normalized = normalizeSessionStatus(status);
     await this.updateInstanceStatus(tenantId, normalized.status);
+    invalidateSessionIdentity(session);
     return { session, ...normalized, created: true };
   }
 
@@ -184,6 +187,7 @@ export class WahaAdminService {
       upstreamError();
     }
     await this.updateInstanceStatus(tenantId, status.status);
+    invalidateSessionIdentity(session);
     const normalized = normalizeSessionStatus(status);
     if (normalized.status !== "WORKING") return { session, ...normalized };
     const numberChanged = await this.checkNumberChange(tenantId, status.me);
@@ -198,6 +202,7 @@ export class WahaAdminService {
       upstreamError();
     }
     await this.updateInstanceStatus(tenantId, "disconnected");
+    invalidateSessionIdentity(session);
     return { session, disconnected: true };
   }
 
@@ -278,6 +283,7 @@ export class WahaAdminService {
     if (error || !data?.webhook_secret_encrypted) {
       throw new HttpError(500, "Could not load webhook authentication");
     }
+    invalidateTenantRouting(this.db,tenantId);
     return decryptCredential(data.webhook_secret_encrypted as string, key);
   }
 

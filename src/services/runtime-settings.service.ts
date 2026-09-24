@@ -1,6 +1,6 @@
 import { BEHAVIOR_DEFAULTS, MESSAGE_RETENTION_MIN_DAYS } from '../config/behavior.js';
 import { TEMPLATE_DEFAULTS } from '../config/templates.js';
-import { loadOwnerSettings, type OwnerSettings } from './owner-settings.service.js';
+import { invalidateOwnerSettings, loadOwnerSettings, type OwnerSettings } from './owner-settings.service.js';
 import type { DatabaseClient } from '../db/supabase.js';
 import { HttpError } from '../utils/http-error.js';
 import { DEFAULT_TIME_ZONE,SUPPORTED_TIME_ZONES,supportedTimeZone } from '../config/time-zones.js';
@@ -60,6 +60,7 @@ export function validateRuntimePatch(input:Record<string,unknown>) {
   else if(['knowledge_max_file_bytes','knowledge_max_total_bytes'].includes(key))behaviorPatch[key]=integer(key,value,1024,1073741824);
   else if(key==='knowledge_similarity_threshold'){if(typeof value!=='number'||value<0||value>1)throw new HttpError(400,'Invalid knowledge threshold');behaviorPatch[key]=value;}
   else if(key==='message_retention_days')behaviorPatch[key]=integer(key,value,MESSAGE_RETENTION_MIN_DAYS,3650);
+  else if(key==='inbound_quiet_seconds')behaviorPatch[key]=integer(key,value,0,30);
   else if(['escalation_remind_minutes','escalation_close_minutes','usage_failure_alert_minutes','pairing_ttl_minutes','stt_timeout_seconds','media_max_bytes','deferred_max_age_hours','context_message_count','context_retention_hours'].includes(key))behaviorPatch[key]=integer(key,value,1,2147483647);
   else if(['stt_confidence_threshold','intent_confidence_threshold'].includes(key)){if(typeof value!=='number'||value<0||value>1)throw new HttpError(400,'Invalid confidence');behaviorPatch[key]=value;}
   else if(key==='route_stickiness_hours')behaviorPatch[key]=integer(key,value,1,8760);
@@ -104,6 +105,7 @@ export async function saveRuntimeSettings(db:DatabaseClient,tenantId:string,inpu
  if(Object.keys(runtimeInput).length){
   const result=await db.rpc('update_tenant_runtime_settings',{p_tenant_id:tenantId,p_notification:patch.notification,p_behavior:patch.behaviorPatch,p_default_time_zone:DEFAULT_TIME_ZONE});
   if(result.error)throw new Error('Settings save failed');
+  invalidateOwnerSettings(db,tenantId);
  }
  if(business_sector!==undefined){
   const sector=typeof business_sector==='string'?business_sector.trim():'';

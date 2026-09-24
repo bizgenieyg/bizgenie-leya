@@ -3,6 +3,7 @@ import { supabase, type DatabaseClient } from "../db/supabase.js";
 import { createSetupToken, encryptCredential, hashSetupToken } from "../utils/crypto.js";
 import { HttpError } from "../utils/http-error.js";
 import { findExactKnowledgeAnswer } from "./knowledge.service.js";
+import { invalidateTenantRouting } from './tenant.service.js';
 
 const SETUP_LIFETIME_MS = 7 * 24 * 60 * 60 * 1_000;
 
@@ -173,6 +174,7 @@ export class OnboardingService {
       .select("id, tenant_id, session_name, phone, status, created_at")
       .single();
     if (error) databaseError("Could not update WhatsApp settings", error);
+    invalidateTenantRouting(this.db, tenantId);
     await this.completeStep(session, "whatsapp");
     return data;
   }

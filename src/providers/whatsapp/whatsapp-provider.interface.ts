@@ -30,6 +30,7 @@ export interface SessionStatus {
 export interface SessionWebhookConfig {
   url: string;
   events: ["message", "session.status"];
+  retries?: { policy: 'linear' | 'constant' | 'exponential'; delaySeconds: number; attempts: number };
   customHeaders: { name: string; value: string }[];
 }
 

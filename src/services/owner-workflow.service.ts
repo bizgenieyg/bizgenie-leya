@@ -11,7 +11,7 @@ import type { WhatsAppProvider } from '../providers/whatsapp/whatsapp-provider.i
 import { allowedRecipient, ownerIdentityField, readSessionIdentity } from '../utils/incoming-policy.js';
 import { clientText, isDeferredAnswer, ownerAnswerText, replyId, waitingText, withoutRepeatedIntroduction } from '../utils/assistant-text.js';
 import { buildEscalationText, isWithinQuietHours, nextQuietHoursEnd } from './escalation.service.js';
-import { isBusinessOwner, loadOwnerSettings, ownerDestination, pairOwner, type OwnerSettings } from './owner-settings.service.js';
+import { invalidateOwnerSettings, isBusinessOwner, loadOwnerSettings, ownerDestination, pairOwner, type OwnerSettings } from './owner-settings.service.js';
 import { nextEscalationDeadline } from './escalation-deadline.js';
 import { scheduleWake } from '../workers/job-wake.js';
 
@@ -156,6 +156,7 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
   if(['пауза всё','пауза все','продолжить всё','продолжить все'].includes(command)) {
     const paused=command.startsWith('пауза');
     const {error}=await db.from('notification_settings').update({auto_replies_paused:paused}).eq('tenant_id',tenantId);check(error);
+    invalidateOwnerSettings(db,tenantId);
     if(!paused) await rescheduleTenantEscalationTimeouts(db,tenantId,await loadOwnerSettings(db,tenantId),new Date());
     await send(provider,session,from,paused?renderText(settings,'owner.owner_reply_5',behavior(settings).owner_language):renderText(settings,'owner.owner_reply_6',behavior(settings).owner_language));return true;
   }

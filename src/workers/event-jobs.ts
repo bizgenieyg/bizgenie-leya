@@ -43,6 +43,9 @@ export async function seedDurableJobs(db: DatabaseClient, now = new Date()): Pro
 }
 
 async function runRetentionSweep(db: DatabaseClient, job: ScheduledJob, now: Date): Promise<void> {
+  const oldInbound = await db.from('inbound_events').delete().in('status', ['done', 'ignored', 'failed'])
+    .lt('processed_at', new Date(now.getTime() - 7 * 24 * 60 * 60_000).toISOString());
+  if (oldInbound.error) console.error('inbound_retention_sweep_failed');
   const instances = await db.from('whatsapp_instances').select('tenant_id');check(instances.error);
   for (const row of instances.data ?? []) {
     let settings: Awaited<ReturnType<typeof loadOwnerSettings>>;

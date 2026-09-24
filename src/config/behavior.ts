@@ -7,6 +7,7 @@ export const BEHAVIOR_DEFAULTS = {
   deferred_max_age_hours: 12,
   context_message_count: 10,
   context_retention_hours: 48,
+  inbound_quiet_seconds: 6,
   message_retention_days: 30,
   usage_failure_alert_minutes: 60,
   pairing_ttl_minutes: 30,

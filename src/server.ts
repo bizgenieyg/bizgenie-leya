@@ -1,4 +1,5 @@
 import { startEscalationScheduler } from "./workers/escalation-scheduler.js";
+import { startInboundQueue } from './workers/inbound-queue.js';
 import express from "express";
 
 import { env } from "./config/env.js";
@@ -14,6 +15,7 @@ Error.stackTraceLimit = Infinity;
 export const app = express();
 
 app.disable("x-powered-by");
+app.set('trust proxy', 'loopback');
 app.use(
   express.json({
     // Keep the exact bytes so webhook HMAC verification is not broken by
@@ -46,6 +48,7 @@ app.use((error: unknown, _request: express.Request, response: express.Response, 
 
 if (require.main === module) {
   startEscalationScheduler();
+  startInboundQueue();
   app.listen(env.port, () => {
     console.log(`Leya backend listening on port ${env.port}`);
   });

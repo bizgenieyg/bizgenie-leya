@@ -17,6 +17,7 @@ import { agentContext } from '../agents/registry.js';
 import { withoutRepeatedIntroduction } from '../utils/assistant-text.js';
 import { conversationPaused } from './owner-workflow.service.js';
 import { senderKey } from '../utils/whatsapp-id.js';
+import { sessionIdentity } from './session-identity.service.js';
 const object=(value:unknown):Record<string,unknown>=>value!==null&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:{};
 export function voiceUsage(body:Record<string,unknown>):{from:string;seconds:number|null;id:string|null;mime:string;url:string}|null {
  const decision=filterIncoming(body);
@@ -26,11 +27,12 @@ export function voiceUsage(body:Record<string,unknown>):{from:string;seconds:num
  const seconds=object(object(object(payload._data).Message).audioMessage).seconds;
  return {from:payload.from,seconds:typeof seconds==='number'&&Number.isFinite(seconds)&&seconds>=0?Math.ceil(seconds):null,id:typeof payload.id==='string'?payload.id:null,mime:media.mimetype.split(';')[0]!,url:typeof media.url==='string'?media.url:''};
 }
-export async function handleVoiceUsage(db:DatabaseClient,routing:TenantRouting,body:Record<string,unknown>,provider:WhatsAppProvider,stt:STTProvider|null=createSTTProvider(),media:MediaProvider=new WahaMedia()):Promise<void>{
+export async function handleVoiceUsage(db:DatabaseClient,routing:TenantRouting,body:Record<string,unknown>,provider:WhatsAppProvider,stt:STTProvider|null=createSTTProvider(),media:MediaProvider=new WahaMedia(),
+ onTranscript?: (textBody:Record<string,unknown>,admission:{key:string;seconds:number;unavailable?:boolean|undefined;sttKey:string;sttMetadata:Record<string,unknown>})=>Promise<void>):Promise<void>{
  const voice=voiceUsage(body);if(!voice||!isTenantServiceable(routing.tenant.status))return;
  const tenantId=routing.tenant.id,session=routing.instance?.session_name;if(!session)return;
  let me=readSessionIdentity(body.me);
- try{me={...me,...readSessionIdentity((await provider.getSessionStatus(session)).me)};}catch{return;}
+ try{me={...me,...await sessionIdentity(provider,session)};}catch{return;}
  if(!me.id||ownerIdentityField(voice.from,me))return;
  const settings=await loadOwnerSettings(db,tenantId);if(isBusinessOwner(voice.from,settings))return;
  const key=voice.id??randomUUID(),config=behavior(settings);
@@ -76,6 +78,7 @@ export async function handleVoiceUsage(db:DatabaseClient,routing:TenantRouting,b
    // drop only media data now replaced by its transcript. No raw audio is persisted.
    const payload=object(body.payload),raw=object(payload._data);
    const textBody={...body,payload:{...payload,id:key,body:result.text,hasMedia:false,media:null,mediaUrl:null,location:null,vCards:[],_data:{...raw,Message:{conversation:result.text}}}};
+   if(onTranscript){await onTranscript(textBody,{key,seconds,unavailable:admission.unavailable,sttKey,sttMetadata});return;}
    const {handleWebhookEvent}=await import('../workers/webhook.worker.js');
    await handleWebhookEvent(tenantId,textBody,db,provider,undefined,{key,seconds,unavailable:admission.unavailable,sttKey,sttMetadata});
   }catch{console.error('voice_processing_unavailable',{tenantId});await explain('client.voice_unavailable');}

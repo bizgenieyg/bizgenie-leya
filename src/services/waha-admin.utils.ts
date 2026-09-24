@@ -22,6 +22,7 @@ export function sessionConfigForTenant(
         {
           url: `${baseUrl}/webhook/${tenantId}`,
           events: ["message", "session.status"],
+          retries: { policy: 'linear', delaySeconds: 2, attempts: 4 },
           customHeaders: [{ name: "X-Webhook-Token", value: webhookSecret }],
         },
       ],

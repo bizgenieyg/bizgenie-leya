@@ -1,5 +1,6 @@
 import type { DatabaseClient } from '../db/supabase.js';
 import { HttpError } from '../utils/http-error.js';
+import { invalidateOwnerSettings } from './owner-settings.service.js';
 
 const date=(value:unknown)=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)&&!Number.isNaN(Date.parse(value+'T00:00:00Z'));
 const time=(value:unknown)=>typeof value==='string'&&/^([01]\d|2[0-3]):[0-5]\d$/.test(value);
@@ -22,15 +23,15 @@ export async function listExceptions(db:DatabaseClient,tenantId:string){
 }
 export async function createException(db:DatabaseClient,tenantId:string,input:Record<string,unknown>){
   const {data,error}=await db.from('schedule_exceptions').insert({tenant_id:tenantId,...validateException(input)}).select('id,start_date,end_date,kind,work_start,work_end,name,recurs_annually').single();
-  if(error)throw new Error('Schedule exception create failed');return data;
+  if(error)throw new Error('Schedule exception create failed');invalidateOwnerSettings(db,tenantId);return data;
 }
 export async function updateException(db:DatabaseClient,tenantId:string,id:unknown,input:Record<string,unknown>){
   if(!uuid(id))throw new HttpError(400,'Invalid exception id');
   const {data,error}=await db.from('schedule_exceptions').update({...validateException(input),updated_at:new Date().toISOString()}).eq('tenant_id',tenantId).eq('id',id).select('id,start_date,end_date,kind,work_start,work_end,name,recurs_annually').maybeSingle();
-  if(error)throw new Error('Schedule exception update failed');if(!data)throw new HttpError(404,'Exception not found');return data;
+  if(error)throw new Error('Schedule exception update failed');if(!data)throw new HttpError(404,'Exception not found');invalidateOwnerSettings(db,tenantId);return data;
 }
 export async function deleteException(db:DatabaseClient,tenantId:string,id:unknown){
   if(!uuid(id))throw new HttpError(400,'Invalid exception id');
   const {data,error}=await db.from('schedule_exceptions').delete().eq('tenant_id',tenantId).eq('id',id).select('id');
-  if(error)throw new Error('Schedule exception delete failed');if(!data?.length)throw new HttpError(404,'Exception not found');
+  if(error)throw new Error('Schedule exception delete failed');if(!data?.length)throw new HttpError(404,'Exception not found');invalidateOwnerSettings(db,tenantId);
 }
