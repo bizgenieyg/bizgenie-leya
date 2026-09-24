@@ -36,6 +36,19 @@ export class WahaProvider implements WhatsAppProvider, WhatsAppSessionProvider {
     return { id: extractMessageId(data) };
   }
 
+  async sendSeen(input: { session: string; chatId: string; messageIds?: string[] }): Promise<void> {
+    await this.request('POST', '/api/sendSeen', { session: input.session, chatId: input.chatId,
+      ...(input.messageIds?.length ? { messagesIds: input.messageIds } : {}) });
+  }
+
+  async startTyping(input: { session: string; chatId: string }): Promise<void> {
+    await this.request('POST', '/api/startTyping', input);
+  }
+
+  async stopTyping(input: { session: string; chatId: string }): Promise<void> {
+    await this.request('POST', '/api/stopTyping', input);
+  }
+
   async getSessionStatus(session: string): Promise<SessionStatus> {
     let data: unknown;
     try {
@@ -196,7 +209,7 @@ export class WahaProvider implements WhatsAppProvider, WhatsAppSessionProvider {
     const response = await fetch(`${this.baseUrl}${path}`, {
       method,
       headers,
-      ...(signal ? { signal } : {}),
+      signal: signal ?? AbortSignal.timeout(15_000),
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
 

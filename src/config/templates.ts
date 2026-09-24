@@ -69,6 +69,11 @@ export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
     "en": "Reminder: {name} is waiting for an answer.\n\n{question}\n\nReply to this message.",
     "he": "תזכורת: {name} ממתין לתשובה.\n\n{question}\n\nנא להשיב בציטוט להודעה זו."
   },
+  "owner.reminder_missed": {
+    "ru": "Напоминание клиенту {name} на {time} не отправлено вовремя.",
+    "he": "התזכורת ללקוח {name} לשעה {time} לא נשלחה בזמן.",
+    "en": "The reminder to {name} for {time} was not sent on time."
+  },
   "owner.usage_warning": {
     "ru": "Использовано не менее {percent}% месячного лимита {resource}. Расход: {used} из {limit}. Измените лимит в кабинете.",
     "en": "At least {percent}% of the monthly {resource} allowance has been used: {used} of {limit}. Change the limit in your account.",

@@ -3,7 +3,7 @@ import type { WhatsAppProvider } from '../providers/whatsapp/whatsapp-provider.i
 import { HttpError } from '../utils/http-error.js';
 import { allowedRecipient,ownerIdentityField,readSessionIdentity } from '../utils/incoming-policy.js';
 import { isWithinQuietHours } from './escalation.service.js';
-import { meterWhatsApp } from './metered-providers.js';
+import { enqueueMessage } from '../workers/outbound-queue.js';
 import { behavior } from './runtime-settings.service.js';
 import { loadOwnerSettings,ownerDestination,type OwnerSettings } from './owner-settings.service.js';
 import { renderText } from './templates.service.js';
@@ -95,6 +95,6 @@ export async function deliverOwnerSummaryIfDue(db:DatabaseClient,tenantId:string
  const settings=await loadOwnerSettings(db,tenantId),due=summaryDue(settings,now);if(!due||isWithinQuietHours(settings,now))return;const to=ownerDestination(settings);if(!to||!allowedRecipient(to))return;const me=readSessionIdentity((await provider.getSessionStatus(session)).me);if(!me.id||ownerIdentityField(to,me))return;
  const claimed=await claimSummary(db,tenantId,due.periodKey,now);if(!claimed)return;const summary=await buildOwnerSummary(db,tenantId,new Date(now.getTime()-due.days*86400000),now),missing=summary.missing_knowledge.length?summary.missing_knowledge.map(x=>`${x.question} (${x.count})`).join('; '):'—';
  let sent=false;
- try{await meterWhatsApp(db,tenantId,provider).sendMessage({session,chatId:to,text:renderText(settings,'owner.summary',behavior(settings).owner_language,{...summary,missing_knowledge:missing})});await db.from('scheduled_jobs').update({status:'done',executed_at:new Date().toISOString(),error:null}).eq('id',claimed.id);sent=true;}catch{const failure=summaryFailureState(claimed.attempts,now);await db.from('scheduled_jobs').update({status:failure.status,scheduled_at:failure.scheduled_at,error:'summary_delivery_failed'}).eq('id',claimed.id);if(failure.retry)scheduleWake(new Date(failure.scheduled_at));console.error('owner_summary_delivery_failed',{tenantId,attempt:claimed.attempts,retry:failure.retry});}
+ try{await enqueueMessage(db,tenantId,provider,{session,chatId:to,text:renderText(settings,'owner.summary',behavior(settings).owner_language,{...summary,missing_knowledge:missing})},{kind:'summary',dedupeKey:`summary:${claimed.id}`});await db.from('scheduled_jobs').update({status:'done',executed_at:new Date().toISOString(),error:null}).eq('id',claimed.id);sent=true;}catch{const failure=summaryFailureState(claimed.attempts,now);await db.from('scheduled_jobs').update({status:failure.status,scheduled_at:failure.scheduled_at,error:'summary_delivery_failed'}).eq('id',claimed.id);if(failure.retry)scheduleWake(new Date(failure.scheduled_at));console.error('owner_summary_delivery_failed',{tenantId,attempt:claimed.attempts,retry:failure.retry});}
  if(sent)await ensureOwnerSummaryJob(db,tenantId,settings,now);
 }

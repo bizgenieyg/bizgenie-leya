@@ -1,5 +1,6 @@
 import { startEscalationScheduler } from "./workers/escalation-scheduler.js";
 import { startInboundQueue } from './workers/inbound-queue.js';
+import { startOutboundQueue } from './workers/outbound-queue.js';
 import express from "express";
 
 import { env } from "./config/env.js";
@@ -49,6 +50,7 @@ app.use((error: unknown, _request: express.Request, response: express.Response, 
 if (require.main === module) {
   startEscalationScheduler();
   startInboundQueue();
+  startOutboundQueue();
   app.listen(env.port, () => {
     console.log(`Leya backend listening on port ${env.port}`);
   });

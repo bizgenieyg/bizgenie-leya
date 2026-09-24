@@ -9,6 +9,7 @@ import { conversationPaused, createEscalation, handleOwnerMessage, runDueSchedul
 import { invalidateOwnerSettings, saveOwnerSettings, type OwnerSettings } from './owner-settings.service.js';
 import { isWithinQuietHours, nextQuietHoursEnd } from './escalation.service.js';
 import { observeOwnerOutgoing } from './outgoing-owner.service.js';
+import { enqueueMessage } from '../workers/outbound-queue.js';
 import { clientText, isDeferredAnswer, replyId } from '../utils/assistant-text.js';
 import { createTestDatabase, pgliteDatabaseClient } from './test-support/pglite-harness.js';
 
@@ -108,6 +109,8 @@ test('failed client delivery leaves escalation open and never offers learning', 
   const h = await pgHarness();
   const input = { tenant_id: h.tenant, conversation_id: h.conversationId, client_chat_id: customer, client_name: 'Тестовый клиент', question: 'Можно завтра?', session: 'session', inbound_id: 'incoming' };
   await createEscalation(h.db, h.provider, input, h.settings); h.fail();
+  await h.pg.query("update notification_settings set behavior=jsonb_set(coalesce(behavior,'{}'::jsonb),'{outbound_retry_delays_seconds}','[0,0,0]'::jsonb) where tenant_id=$1", [h.tenant]);
+  invalidateOwnerSettings(h.db,h.tenant);
   let e = await h.escalation((await h.pg.query<{ id: string }>('select id from escalations limit 1')).rows[0]!.id);
   await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'Ответ', e.owner_message_ids[0]!, h.settings);
   e = await h.escalation(e.id);
@@ -280,8 +283,11 @@ test('complete real GOWS client and owner reply payloads traverse worker filters
 test('observeOwnerOutgoing guard #1 is idempotent on a re-delivered waha_msg_id', async () => {
   const h = await pgHarness();
   await seedEscalation(h, { created_at: '2026-09-08T10:00:00Z' });
+  await enqueueMessage(h.db,h.tenant,h.provider,{session:'session',chatId:customer,text:'Pending bot reply'},
+    {kind:'reply',notBefore:new Date(Date.now()+60_000),waitForDelivery:false});
   const body = { event: 'message', payload: { id: 'manual-7', from: '972500000009@c.us', to: customer, fromMe: true, source: 'app', body: 'Ответ владельца', _data: { Info: { IsFromMe: true, Chat: customer } } } };
   assert.equal(await observeOwnerOutgoing(h.db, h.tenant, body, new Date('2026-09-08T20:00:00Z')), true);
+  assert.equal((await h.pg.query<{status:string}>("select status from outbound_messages where text='Pending bot reply'")).rows[0]!.status,'cancelled');
   const rows = Number((await h.pg.query<{ count: string }>('select count(*)::text as count from messages')).rows[0]!.count);
   await h.pg.query('update conversations set bot_paused=false where id=$1', [h.conversationId]);
   assert.equal(await observeOwnerOutgoing(h.db, h.tenant, body, new Date('2026-09-08T20:05:00Z')), false);

@@ -9,7 +9,7 @@ import type { DatabaseClient } from '../db/supabase.js';
 // call itself throws), which a mock can simulate directly and a real Postgres schema
 // cannot easily force into. Do not convert without a concrete reason.
 import { recordUsageEvent,admitUsage,usageAllowsMessage } from './usage.service.js';
-import { meterAI,meterWhatsApp } from './metered-providers.js';
+import { meterAI } from './metered-providers.js';
 import { voiceUsage } from './voice-usage.service.js';
 import { limitClientText } from './usage-notifications.service.js';
 process.env.SUPABASE_URL='https://database.invalid';process.env.SUPABASE_SERVICE_ROLE_KEY='test-only';
@@ -29,8 +29,6 @@ test('read-only message allowance handles unlimited, exhausted and missing limit
 test('metering never breaks message handling on database rejection or thrown network errors',async()=>{
   for(const db of [{from(){throw new Error('private secret');}},{from(){return{insert:async()=>({error:{code:'network'}})};}}] as unknown as DatabaseClient[]){
     await recordUsageEvent(db,{tenantId:'t',eventType:'message_received'});
-    const provider=meterWhatsApp(db,'t',{async getSessionStatus(){return{status:'WORKING'};},async sendMessage(){return{id:'sent'};}});
-    assert.equal((await provider.sendMessage({session:'s',chatId:'12345678@lid',text:'private'})).id,'sent');
     assert.equal((await admitUsage(db,'t','id')).allowed,true);
   }
 });

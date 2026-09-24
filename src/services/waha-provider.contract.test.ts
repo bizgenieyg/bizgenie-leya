@@ -8,6 +8,25 @@ import { sessionConfigForTenant } from "./waha-admin.utils.js";
 
 const TENANT_ID = "123e4567-e89b-42d3-a456-426614174000";
 
+test('WAHA seen and typing endpoints use GOWS payloads and every request has a timeout', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; body: Record<string, unknown>; signal: AbortSignal | null | undefined }> = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), body: JSON.parse(String(init?.body)) as Record<string, unknown>, signal: init?.signal });
+    return Response.json({ id: 'sent-1' });
+  };
+  try {
+    const provider = new WahaProvider('http://waha.internal');
+    await provider.sendSeen({ session: 'business', chatId: '972500000001@c.us', messageIds: ['incoming-1'] });
+    await provider.startTyping({ session: 'business', chatId: '972500000001@c.us' });
+    await provider.stopTyping({ session: 'business', chatId: '972500000001@c.us' });
+    await provider.sendMessage({ session: 'business', chatId: '972500000001@c.us', text: 'Hello' });
+    assert.deepEqual(calls.map(call => call.url.replace('http://waha.internal', '')), ['/api/sendSeen','/api/startTyping','/api/stopTyping','/api/sendText']);
+    assert.deepEqual(calls[0]!.body.messagesIds, ['incoming-1']);
+    assert.ok(calls.every(call => call.signal instanceof AbortSignal));
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test("WAHA start sends the shared-container session config without exposing its key", async () => {
   const originalFetch = globalThis.fetch;
   let capturedUrl = "";

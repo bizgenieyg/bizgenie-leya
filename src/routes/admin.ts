@@ -18,6 +18,7 @@ import { requireAdmin } from "../utils/admin-auth.js";
 import { HttpError } from "../utils/http-error.js";
 import { objectBody, requiredString } from "../utils/validation.js";
 import { DEFAULT_TIME_ZONE } from '../config/time-zones.js';
+import { enqueueMessage } from '../workers/outbound-queue.js';
 import { deleteClientCard,getClientCard,listClientCards,updateClientCard } from '../services/client-cards.service.js';
 import { buildOwnerSummary } from '../services/owner-summary.service.js';
 import { simulateCustomerMessage } from '../services/simulator.service.js';
@@ -94,7 +95,7 @@ adminRouter.post('/owner-settings', async (request,response) => {
   const settings=await loadOwnerSettings(supabase,tenantId);
   const text=renderText(settings,'owner.pairing_code',behavior(settings).owner_language,{code:saved.code,minutes:String(saved.ttlMinutes)});
   try{
-    await provider.sendMessage({session,chatId:toChatId(saved.phone),text});
+    await enqueueMessage(supabase,tenantId,provider,{session,chatId:toChatId(saved.phone),text},{kind:'owner_notice'});
   }catch{
     throw new HttpError(422,'Не удалось отправить код подтверждения владельцу.');
   }

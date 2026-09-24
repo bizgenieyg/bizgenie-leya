@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { WhatsAppProvider } from "../providers/whatsapp/whatsapp-provider.interface.js";
 import { createTestDatabase, pgliteDatabaseClient } from "./test-support/pglite-harness.js";
+import { stopOutboundQueue } from '../workers/outbound-queue.js';
 process.env.GEMINI_API_KEY = "";
 process.env.SUPABASE_URL = "https://database.invalid";
 process.env.SUPABASE_SERVICE_ROLE_KEY = "test-only";
@@ -20,8 +21,8 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = "test-only";
 test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is null", async () => {
   const { handleWebhookEvent } = await import("../workers/webhook.worker.js");
   const pg = await createTestDatabase();
+  const db = pgliteDatabaseClient(pg);
   try {
-    const db = pgliteDatabaseClient(pg);
     const tenantRow = (await db.from("tenants").insert({ name: "Business", business_name: "Business", phone: null, language: "ru", tier: "basic", status: "active" }).select("id").single()).data as { id: string };
     const tenantId = tenantRow.id;
     await pg.query("insert into notification_settings(tenant_id,mode,time_zone,auto_replies_paused) values($1,'mute_all','Asia/Jerusalem',false)", [tenantId]);
@@ -135,14 +136,14 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
       assert.match(JSON.stringify(warnings), /owner_message/);
       assert.match(JSON.stringify(warnings), /session.me.lid/);
     } finally { console.warn = warn; console.info = info; }
-  } finally { await pg.close(); }
+  } finally { await stopOutboundQueue(db); await pg.close(); }
 });
 
 test('one batched pipeline call stores every incoming message and sends one answer', async () => {
   const { handleWebhookEvent } = await import('../workers/webhook.worker.js');
   const pg = await createTestDatabase();
+  const db = pgliteDatabaseClient(pg);
   try {
-    const db = pgliteDatabaseClient(pg);
     const tenant = (await db.from('tenants').insert({ name: 'Business', business_name: 'Business', phone: '972500000009', status: 'active' }).select('id').single()).data as { id: string };
     const tenantId = tenant.id;
     await pg.query("insert into notification_settings(tenant_id,mode,time_zone) values($1,'mute_all','Asia/Jerusalem')", [tenantId]);
@@ -168,5 +169,5 @@ test('one batched pipeline call stores every incoming message and sends one answ
     const messages = await pg.query<{ body: string }>('select body from messages where tenant_id=$1 and from_me=false order by created_at,id', [tenantId]);
     assert.deepEqual(messages.rows.map(row => row.body), ['Первое', 'Второе', 'Третье']);
     assert.deepEqual(sent, ['Один ответ.']);
-  } finally { await pg.close(); }
+  } finally { await stopOutboundQueue(db); await pg.close(); }
 });

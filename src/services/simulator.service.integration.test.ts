@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AIProvider } from '../providers/ai/ai-provider.interface.js';
 import type { WhatsAppProvider } from '../providers/whatsapp/whatsapp-provider.interface.js';
+import { stopOutboundQueue } from '../workers/outbound-queue.js';
 import { handleWebhookEvent } from '../workers/webhook.worker.js';
 import { createTestDatabase, pgliteDatabaseClient } from './test-support/pglite-harness.js';
 import { simulateCustomerMessage } from './simulator.service.js';
@@ -22,7 +23,7 @@ async function fixture() {
   await pg.query("insert into tenant_usage_limits(tenant_id,plan,messages_per_month,voice_minutes_per_month,warning_percent,messages_overridden,voice_overridden,warning_overridden) values($1,'basic',500,60,80,false,false,false)", [tenantId]);
   await pg.query("insert into assistant_profiles(tenant_id,assistant_name,allowed_languages,tone) values($1,'Leya',array['ru'],'friendly_professional')", [tenantId]);
   const root = await mkdtemp(join(tmpdir(), 'leya-sim-'));
-  return { pg, db, tenantId, root, async close() { await pg.close(); await rm(root, { recursive: true, force: true }); } };
+  return { pg, db, tenantId, root, async close() { await stopOutboundQueue(db); await pg.close(); await rm(root, { recursive: true, force: true }); } };
 }
 
 test('051 persists isolated simulator messages and keeps customer tables untouched', async () => {

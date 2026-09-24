@@ -62,6 +62,9 @@ export interface WhatsAppChatActivity {
 
 export interface WhatsAppProvider {
   sendMessage(input: SendMessageInput): Promise<SendMessageResult>;
+  sendSeen?(input: { session: string; chatId: string; messageIds?: string[] }): Promise<void>;
+  startTyping?(input: { session: string; chatId: string }): Promise<void>;
+  stopTyping?(input: { session: string; chatId: string }): Promise<void>;
   getSessionStatus(session: string): Promise<SessionStatus>;
 }
 

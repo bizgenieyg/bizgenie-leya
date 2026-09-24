@@ -61,6 +61,18 @@ export function validateRuntimePatch(input:Record<string,unknown>) {
   else if(key==='knowledge_similarity_threshold'){if(typeof value!=='number'||value<0||value>1)throw new HttpError(400,'Invalid knowledge threshold');behaviorPatch[key]=value;}
   else if(key==='message_retention_days')behaviorPatch[key]=integer(key,value,MESSAGE_RETENTION_MIN_DAYS,3650);
   else if(key==='inbound_quiet_seconds')behaviorPatch[key]=integer(key,value,0,30);
+  else if(['outbound_typing_min_seconds','outbound_typing_max_seconds','outbound_conversation_gap_min_seconds','outbound_conversation_gap_max_seconds','outbound_proactive_gap_min_seconds','outbound_proactive_gap_max_seconds'].includes(key))behaviorPatch[key]=integer(key,value,0,300);
+  else if(['outbound_typing_seconds_per_100_min','outbound_typing_seconds_per_100_max'].includes(key)){
+   if(typeof value!=='number'||!Number.isFinite(value)||value<0||value>60)throw new HttpError(400,`Invalid setting: ${key}`);
+   behaviorPatch[key]=value;
+  }
+  else if(key==='outbound_reminder_spread_minutes')behaviorPatch[key]=integer(key,value,0,20);
+  else if(key==='daily_proactive_limit')behaviorPatch[key]=integer(key,value,0,1000);
+  else if(key==='outbound_retention_days')behaviorPatch[key]=integer(key,value,1,365);
+  else if(key==='outbound_retry_delays_seconds'){
+   if(!Array.isArray(value)||value.length!==3||value.some(item=>!Number.isSafeInteger(item)||item<0||item>3600))throw new HttpError(400,'Invalid outbound retry delays');
+   behaviorPatch[key]=value;
+  }
   else if(['escalation_remind_minutes','escalation_close_minutes','usage_failure_alert_minutes','pairing_ttl_minutes','stt_timeout_seconds','media_max_bytes','deferred_max_age_hours','context_message_count','context_retention_hours'].includes(key))behaviorPatch[key]=integer(key,value,1,2147483647);
   else if(['stt_confidence_threshold','intent_confidence_threshold'].includes(key)){if(typeof value!=='number'||value<0||value>1)throw new HttpError(400,'Invalid confidence');behaviorPatch[key]=value;}
   else if(key==='route_stickiness_hours')behaviorPatch[key]=integer(key,value,1,8760);
@@ -101,6 +113,10 @@ export async function saveRuntimeSettings(db:DatabaseClient,tenantId:string,inpu
  const merged={...behavior(existing),...patch.behaviorPatch};
  if(Number(merged.knowledge_chunk_overlap)>=Number(merged.knowledge_chunk_characters))throw new HttpError(400,'Knowledge chunk overlap must be smaller than chunk size');
  if(Number(merged.escalation_close_minutes)<=Number(merged.escalation_remind_minutes))throw new HttpError(400,'Close timeout must exceed reminder timeout');
+ if(Number(merged.outbound_typing_min_seconds)>Number(merged.outbound_typing_max_seconds)||
+    Number(merged.outbound_typing_seconds_per_100_min)>Number(merged.outbound_typing_seconds_per_100_max)||
+    Number(merged.outbound_conversation_gap_min_seconds)>Number(merged.outbound_conversation_gap_max_seconds)||
+    Number(merged.outbound_proactive_gap_min_seconds)>Number(merged.outbound_proactive_gap_max_seconds))throw new HttpError(400,'Outbound minimum must not exceed maximum');
  for(const route of [...merged.campaign_routes,...merged.source_routes])if(!merged.enabled_agents.includes(route.agent))throw new HttpError(400,'Route agent must be enabled');
  if(Object.keys(runtimeInput).length){
   const result=await db.rpc('update_tenant_runtime_settings',{p_tenant_id:tenantId,p_notification:patch.notification,p_behavior:patch.behaviorPatch,p_default_time_zone:DEFAULT_TIME_ZONE});

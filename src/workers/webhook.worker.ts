@@ -5,7 +5,8 @@ import { createAIProvider } from '../providers/ai/index.js';
 import type { WhatsAppProvider } from '../providers/whatsapp/whatsapp-provider.interface.js';
 import { createWhatsAppProvider } from '../providers/whatsapp/index.js';
 import { loadConversationMemory } from '../services/context.service.js';
-import { meterAI, meterWhatsApp } from '../services/metered-providers.js';
+import { meterAI } from '../services/metered-providers.js';
+import { enqueueMessage } from './outbound-queue.js';
 import { notifyUsageFailure, deliverUsageNotices } from '../services/usage-notifications.service.js';
 import { behavior } from '../services/runtime-settings.service.js';
 import { createEscalation, handleOwnerMessage, conversationPaused } from '../services/owner-workflow.service.js';
@@ -46,7 +47,7 @@ export async function handleWebhookEvent(tenantId: string, body: Record<string, 
   const { tenant, instance } = routing;
   const session = (typeof instance?.session_name === 'string' && instance.session_name.trim()) ||
     (typeof body.session === 'string' && body.session.trim()) || 'default';
-  const provider = meterWhatsApp(db, tenantId, whatsapp ?? createWhatsAppProvider());
+  const provider = whatsapp ?? createWhatsAppProvider();
   const rawAI = ai === undefined ? createAIProvider() : ai;
   const model = meterAI(db, tenantId, rawAI);
   let me = readSessionIdentity(body.me);
@@ -62,7 +63,7 @@ export async function handleWebhookEvent(tenantId: string, body: Record<string, 
   }
   const settings = await loadOwnerSettings(db, tenantId);
   const usageKey = incomingMsgId || randomUUID();
-  if (await handleOwnerMessage(db, provider, tenantId, session, from, text, normalized.replyToId, settings, model)) {
+  if (await handleOwnerMessage(db, provider, tenantId, session, from, text, normalized.replyToId, settings, model, incomingMsgId)) {
     await recordUsageEvent(db, { tenantId, eventType: 'message_observed', eventKey: usageKey, metadata: { reason: 'owner_control', billable: false } }); return;
   }
   const clientPhone = senderKey(from);
@@ -101,7 +102,9 @@ export async function handleWebhookEvent(tenantId: string, body: Record<string, 
     onClientOptOut: async optedOut => { if (optedOut) await db.from('conversations').update({ bot_paused: true }).eq('tenant_id', tenantId).eq('id', conversation.id); },
     admit: () => voiceAdmission ? Promise.resolve({ allowed: true, duplicate: false, ...(voiceAdmission.unavailable === undefined ? {} : { unavailable: voiceAdmission.unavailable }) }) : admitUsage(db, tenantId, usageKey),
     afterAdmission: async admission => { if (admission.unavailable) await notifyUsageFailure(db, tenantId, session, provider, settings); await deliverUsageNotices(db, tenantId, session, provider); },
-    sendToClient: async reply => (await provider.sendMessage({ session, chatId: from, text: reply })).id || null,
+    sendToClient: async reply => (await enqueueMessage(db, tenantId, provider, { session, chatId: from, text: reply },
+      { kind: 'reply', dedupeKey: `inbound-reply:${inboundEventIds?.[0] ?? randomUUID()}`,
+        inboundMessageIds: pieces.flatMap(piece => piece.kind === 'message' && piece.incomingMsgId ? [piece.incomingMsgId] : []) })).id || null,
     persistAssistantMessage: async (answer, id) => { await db.from('messages').insert({ conversation_id: conversation.id, tenant_id: tenantId, from_me: true, body: answer, msg_type: 'text', waha_msg_id: id }); },
     createEscalation: async language => {
       const answer = await createEscalation(db, provider, { tenant_id: tenantId, session, conversation_id: conversation.id,

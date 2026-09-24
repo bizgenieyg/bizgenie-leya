@@ -6,7 +6,7 @@ import type { DatabaseClient } from '../db/supabase.js';
 import type { WhatsAppProvider } from '../providers/whatsapp/whatsapp-provider.interface.js';
 import { allowedRecipient,ownerIdentityField,readSessionIdentity } from '../utils/incoming-policy.js';
 import { loadOwnerSettings,ownerDestination } from './owner-settings.service.js';
-import { meterWhatsApp } from './metered-providers.js';
+import { enqueueMessage } from '../workers/outbound-queue.js';
 
 /** Service fallback is not a paid automatic answer; no Gemini call is needed. */
 export function limitClientText(message:string,settings?:OwnerSettings,replyLanguage?:string):string {return renderText(settings,'client.limit',replyLanguage??languageOf(message));}
@@ -18,7 +18,6 @@ export async function deliverUsageNotices(db:DatabaseClient,tenantId:string,sess
     if(!to||!allowedRecipient(to))return;
     const me=readSessionIdentity((await provider.getSessionStatus(session)).me);
     if(!me.id||ownerIdentityField(to,me)||ownerIdentityField(`${settings.owner_phone}@c.us`,me))return;
-    const transport=meterWhatsApp(db,tenantId,provider);
     for(const job of jobs){
       const {data,error:claimError}=await db.from('scheduled_jobs').update({status:'sending'}).eq('tenant_id',tenantId).eq('id',job.id).eq('status','pending').select('id');
       if(claimError)throw new Error('Usage notice claim failed');if(!data?.length)continue;
@@ -28,7 +27,7 @@ export async function deliverUsageNotices(db:DatabaseClient,tenantId:string,sess
       const limit=voice?Number(job.payload.voice_seconds_limit)/60:Number(job.payload.messages_limit);
       const text=renderText(settings,exhausted?'owner.usage_exhausted':'owner.usage_warning',behavior(settings).owner_language,{percent:Number(job.payload.warning_percent),resource,used,limit});
       try{
-        const sent=await transport.sendMessage({session,chatId:to,text});if(!sent.id)throw new Error('Missing message ID');
+        const sent=await enqueueMessage(db,tenantId,provider,{session,chatId:to,text},{kind:'owner_notice',dedupeKey:`usage-notice:${job.id}`});if(!sent.id)throw new Error('Missing message ID');
         const done=await db.from('scheduled_jobs').update({status:'done',executed_at:new Date().toISOString()}).eq('tenant_id',tenantId).eq('id',job.id);if(done.error)throw new Error('Notice state failed');
       }catch{
         // Do not retry ambiguous transport sends automatically: avoid notification spam.
@@ -56,6 +55,6 @@ export async function notifyUsageFailure(db:DatabaseClient,tenantId:string,sessi
   const to=ownerDestination(settings);if(!to||!allowedRecipient(to))return;
   const me=readSessionIdentity((await provider.getSessionStatus(session)).me);
   if(!me.id||ownerIdentityField(to,me)||ownerIdentityField(`${settings.owner_phone}@c.us`,me))return;
-  await meterWhatsApp(db,tenantId,provider).sendMessage({session,chatId:to,text:renderText(settings,'owner.usage_failure',behavior(settings).owner_language)});
+  await enqueueMessage(db,tenantId,provider,{session,chatId:to,text:renderText(settings,'owner.usage_failure',behavior(settings).owner_language)},{kind:'owner_notice',dedupeKey:`usage-failure:${Math.floor(now/interval)}`});
  }catch{console.error('usage_failure_alert_delivery_failed',{tenantId});}
 }

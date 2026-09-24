@@ -2,6 +2,7 @@ import { env } from "../config/env.js";
 import { supabase, type DatabaseClient } from "../db/supabase.js";
 import { createWhatsAppProvider, type WhatsAppProvider } from "../providers/whatsapp/index.js";
 import { HttpError } from "../utils/http-error.js";
+import { enqueueMessage } from '../workers/outbound-queue.js';
 
 export async function submitPlatformFeedback(
   tenantId: string,
@@ -27,11 +28,11 @@ export async function submitPlatformFeedback(
     const tenant = tenantResult.data as { business_name?: string | null; name?: string | null } | null;
     const businessName = tenant?.business_name || tenant?.name || tenantId;
     const transport = provider ?? createWhatsAppProvider();
-    await transport.sendMessage({
+    await enqueueMessage(db, tenantId, transport, {
       session: String(instanceResult.data.session_name),
       chatId: ownerChatId,
       text: `Отзыв от тенанта ${businessName} (${tenantId}): ${message}`,
-    });
+    }, { kind: 'owner_notice' });
   } catch (notificationError) {
     console.error("platform_feedback_notification_failed", {
       tenantId,

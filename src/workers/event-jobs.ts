@@ -51,6 +51,12 @@ async function runRetentionSweep(db: DatabaseClient, job: ScheduledJob, now: Dat
     let settings: Awaited<ReturnType<typeof loadOwnerSettings>>;
     try { settings = await loadOwnerSettings(db, row.tenant_id); }
     catch { console.error('retention_settings_load_failed', { tenantId: row.tenant_id }); continue; }
+    const outboundCutoff = new Date(now.getTime() - Number(behavior(settings).outbound_retention_days) * 24 * 60 * 60_000).toISOString();
+    const sentOutbound = await db.from('outbound_messages').delete().eq('tenant_id',row.tenant_id).eq('status','sent').lt('sent_at',outboundCutoff);
+    if(sentOutbound.error) console.error('outbound_retention_sweep_failed',{tenantId:row.tenant_id});
+    const terminalOutbound = await db.from('outbound_messages').delete().eq('tenant_id',row.tenant_id)
+      .in('status',['failed','cancelled','expired']).lt('created_at',outboundCutoff);
+    if(terminalOutbound.error) console.error('outbound_retention_sweep_failed',{tenantId:row.tenant_id});
     try {
       await purgeExpiredMessages(db, row.tenant_id, behavior(settings).message_retention_days, now);
     } catch { console.error('message_retention_sweep_failed', { tenantId: row.tenant_id }); }

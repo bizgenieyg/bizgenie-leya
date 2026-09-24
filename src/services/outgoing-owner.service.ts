@@ -1,6 +1,7 @@
 import type { DatabaseClient } from '../db/supabase.js';
 import { extractMessageId } from '../providers/whatsapp/waha.provider.js';
 import { senderKey } from '../utils/whatsapp-id.js';
+import { cancelPendingReplies } from '../workers/outbound-queue.js';
 
 const record=(value:unknown):Record<string,unknown>=>value!==null&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:{};
 
@@ -28,5 +29,6 @@ export async function observeOwnerOutgoing(db:DatabaseClient,tenantId:string,bod
   if(stored.error)throw new Error('Outgoing persistence failed');
   const closed=await db.from('escalations').update({status:'resolved_by_owner',closed_at:at}).eq('tenant_id',tenantId).eq('conversation_id',conversation.data.id).in('status',['queued','notifying','pending','reminding','closing']);
   if(closed.error)throw new Error('Outgoing escalation closure failed');
+  await cancelPendingReplies(db,tenantId,chatId);
   return true;
 }
