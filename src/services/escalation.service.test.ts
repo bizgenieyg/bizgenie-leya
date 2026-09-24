@@ -89,7 +89,10 @@ test("nextQuietHoursEnd still finds a real transition on a schedule that opens l
 
 test("escalation text keeps the owner template", () => {
   const body = buildEscalationText("Dana", "Do you open on Saturday?");
-  assert.match(body, /❓ Новый вопрос от Dana:/);
+  assert.match(body, /^❓ Dana:\n«/);
+  assert.doesNotMatch(body, /Беру на себя|Продолжить|\(\s*\)/);
   assert.match(body, /Do you open on Saturday\?/);
-  assert.match(body, /Лея не нашла ответ в базе знаний\./);
+  assert.equal(body, '❓ Dana:\n«Do you open on Saturday?»\n\nОтветьте реплеем — я передам клиенту.');
+  assert.equal(buildEscalationText('Dana', 'Можно в субботу?', undefined, '+972 50-123-4567'),
+    '❓ Dana (+972 50-123-4567):\n«Можно в субботу?»\n\nОтветьте реплеем — я передам клиенту.');
 });

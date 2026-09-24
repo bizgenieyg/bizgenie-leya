@@ -22,7 +22,8 @@ import { enqueueMessage } from '../workers/outbound-queue.js';
 import { deleteClientCard,getClientCard,listClientCards,updateClientCard } from '../services/client-cards.service.js';
 import { buildOwnerSummary } from '../services/owner-summary.service.js';
 import { simulateCustomerMessage, simulateOwnerAnswer } from '../services/simulator.service.js';
-import {deleteKnowledgeDocument,indexKnowledgeDocument,listKnowledgeDocuments,reindexKnowledgeDocument} from '../services/knowledge-documents.service.js';
+import {deleteKnowledgeDocument,indexKnowledgeDocument,listKnowledgeDocuments,reindexKnowledgeDocument,reindexTenantKnowledge} from '../services/knowledge-documents.service.js';
+import { resolveTenantClientPhones } from '../services/client-phone.service.js';
 import {submitPlatformFeedback} from '../services/platform-feedback.service.js';
 
 const waha = new WahaAdminService();
@@ -155,6 +156,8 @@ adminRouter.delete('/clients/:id',async(request,response)=>{await deleteClientCa
 adminRouter.get('/knowledge-documents',async(request,response)=>{response.setHeader('Cache-Control','no-store');response.json(await listKnowledgeDocuments(supabase,queryTenantId(request.query.tenantId)))});
 adminRouter.post('/knowledge-documents',express.raw({type:'application/octet-stream',limit:'10mb'}),async(request,response)=>{const tenantId=queryTenantId(request.query.tenantId),encoded=request.header('x-file-name')??'',name=decodeURIComponent(encoded),type=request.header('x-file-type')??'';if(!name||name.length>255||!Buffer.isBuffer(request.body)||!request.body.length)throw new HttpError(400,'Invalid knowledge file',{code:'knowledge_invalid_file'});response.status(201).json(await indexKnowledgeDocument(supabase,tenantId,{name,type,data:request.body}))});
 adminRouter.delete('/knowledge-documents/:id',async(request,response)=>{await deleteKnowledgeDocument(supabase,queryTenantId(request.query.tenantId),String(request.params.id));response.status(204).send()});
+adminRouter.post('/knowledge/reindex',async(request,response)=>response.json(await reindexTenantKnowledge(supabase,queryTenantId(request.query.tenantId))));
+adminRouter.post('/clients/resolve-phones',async(request,response)=>{const tenantId=queryTenantId(request.query.tenantId),config=behavior(await loadOwnerSettings(supabase,tenantId));response.json(await resolveTenantClientPhones(supabase,createWhatsAppProvider(),tenantId,{pauseMs:config.lid_backfill_pause_ms,timeoutSeconds:config.lid_lookup_timeout_seconds}));});
 adminRouter.post('/knowledge-documents/:id/reindex',async(request,response)=>response.json(await reindexKnowledgeDocument(supabase,queryTenantId(request.query.tenantId),String(request.params.id))));
 adminRouter.get('/owner-summary',async(request,response)=>{const tenantId=queryTenantId(request.query.tenantId),to=request.query.to?new Date(String(request.query.to)):new Date(),from=request.query.from?new Date(String(request.query.from)):new Date(to.getTime()-7*86400000);if(!Number.isFinite(from.getTime())||!Number.isFinite(to.getTime())||from>=to||to.getTime()-from.getTime()>366*86400000)throw new HttpError(400,'Invalid summary period');response.setHeader('Cache-Control','no-store');response.json(await buildOwnerSummary(supabase,tenantId,from,to));});
 adminRouter.post('/feedback',async(request,response)=>{const tenantId=queryTenantId(request.query.tenantId),message=requiredString(objectBody(request.body),'message').trim();if(!message||message.length>2000)throw new HttpError(400,'Feedback must contain 1 to 2000 characters');response.status(201).json(await submitPlatformFeedback(tenantId,message));});

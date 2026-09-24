@@ -60,7 +60,7 @@ test("builds one deterministic shared-container session config per tenant", () =
         webhooks: [
           {
             url: `https://leya.example.com/webhook/${TENANT_ID}`,
-            events: ["message", "session.status"],
+            events: ["message.any", "session.status"],
             retries: { policy: 'linear', delaySeconds: 2, attempts: 4 },
             customHeaders: [{ name: "X-Webhook-Token", value: "test-webhook-secret" }],
           },

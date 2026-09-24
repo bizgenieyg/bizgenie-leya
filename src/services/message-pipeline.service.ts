@@ -7,7 +7,8 @@ import type { ConversationMemory } from './context.service.js';
 import type { OwnerSettings } from './owner-settings.service.js';
 import { loadContext } from './context.service.js';
 import { findExactKnowledgeAnswer } from './knowledge.service.js';
-import { findSemanticKnowledge } from './semantic-knowledge.service.js';
+import { loadKnowledgeMaterials } from './knowledge-context.service.js';
+import { meterAI } from './metered-providers.js';
 import { entrySource, routeConversation } from './conversation-routing.service.js';
 import { generateKnowledgeReplyResult, generateReceptionReply } from './ai-fallback.service.js';
 import { renderText, replyLanguage } from './templates.service.js';
@@ -34,7 +35,8 @@ export interface PipelineSink {
   persistAssistantMessage(text: string, outboundId: string | null): Promise<void>;
   /** WhatsApp only, called after admission: prior chat history for a first contact. Never persisted. */
   loadChatHistory?: (() => Promise<{ messages: ConversationMemory[]; introduced: boolean }>) | undefined;
-  createEscalation(responseLanguage: string): Promise<string | null>;
+  /** One escalation per question (default: the whole message); returns the single client text sent. */
+  createEscalation(responseLanguage: string, questions?: string[], answered?: string | null): Promise<string | null>;
   markIntroduced(): Promise<void>;
   recordUsage(eventType: string, options?: { eventKey?: string; metadata?: Record<string, unknown> }): Promise<void>;
   recordAgentAction(actionType: string, input?: string, output?: string): Promise<void>;
@@ -119,15 +121,18 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
     return result(reply, 'answered');
   });
 
-  context.materials = await findSemanticKnowledge(db, tenantId, text);
+  const knowledge = await loadKnowledgeMaterials(db, tenantId, text, context, settings);
+  context.materials = knowledge.materials;
+  // Answer-model calls carry the knowledge size/mode to compare quality and cost after rollout.
+  const knowledgeModel = meterAI(db, tenantId, model, { knowledge_chars: knowledge.chars, knowledge_mode: knowledge.mode });
   const classification: Record<string, unknown>[] = [];
   const route = await routeConversation(db, tenantId, conversation, text, settings, ai, usage => classification.push(usage), firstInWindow, sink.mode === 'whatsapp');
   for (const metadata of classification) await agentContext.run({ agent: 'RECEPTION' }, () => sink.recordUsage('model_call', { eventKey: randomUUID(), metadata: { ...metadata, purpose: 'intent_classification' } }));
   conversation.routed_agent = route.kind === 'agent' ? route.agent.name : 'RECEPTION';
   if (sink.mode === 'simulation' && firstInWindow) conversation.source_label = entrySource(text);
-  const escalate = async (): Promise<PipelineResult> => {
-    const reply = await sink.createEscalation(language);
-    await sink.recordUsage('escalation_created');
+  const escalate = async (questions?: string[], answered?: string | null): Promise<PipelineResult> => {
+    const reply = await sink.createEscalation(language, questions, answered);
+    for (let i = 0; i < Math.max(1, questions?.length ?? 1); i++) await sink.recordUsage('escalation_created');
     if (reply) memory.introduced = true;
     const quiet = reply && isWithinQuietHours(settings, now) ? nextQuietHoursEnd(settings, now) : null;
     return result(reply, 'escalated', quiet ? { active: true, until: quiet.toISOString() } : undefined);
@@ -136,7 +141,7 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
   if (route.kind === 'reception') return agentContext.run({ agent: 'RECEPTION' }, async () => {
     await sink.recordUsage('message_received', { eventKey: usageKey });
     const clarification = renderText(settings, 'client.reception_question', language);
-    const reception = await generateReceptionReply(context, text, clarification, model, memory.messages, memory.introduced, language);
+    const reception = await generateReceptionReply(context, text, clarification, knowledgeModel, memory.messages, memory.introduced, language);
     if (reception.escalate || !reception.reply) return escalate();
     const reply = clientReply(reception.reply);
     const id = await sink.sendToClient(reply);
@@ -168,7 +173,13 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
     }
     let agentResult: PipelineResult | null = null;
     await agent.execute({ answerFromKnowledge: async () => {
-      const answer = await generateKnowledgeReplyResult(context, text, model, agent.systemPrompt, memory.messages, memory.introduced, language);
+      const answer = await generateKnowledgeReplyResult(context, text, knowledgeModel, agent.systemPrompt, memory.messages, memory.introduced, language);
+      if (answer.unanswered.length) {
+        if (answer.reply) await sink.recordAgentAction('knowledge_ai_answer');
+        for (const question of answer.unanswered) await sink.recordAgentAction('knowledge_missing', question);
+        agentResult = await escalate(answer.unanswered, answer.reply ? clientReply(answer.reply) : null);
+        return;
+      }
       if (answer.reply) {
         const reply = clientReply(answer.reply);
         const id = await sink.sendToClient(reply);

@@ -12,7 +12,7 @@ import { reserveSimulatorCall } from './simulator-rate-limit.js';
 import { processCustomerMessage, type PipelineResult, type PipelineSink } from './message-pipeline.service.js';
 import { composeOwnerAnswer, escalationWaitingMessage } from './owner-workflow.service.js';
 import { languageOf } from './templates.service.js';
-import { withoutRepeatedIntroduction } from '../utils/assistant-text.js';
+import { clientText, withoutRepeatedIntroduction } from '../utils/assistant-text.js';
 import { HttpError } from '../utils/http-error.js';
 import { allowedRecipient } from '../utils/incoming-policy.js';
 
@@ -78,12 +78,14 @@ export async function simulateCustomerMessage(db: DatabaseClient, tenantId: stri
     afterAdmission: async () => {},
     sendToClient: async reply => { sentReply = reply; return null; },
     persistAssistantMessage: async answer => { await saveReply(answer); },
-    createEscalation: async language => {
+    createEscalation: async (language, _questions, answered) => {
       const destination = ownerDestination(settings);
       if (!destination || !allowedRecipient(destination)) return null;
       const waiting = escalationWaitingMessage(text, settings, client.time_zone, language, now);
-      const reply = withoutRepeatedIntroduction(waiting.text, memory.introduced);
+      const reply = answered ? `${clientText(answered)}\n\n${withoutRepeatedIntroduction(waiting.text, true)}` : withoutRepeatedIntroduction(waiting.text, memory.introduced);
       sentReply = reply;
+      // Persist the waiting text so the next simulated turn sees that Leya already answered.
+      await saveReply(reply);
       return reply;
     },
     markIntroduced: async () => { memory.introduced = true; },

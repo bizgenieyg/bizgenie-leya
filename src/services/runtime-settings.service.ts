@@ -57,14 +57,19 @@ export function validateRuntimePatch(input:Record<string,unknown>) {
   if(SYSTEM_FIELDS.has(key))throw new HttpError(403,'System settings cannot be changed by tenant');
   if(['translate_owner_answer','auto_replies_paused'].includes(key)){if(typeof value!=='boolean')throw new HttpError(400,'Expected boolean');notification[key]=value;}
   else if(key==='polish_owner_answer'){if(typeof value!=='boolean')throw new HttpError(400,'Expected boolean');behaviorPatch[key]=value;}
-  else if(['auto_resume_hours','reception_max_messages'].includes(key))behaviorPatch[key]=integer(key,value,0,8760);
+  else if(key==='auto_resume_hours')behaviorPatch[key]=integer(key,value,1,48);
+  else if(key==='reception_max_messages')behaviorPatch[key]=integer(key,value,0,8760);
   else if(['simulator_hourly_limit','simulator_daily_limit','knowledge_max_files','knowledge_max_pdf_pages','knowledge_max_characters','knowledge_search_results','knowledge_indexing_hourly_limit','knowledge_indexing_daily_limit','knowledge_chunk_characters','knowledge_chunk_overlap'].includes(key))behaviorPatch[key]=integer(key,value,1,1000000);
   else if(['knowledge_max_file_bytes','knowledge_max_total_bytes'].includes(key))behaviorPatch[key]=integer(key,value,1024,1073741824);
   else if(key==='knowledge_similarity_threshold'){if(typeof value!=='number'||value<0||value>1)throw new HttpError(400,'Invalid knowledge threshold');behaviorPatch[key]=value;}
   else if(key==='message_retention_days')behaviorPatch[key]=integer(key,value,MESSAGE_RETENTION_MIN_DAYS,3650);
+  else if(key==='lid_backfill_pause_ms')behaviorPatch[key]=integer(key,value,0,60000);
+  else if(key==='knowledge_full_context_chars')behaviorPatch[key]=integer(key,value,0,500000);
+  else if(key==='knowledge_unit_max_chars')behaviorPatch[key]=integer(key,value,200,20000);
+  else if(key==='knowledge_similarity_floor'){if(typeof value!=='number'||value<0||value>1)throw new HttpError(400,'Invalid knowledge threshold');behaviorPatch[key]=value;}
   else if(key==='history_fetch_limit')behaviorPatch[key]=integer(key,value,0,100);
   else if(key==='history_max_characters')behaviorPatch[key]=integer(key,value,0,50000);
-  else if(key==='history_timeout_seconds')behaviorPatch[key]=integer(key,value,1,30);
+  else if(key==='history_timeout_seconds'||key==='lid_lookup_timeout_seconds')behaviorPatch[key]=integer(key,value,1,30);
   else if(key==='inbound_quiet_seconds')behaviorPatch[key]=integer(key,value,0,30);
   else if(['outbound_typing_min_seconds','outbound_typing_max_seconds','outbound_conversation_gap_min_seconds','outbound_conversation_gap_max_seconds','outbound_proactive_gap_min_seconds','outbound_proactive_gap_max_seconds'].includes(key))behaviorPatch[key]=integer(key,value,0,300);
   else if(['outbound_typing_seconds_per_100_min','outbound_typing_seconds_per_100_max'].includes(key)){

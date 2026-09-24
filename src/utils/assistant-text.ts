@@ -3,7 +3,7 @@ import { renderText,languageOf } from '../services/templates.service.js';
 import type { OwnerSettings } from '../services/owner-settings.service.js';
 const INTERNAL_AGENT_CODE=/\b(?:SALE|SUPPORT|RECEPTION|CORE)\b/g;
 export const containsInternalAgentCode=(text:string)=>/\b(?:SALE|SUPPORT|RECEPTION|CORE)\b/.test(text);
-export const clientText = (text:string) => text.replace(/<[^>]*>/g, "").replace(/[<>]/g, "").replace(INTERNAL_AGENT_CODE,'').replace(/\s+\/\s+/g,' ').replace(/\s*\/\s*(?=[?!.,]|$)/g,'').replace(/\s+([?!.,])/g,'$1').replace(/\s{2,}/g,' ').trim();
+export const clientText = (text:string) => text.replace(/<[^>]*>/g, "").replace(/[<>]/g, "").replace(INTERNAL_AGENT_CODE,'').replace(/\s+\/\s+/g,' ').replace(/\s*\/\s*(?=[?!.,]|$)/g,'').replace(/[ \t]+([?!.,])/g,'$1').replace(/[ \t]{2,}/g,' ').replace(/[ \t]*\n[ \t]*/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
 export function withoutRepeatedIntroduction(text:string,introduced:boolean):string {
  if(!introduced)return clientText(text);
  return clientText(text).replace(/^(?:Я ассистент владельца\.|I'm the owner's assistant\.|אני העוזרת של בעל העסק\.)\s*/i,'').trim();

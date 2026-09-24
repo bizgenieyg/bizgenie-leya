@@ -29,7 +29,7 @@ export interface SessionStatus {
 
 export interface SessionWebhookConfig {
   url: string;
-  events: ["message", "session.status"];
+  events: ["message.any", "session.status"];
   retries?: { policy: 'linear' | 'constant' | 'exponential'; delaySeconds: number; attempts: number };
   customHeaders: { name: string; value: string }[];
 }
@@ -76,6 +76,8 @@ export interface WhatsAppProvider {
   stopTyping?(input: { session: string; chatId: string }): Promise<void>;
   getSessionStatus(session: string): Promise<SessionStatus>;
   getChatMessages?(session: string, chatId: string, options: { limit: number; timeoutMs: number }): Promise<WhatsAppChatMessage[]>;
+  /** GOWS: phone JID behind a `@lid` id (`{ pn: '972…@c.us' }`), or null. */
+  getLidPhone?(session: string, lid: string, options: { timeoutMs: number }): Promise<string | null>;
 }
 
 /** Administrative lifecycle operations for sessions in the shared WAHA container. */

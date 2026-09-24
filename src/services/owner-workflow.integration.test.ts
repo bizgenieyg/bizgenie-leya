@@ -93,16 +93,10 @@ test('owner reply: short GOWS ID, delivery before closure, quoted confirmation o
   await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'Да, можно', e.owner_message_ids[0]!, h.settings); await settleAllOutboundQueues();
   e = await h.escalation(e.id); assert.equal(e.status, 'delivered'); assert.ok(e.client_message_id);
   assert.equal((await h.pg.query<{count:number}>("select count(*)::int as count from scheduled_jobs where job_type='escalation_timeout' and status='cancelled'")).rows[0]!.count, 1);
-  assert.equal(h.sent.at(-2)!.chatId, customer); assert.equal(h.sent.at(-2)!.replyTo, undefined);
-  assert.match(h.sent.at(-2)!.text, /Передаю ответ владельца/); assert.equal(await h.knowledgeCount(), 0);
-
-  const prompt = e.learning_message_ids[0]!;
-  assert.equal(await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', customer, 'Да', prompt, h.settings), false); await settleAllOutboundQueues();
-  assert.equal(await h.knowledgeCount(), 0);
-  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'Да', prompt, h.settings); await settleAllOutboundQueues();
-  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'Да', prompt, h.settings); await settleAllOutboundQueues();
-  assert.equal(await h.knowledgeCount(), 1);
-  e = await h.escalation(e.id); assert.equal(e.learning_state, 'saved');
+  // The client answer is the last message: no "save to knowledge base?" prompt to the owner any more.
+  assert.equal(h.sent.at(-1)!.chatId, customer); assert.equal(h.sent.at(-1)!.replyTo, undefined);
+  assert.match(h.sent.at(-1)!.text, /Передаю ответ владельца/); assert.equal(await h.knowledgeCount(), 0);
+  assert.deepEqual(e.learning_message_ids, []); assert.equal(e.learning_state, 'none');
 });
 
 test('failed client delivery leaves escalation open and never offers learning', async () => {
@@ -159,10 +153,11 @@ test('manual fromMe send pauses dialogue and closes pending escalation; API send
   assert.equal(await observeOwnerOutgoing(h.db, h.tenant, { ...body, payload: { ...body.payload, id: 'api-1', source: 'api' } }, new Date()), false); await settleAllOutboundQueues();
 });
 
-test('automatic resume is disabled by default and enabled after configured inactivity', async () => {
+test('owner takeover pauses the chat and Leya resumes after the default 4 hours or the configured inactivity', async () => {
   const h = await pgHarness();
   await h.pg.query("update conversations set bot_paused=true,owner_last_activity_at='2026-09-08T10:00:00Z' where id=$1", [h.conversationId]);
-  assert.equal(await conversationPaused(h.db, h.tenant, h.conversationId, h.settings, new Date('2026-09-09T10:00:00Z')), true);
+  assert.equal(await conversationPaused(h.db, h.tenant, h.conversationId, h.settings, new Date('2026-09-08T13:59:00Z')), true);
+  assert.equal(await conversationPaused(h.db, h.tenant, h.conversationId, { ...h.settings, behavior: { auto_resume_hours: 12 } }, new Date('2026-09-08T21:00:00Z')), true);
   assert.equal(await conversationPaused(h.db, h.tenant, h.conversationId, { ...h.settings, behavior: { auto_resume_hours: 12 } }, new Date('2026-09-09T10:00:00Z')), false);
   assert.equal((await h.conversation()).bot_paused, false);
 });
@@ -272,7 +267,7 @@ test('complete real GOWS client and owner reply payloads traverse worker filters
   await h.pg.query('update notification_settings set auto_replies_paused=true where tenant_id=$1', [h.tenant]);
   invalidateOwnerSettings(h.db, h.tenant);
   const count = h.sent.length;
-  const pausedBody=structuredClone(body);pausedBody.payload.id='paused-incoming-1';pausedBody.payload.from='55555555@lid';pausedBody.payload._data.Info.Chat='55555555@lid';pausedBody.payload.body='Хочу заказать новую услугу';
+  const pausedBody=structuredClone(body);pausedBody.payload.id='paused-incoming-1';pausedBody.payload.from='55555555@lid';pausedBody.payload._data.Info.Chat='55555555@lid';pausedBody.payload._data.Info.SenderAlt='972500000055@s.whatsapp.net';pausedBody.payload.body='Хочу заказать новую услугу';
   const storedBefore=Number((await h.pg.query<{count:string}>('select count(*)::text count from messages')).rows[0]!.count);
   await handleWebhookEvent(h.tenant, pausedBody, h.db, h.provider, { async generateReply(input) {return input.systemPrompt.includes('классификатор')?{text:'{"agent":"SALE","confidence":0.95}'}:{text:'must not be delivered'};} }); await settleAllOutboundQueues();
   assert.equal(h.sent.length, count);
@@ -369,7 +364,7 @@ test('owner translation is opt-in: disabled makes zero model calls', async () =>
     let calls = 0;
     await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'Yes, available', e.owner_message_ids[0]!, settings, { async generateReply() { calls++; return { text: 'Да, доступно' }; } }); await settleAllOutboundQueues();
     assert.equal(calls, enabled ? 1 : 0);
-    assert.match(h.sent.at(-2)!.text, enabled ? /Да, доступно/ : /Yes, available/);
+    assert.match(h.sent.at(-1)!.text, enabled ? /Да, доступно/ : /Yes, available/);
   }
 });
 

@@ -1,6 +1,6 @@
 import type { DatabaseClient } from '../db/supabase.js';
 import { extractMessageId } from '../providers/whatsapp/waha.provider.js';
-import { senderKey } from '../utils/whatsapp-id.js';
+import { phoneFromJid, senderKey } from '../utils/whatsapp-id.js';
 import { cancelPendingReplies, outboundIdsForProviderId } from '../workers/outbound-queue.js';
 
 const ECHO_WINDOW_MS=60_000;
@@ -34,7 +34,13 @@ export async function observeOwnerOutgoing(db:DatabaseClient,tenantId:string,bod
   if(payload.source==='api')return false;
   if(await isOwnQueuedSend(db,tenantId,id,chats,typeof payload.body==='string'?payload.body:null,now))return false;
   let clientId:string|undefined,chatId:string|undefined,knownIds:string[]=[];
-  for(const chat of chats){const client=await db.from('clients').select('id,phone,whatsapp_jid').eq('tenant_id',tenantId).eq('phone',senderKey(chat)).maybeSingle();if(client.error)throw new Error('Outgoing client lookup failed');if(client.data){clientId=client.data.id;chatId=chat;knownIds=[String(client.data.phone??''),String(client.data.whatsapp_jid??'')];break;}}
+  for(const chat of chats){
+    const phone=phoneFromJid(chat);
+    let client=await db.from('clients').select('id,phone,whatsapp_jid').eq('tenant_id',tenantId).eq('whatsapp_jid',chat).maybeSingle();
+    if(!client.error&&!client.data&&phone)client=await db.from('clients').select('id,phone,whatsapp_jid').eq('tenant_id',tenantId).eq('phone',phone).maybeSingle();
+    if(client.error)throw new Error('Outgoing client lookup failed');
+    if(client.data){clientId=client.data.id;chatId=chat;knownIds=[client.data.phone?`${client.data.phone}@c.us`:'',String(client.data.whatsapp_jid??'')];break;}
+  }
   if(!clientId||!chatId)return false;
   const conversation=await db.from('conversations').select('id').eq('tenant_id',tenantId).eq('client_id',clientId).eq('status','active').order('created_at',{ascending:false}).limit(1).maybeSingle();
   if(conversation.error)throw new Error('Outgoing conversation lookup failed');if(!conversation.data)return false;

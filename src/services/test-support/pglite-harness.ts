@@ -52,8 +52,9 @@ const MIGRATIONS_IN_APPLICATION_ORDER = [
   '20260911181238_042_assistant_tone_values.sql',
   '20260914132216_043_pause_new_tenant_replies.sql',
   '20260915054310_044_client_reply_language_and_group_cleanup.sql',
-  // 045 needs the pgvector extension, which this PGlite build does not have; its own
-  // integration tests boot a dedicated instance instead of using this shared harness.
+  // 045 needs pgvector, which this PGlite build lacks: applied with the vector type swapped
+  // for real[] and the similarity RPC stubbed (see pgliteCompatible). Tables, RLS and grants are real.
+  '20260915084259_045_knowledge_documents_vector_search.sql',
   '20260917090000_046_client_chat_type.sql',
   // A migration numbered 047 that merged clients by (tenant, JID digits, name) was
   // drafted and committed but never applied to the live database (confirmed via
@@ -70,6 +71,7 @@ const MIGRATIONS_IN_APPLICATION_ORDER = [
   '20260924072304_054_outbound_messages.sql',
   '20260924112804_055_session_status_changed_at.sql',
   '20260924160000_056_outbound_links_and_session_alerts.sql',
+  '20260924200000_057_question_batches_suggestions_client_phone.sql',
 ];
 
 /** PGlite has no real `auth` schema/GoTrue; stub just enough for RLS-authoring
@@ -88,13 +90,25 @@ async function bootstrapAuthAndRoles(pg: PGlite): Promise<void> {
   `);
 }
 
+/** pgvector is unavailable in PGlite: vector columns become real[], vector search returns no rows. */
+function pgliteCompatible(sql: string): string {
+  if (!sql.includes('extensions.vector')) return sql;
+  return sql
+    .replace(/create extension if not exists vector[^;]*;/g, '')
+    .replace(/create index[^;]*using hnsw[^;]*;/g, '')
+    .replace(/create or replace function public\.match_knowledge_chunks\([\s\S]*?\$\$;/, () => `create or replace function public.match_knowledge_chunks(p_tenant_id uuid,p_embedding real[],p_embedding_model text,p_threshold double precision,p_limit integer)
+returns table(id uuid,document_id uuid,file_name text,content text,similarity double precision) language sql stable as $$ select null::uuid,null::uuid,null::text,null::text,null::double precision where false $$;`)
+    .replace(/extensions\.vector\(\d+\)/g, 'real[]')
+    .replace(/extensions\.vector/g, 'real[]');
+}
+
 export async function createTestDatabase(): Promise<PGlite> {
   const pg = new PGlite();
   await bootstrapAuthAndRoles(pg);
   for (const file of MIGRATIONS_IN_APPLICATION_ORDER) {
-    const sql = readFileSync(`supabase/migrations/${file}`, 'utf8')
+    const sql = pgliteCompatible(readFileSync(`supabase/migrations/${file}`, 'utf8')
       // PGlite ships gen_random_uuid() built in and does not support CREATE EXTENSION.
-      .replace('create extension if not exists pgcrypto;', '');
+      .replace('create extension if not exists pgcrypto;', ''));
     try {
       await pg.exec(sql);
     } catch (error) {

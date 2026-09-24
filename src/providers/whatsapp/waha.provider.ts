@@ -174,6 +174,11 @@ export class WahaProvider implements WhatsAppProvider, WhatsAppSessionProvider {
     });
   }
 
+  async getLidPhone(session: string, lid: string, options: { timeoutMs: number }): Promise<string | null> {
+    const data = await this.request("GET", `/api/${encodeURIComponent(session)}/lids/${encodeURIComponent(lid)}`, undefined, AbortSignal.timeout(options.timeoutMs));
+    return isRecord(data) && typeof data.pn === "string" && data.pn ? data.pn : null;
+  }
+
   async getChatMessages(session: string, chatId: string, options: { limit: number; timeoutMs: number }): Promise<WhatsAppChatMessage[]> {
     const params = new URLSearchParams({ limit: String(options.limit), offset: "0", downloadMedia: "false" });
     const data = await this.request("GET", `/api/${encodeURIComponent(session)}/chats/${encodeURIComponent(chatId)}/messages?${params}`, undefined, AbortSignal.timeout(options.timeoutMs));

@@ -82,3 +82,23 @@ export function toChatId(phoneOrJid: unknown): string {
 export function senderKey(jid: string): string {
   return jid.endsWith("@lid") ? jid : stripJidSuffix(jid);
 }
+
+/** A real phone number (digits, E.164 without `+`) from a phone JID; lid ids are never phones. */
+export function phoneFromJid(jid: unknown): string | null {
+  if (typeof jid !== "string") return null;
+  const match = /^(\d{8,15})(?::\d+)?@(?:c\.us|s\.whatsapp\.net)$/.exec(jid.trim());
+  return match ? match[1]! : null;
+}
+
+/** Stored phone digits, or null when the value is a lid or anything that is not a phone. */
+export function storedPhone(value: unknown): string | null {
+  return typeof value === "string" && /^\d{8,15}$/.test(value) ? value : null;
+}
+
+/** Human form for the owner: Israeli numbers as `+972 50-123-4567`, others as `+<digits>`. */
+export function formatPhone(value: unknown): string | null {
+  const digits = storedPhone(value);
+  if (!digits) return null;
+  const il = /^972(\d{2})(\d{3})(\d{4})$/.exec(digits);
+  return il ? `+972 ${il[1]}-${il[2]}-${il[3]}` : `+${digits}`;
+}

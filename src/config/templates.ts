@@ -10,9 +10,9 @@ export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
     "en": "Your Leya confirmation code: {code}. Reply to this message with the digits to confirm this is your number. The code is valid for {minutes} minutes."
   },
   "client.reception_question": {
-    "ru": "Я ассистент владельца. Расскажите, пожалуйста, что вам нужно — постараюсь помочь.",
-    "he": "אני העוזרת של בעל העסק. ספרו לי בבקשה במה אוכל לעזור.",
-    "en": "I'm the owner's assistant. Please tell me what you need, and I'll do my best to help."
+    "ru": "Я ассистент владельца. Что именно вас интересует?",
+    "he": "אני העוזרת של בעל העסק. מה בדיוק מעניין אותך?",
+    "en": "I'm the owner's assistant. What exactly are you interested in?"
   },
   "client.waiting": {
     "ru": "Я ассистент владельца. Уточню у владельца и напишу, когда получу ответ.",
@@ -55,14 +55,24 @@ export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
     "en": "I'm the owner's assistant. I haven't received an answer yet. The owner will contact you separately."
   },
   "owner.escalation": {
-    "ru": "❓ Новый вопрос от {name}:\n\n{question}\n\nЛея не нашла ответ в базе знаний.\nОтветьте реплеем на это сообщение. Для паузы диалога ответьте «Беру на себя», для возобновления — «Продолжить».",
-    "en": "❓ Question from {name}:\n\n{question}\n\nThe assistant could not find an answer. Reply to this message. To take over, reply «Беру на себя»; to resume, «Продолжить».",
-    "he": "❓ שאלה מאת {name}:\n\n{question}\n\nהעוזרת לא מצאה תשובה. יש להשיב בציטוט להודעה זו. לקבלת השיחה: «Беру на себя»; לחידוש: «Продолжить»."
+    "ru": "❓ {name} ({phone}):\n«{question}»\n\nОтветьте реплеем — я передам клиенту.",
+    "en": "❓ {name} ({phone}):\n«{question}»\n\nReply to this message — I'll pass it to the client.",
+    "he": "❓ {name} ({phone}):\n«{question}»\n\nהשיבו בציטוט להודעה — אעביר ללקוח."
   },
-  "owner.learning": {
-    "ru": "Ответ отправлен клиенту. Сохранить эту пару в базу знаний?\n\nВопрос: {question}\nОтвет: {answer}\n\nОтветьте реплеем на это сообщение: «Да» или «Нет».",
-    "en": "Your answer was delivered. Save it to the knowledge base?\n\nQuestion: {question}\nAnswer: {answer}\n\nReply to this message: Yes or No.",
-    "he": "התשובה נמסרה. לשמור אותה במאגר הידע?\n\nשאלה: {question}\nתשובה: {answer}\n\nנא להשיב בציטוט: כן או לא."
+  "owner.summary_suggestions": {
+    "ru": "Добавить в базу знаний?\n{items}\nОтветьте номерами (например «1 3»), «все» или «нет».",
+    "en": "Add to the knowledge base?\n{items}\nReply with numbers (e.g. «1 3»), «all» or «no».",
+    "he": "להוסיף למאגר הידע?\n{items}\nהשיבו במספרים (למשל «1 3»), «הכול» או «לא»."
+  },
+  "owner.summary_suggestion_item": {
+    "ru": "{index}. В: {question} — О: {answer}",
+    "en": "{index}. Q: {question} — A: {answer}",
+    "he": "{index}. ש: {question} — ת: {answer}"
+  },
+  "client.partial_pending": {
+    "ru": "По остальным вопросам ещё уточняю у владельца и напишу, как только получу ответ.",
+    "he": "לגבי שאר השאלות אני עדיין בודקת עם בעל העסק ואעדכן ברגע שאקבל תשובה.",
+    "en": "I'm still checking the remaining questions with the owner and will write as soon as I have an answer."
   },
   "owner.remind": {
     "ru": "Напоминание: клиент {name} ждёт ответа.\n\n{question}\n\nОтветьте реплеем на это сообщение.",

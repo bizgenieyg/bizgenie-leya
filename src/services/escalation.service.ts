@@ -86,8 +86,10 @@ export function nextQuietHoursEnd(settings:RuntimeSettings,now:Date):Date|null {
   }
   return null;
 }
-export function buildEscalationText(clientName:string,clientMessage:string,settings?:OwnerSettings):string {
- return renderText(settings,'owner.escalation',String(settings?.behavior?.owner_language??BEHAVIOR_DEFAULTS.owner_language),{name:clientName,question:clientMessage});
+/** One short notification, no instructions; the phone in parentheses only when the real number is known. */
+export function buildEscalationText(clientName:string,clientMessage:string,settings?:OwnerSettings,phone?:string|null):string {
+ const text=renderText(settings,'owner.escalation',String(settings?.behavior?.owner_language??BEHAVIOR_DEFAULTS.owner_language),{name:clientName,phone:phone??'',question:clientMessage});
+ return phone?text:text.replace(/\s*\(\s*\)/,'');
 }
 /** Count real UTC elapsed time outside quiet intervals, including DST transitions. */
 export function activeElapsedMs(settings:RuntimeSettings,from:Date,to:Date):number {

@@ -16,7 +16,7 @@ import { replyLanguage } from './templates.service.js';
 import { agentContext } from '../agents/registry.js';
 import { withoutRepeatedIntroduction } from '../utils/assistant-text.js';
 import { conversationPaused } from './owner-workflow.service.js';
-import { senderKey } from '../utils/whatsapp-id.js';
+import { resolveClientPhone } from './client-phone.service.js';
 import { sessionIdentity } from './session-identity.service.js';
 const object=(value:unknown):Record<string,unknown>=>value!==null&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:{};
 export function voiceUsage(body:Record<string,unknown>):{from:string;seconds:number|null;id:string|null;mime:string;url:string}|null {
@@ -41,7 +41,7 @@ export async function handleVoiceUsage(db:DatabaseClient,routing:TenantRouting,b
  let paused=settings.auto_replies_paused,conversationId:string|undefined,introduced=false;
  if(client.data){const c=await db.from('conversations').select('id,bot_paused,assistant_introduced_at').eq('tenant_id',tenantId).eq('client_id',client.data.id).eq('status','active').order('created_at',{ascending:false}).limit(1).maybeSingle();if(c.error)return;conversationId=c.data?.id;introduced=!!c.data?.assistant_introduced_at;if(conversationId)paused=paused||await conversationPaused(db,tenantId,conversationId,settings);}
  if(paused){
-  if(!conversationId){const info=object(object(object(body.payload)._data).Info),name=typeof info.PushName==='string'?info.PushName:null;const row=await findOrCreateClient(db,tenantId,senderKey(voice.from),name,voice.from);conversationId=(await findOrCreateConversation(db,tenantId,row.id)).id;}
+  if(!conversationId){const info=object(object(object(body.payload)._data).Info),name=typeof info.PushName==='string'?info.PushName:null;const row=await findOrCreateClient(db,tenantId,await resolveClientPhone(provider,session,voice.from,body,behavior(settings).lid_lookup_timeout_seconds),name,voice.from);conversationId=(await findOrCreateConversation(db,tenantId,row.id)).id;}
   const saved=await db.from('messages').insert({conversation_id:conversationId,tenant_id:tenantId,from_me:false,body:null,msg_type:'voice',waha_msg_id:voice.id,raw_payload:body});if(saved.error&&saved.error.code!=='23505')console.error('paused_voice_persist_failed',{tenantId});
   await recordUsageEvent(db,{tenantId,eventType:'message_observed',eventKey:key,metadata:{reason:'paused',billable:false,media:'voice',classified:true}});return;
  }

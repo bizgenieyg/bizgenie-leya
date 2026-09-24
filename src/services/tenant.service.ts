@@ -2,6 +2,7 @@ import type { DatabaseClient } from "../db/supabase.js";
 
 import { HttpError } from "../utils/http-error.js";
 import { isGroupChatJid } from "../utils/incoming-policy.js";
+import { storedPhone } from "../utils/whatsapp-id.js";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -39,7 +40,7 @@ export interface ClientRow {
   time_zone?: string | null;
   id: string;
   tenant_id: string;
-  phone: string;
+  phone: string | null;
   whatsapp_jid?:string;
   name: string | null;
   language?:string|null;language_overridden?:boolean;auto_reply_allowed?:boolean;
@@ -108,35 +109,41 @@ export function isTenantServiceable(status: string): boolean {
 }
 
 /** Find a client by (tenant, phone) or create one. Also refreshes `last_seen_at`. */
+/**
+ * Find a client by chat JID, then by real phone (a `@lid` and a `@c.us` of one contact are one
+ * client). `phone` is digits only or null — a lid id is never stored as a phone.
+ */
 export async function findOrCreateClient(
   db: DatabaseClient,
   tenantId: string,
-  phone: string,
+  phone: string | null,
   name: string | null,
-  whatsappJid=phone,
+  whatsappJid: string,
 ): Promise<ClientRow> {
   const nowIso = new Date().toISOString();
-
-  const { data: existing, error: findError } = await db
-    .from("clients")
-    .select("id, tenant_id, phone, whatsapp_jid, name, time_zone,language,language_overridden,auto_reply_allowed,chat_type,deleted_at")
-    .eq("tenant_id", tenantId)
-    .eq("whatsapp_jid", whatsappJid)
-    .maybeSingle();
-  if (findError) {
-    throw new HttpError(500, "Client lookup failed");
+  const columns = "id, tenant_id, phone, whatsapp_jid, name, time_zone,language,language_overridden,auto_reply_allowed,chat_type,deleted_at";
+  const realPhone = storedPhone(phone);
+  let { data: existing, error: findError } = await db.from("clients").select(columns)
+    .eq("tenant_id", tenantId).eq("whatsapp_jid", whatsappJid).maybeSingle();
+  if (findError) throw new HttpError(500, "Client lookup failed");
+  if (!existing && realPhone) {
+    const byPhone = await db.from("clients").select(columns).eq("tenant_id", tenantId).eq("phone", realPhone).maybeSingle();
+    if (byPhone.error) throw new HttpError(500, "Client lookup failed");
+    existing = byPhone.data;
   }
 
   if (existing) {
     const patch: Record<string, unknown> = { last_seen_at: nowIso,deleted_at:null,chat_type:isGroupChatJid(whatsappJid)?'group':'individual' };
-    if (name && name !== existing.name) {
-      patch.name = name;
-    }
-    await db.from("clients").update(patch).eq("id", existing.id);
+    if (name && name !== existing.name) patch.name = name;
+    const known = storedPhone(existing.phone);
+    if (realPhone && !known) patch.phone = realPhone;
+    else if (existing.phone && !known) patch.phone = null;
+    let updated = await db.from("clients").update(patch).eq("id", existing.id);
+    if (updated.error && patch.phone) { delete patch.phone; updated = await db.from("clients").update(patch).eq("id", existing.id); }
     return {
       id: existing.id as string,
       tenant_id: existing.tenant_id as string,
-      phone: existing.phone as string,
+      phone: (typeof patch.phone === 'string' ? patch.phone : known),
       whatsapp_jid:existing.whatsapp_jid as string,
       time_zone: existing.time_zone as string | null,
       name: name ?? (existing.name as string | null) ?? null,
@@ -149,7 +156,7 @@ export async function findOrCreateClient(
     .from("clients")
     .insert({
       tenant_id: tenantId,
-      phone,
+      phone: realPhone,
       whatsapp_jid:whatsappJid,
       chat_type:isGroupChatJid(whatsappJid)?'group':'individual',
       name,

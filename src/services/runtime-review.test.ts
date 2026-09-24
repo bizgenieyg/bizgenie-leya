@@ -34,15 +34,15 @@ test('templates reject unknown placeholders, runtime rendering removes unsafe ma
  const text=renderText({...settings,templates:{'client.owner_answer':{ru:'Ассистент: {answer}'}}},'client.owner_answer','ru',{answer:'<secret>{placeholder} да'});
  assert.doesNotMatch(text,/[<>{}]/);assert.match(text,/Ассистент/);
  const legacyReception=renderText({...settings,templates:{'client.reception_question':{ru:'Вас интересует {agents}?'}}},'client.reception_question','ru',{agents:'SUPPORT / SALE'});
- assert.doesNotMatch(legacyReception,/\b(?:SALE|SUPPORT|RECEPTION|CORE)\b|продаж|поддерж/i);assert.match(legacyReception,/что вам нужно/i);
+ assert.doesNotMatch(legacyReception,/\b(?:SALE|SUPPORT|RECEPTION|CORE)\b|продаж|поддерж/i);assert.match(legacyReception,/что именно вас интересует/i);
 });
 test('no customer-facing default template exposes internal routing codes',()=>{
  for(const[key,languages]of Object.entries(TEMPLATE_DEFAULTS).filter(([key])=>key.startsWith('client.')))for(const text of Object.values(languages))assert.doesNotMatch(text,/\b(?:SALE|SUPPORT|RECEPTION|CORE)\b/,key);
 });
 test('conversation behavior settings validate tenant overrides',()=>{
- const patch=validateRuntimePatch({auto_resume_hours:0,deferred_max_age_hours:12,context_message_count:10,context_retention_hours:48,intent_confidence_threshold:.8,route_stickiness_hours:24,reception_max_messages:0,campaign_routes:[{keyword:'AUDIT',agent:'SALE'}],source_routes:[{source:'catalog',agent:'SALE'}]});
+ const patch=validateRuntimePatch({auto_resume_hours:4,deferred_max_age_hours:12,context_message_count:10,context_retention_hours:48,intent_confidence_threshold:.8,route_stickiness_hours:24,reception_max_messages:0,campaign_routes:[{keyword:'AUDIT',agent:'SALE'}],source_routes:[{source:'catalog',agent:'SALE'}]});
  assert.equal(patch.behaviorPatch.intent_confidence_threshold,.8);assert.equal(patch.behaviorPatch.route_stickiness_hours,24);
- assert.throws(()=>validateRuntimePatch({auto_resume_hours:-1}));assert.throws(()=>validateRuntimePatch({context_message_count:0}));
+ assert.throws(()=>validateRuntimePatch({auto_resume_hours:-1}));assert.throws(()=>validateRuntimePatch({auto_resume_hours:0}));assert.throws(()=>validateRuntimePatch({auto_resume_hours:49}));assert.throws(()=>validateRuntimePatch({context_message_count:0}));
  assert.throws(()=>validateRuntimePatch({default_agent:'SUPPORT'}));
  assert.doesNotThrow(()=>validateRuntimePatch({time_zone:'UTC+3'}));assert.doesNotThrow(()=>validateRuntimePatch({time_zone:'UTC-12'}));
  assert.equal(validateRuntimePatch({cabinet_language:'en'}).behaviorPatch.cabinet_language,'en');
@@ -50,7 +50,7 @@ test('conversation behavior settings validate tenant overrides',()=>{
  assert.throws(()=>validateRuntimePatch({cabinet_language:'de'}));
 });
 test('operator runtime settings remain accepted by the ADMIN_SECRET API validator',()=>{
- const patch=validateRuntimePatch({translate_owner_answer:true,escalation_remind_minutes:120,escalation_close_minutes:1440,auto_resume_hours:0,deferred_max_age_hours:12,context_message_count:10,context_retention_hours:48,intent_confidence_threshold:.75,route_stickiness_hours:24,reception_max_messages:0,simulator_hourly_limit:30,simulator_daily_limit:100,knowledge_chunk_characters:1500,knowledge_chunk_overlap:225,campaign_routes:[],source_routes:[],templates:{'client.waiting':{ru:'Я уточню и вернусь с ответом.'}}});
+ const patch=validateRuntimePatch({translate_owner_answer:true,escalation_remind_minutes:120,escalation_close_minutes:1440,auto_resume_hours:4,deferred_max_age_hours:12,context_message_count:10,context_retention_hours:48,intent_confidence_threshold:.75,route_stickiness_hours:24,reception_max_messages:0,simulator_hourly_limit:30,simulator_daily_limit:100,knowledge_chunk_characters:1500,knowledge_chunk_overlap:225,campaign_routes:[],source_routes:[],templates:{'client.waiting':{ru:'Я уточню и вернусь с ответом.'}}});
  assert.equal(patch.notification.translate_owner_answer,true);
  assert.equal((patch.notification.templates as any)['client.waiting'].ru,'Я уточню и вернусь с ответом.');
  assert.equal(patch.behaviorPatch.escalation_remind_minutes,120);

@@ -6,6 +6,7 @@ import type { WhatsAppProvider } from '../providers/whatsapp/whatsapp-provider.i
 import { createWhatsAppProvider } from '../providers/whatsapp/index.js';
 import { loadConversationMemory } from '../services/context.service.js';
 import { fetchChatHistory } from '../services/chat-history.service.js';
+import { resolveClientPhone } from '../services/client-phone.service.js';
 import { meterAI } from '../services/metered-providers.js';
 import { enqueueMessage } from './outbound-queue.js';
 import { notifyUsageFailure, deliverUsageNotices } from '../services/usage-notifications.service.js';
@@ -20,7 +21,7 @@ import { processCustomerMessage, type PipelineSink } from '../services/message-p
 import { withoutRepeatedIntroduction } from '../utils/assistant-text.js';
 import { filterIncoming, incomingDiagnostics, logRejectedIncoming, ownerIdentityField, readSessionIdentity } from '../utils/incoming-policy.js';
 import { normalizeWebhookMessage, webhookEventType } from '../utils/webhook-message.js';
-import { isStatusBroadcast, senderKey } from '../utils/whatsapp-id.js';
+import { formatPhone, isStatusBroadcast } from '../utils/whatsapp-id.js';
 import { sessionIdentity } from '../services/session-identity.service.js';
 
 /** Transport and persistence boundary for an authenticated WAHA webhook. */
@@ -67,7 +68,7 @@ export async function handleWebhookEvent(tenantId: string, body: Record<string, 
   if (await handleOwnerMessage(db, provider, tenantId, session, from, text, normalized.replyToId, settings, model, incomingMsgId)) {
     await recordUsageEvent(db, { tenantId, eventType: 'message_observed', eventKey: usageKey, metadata: { reason: 'owner_control', billable: false } }); return;
   }
-  const clientPhone = senderKey(from);
+  const clientPhone = await resolveClientPhone(provider, session, from, body, behavior(settings).lid_lookup_timeout_seconds);
   const client = await findOrCreateClient(db, tenantId, clientPhone, pushName, from);
   const conversation = await findOrCreateConversation(db, tenantId, client.id);
   const optedOut = requestsNoAutomaticReplies(text);
@@ -115,10 +116,10 @@ export async function handleWebhookEvent(tenantId: string, body: Record<string, 
         { limit: config.history_fetch_limit, maxCharacters: config.history_max_characters, timeoutSeconds: config.history_timeout_seconds });
       return { messages: history, introduced: history.some(item => item.fromMe) };
     },
-    createEscalation: async language => {
+    createEscalation: async (language, questions, answered) => {
       const answer = await createEscalation(db, provider, { tenant_id: tenantId, session, conversation_id: conversation.id,
-        client_chat_id: from, client_name: pushName || client.name || clientPhone, question: text,
-        response_language: language, inbound_id: incomingMsgId }, settings, client.time_zone);
+        client_chat_id: from, client_name: pushName || client.name || formatPhone(client.phone) || '', question: text,
+        response_language: language, inbound_id: incomingMsgId }, settings, client.time_zone, { ...(questions ? { questions } : {}), answered: answered ?? null });
       return answer ? withoutRepeatedIntroduction(answer, memory.introduced) : null;
     },
     markIntroduced: async () => {

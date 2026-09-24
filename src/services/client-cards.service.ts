@@ -1,3 +1,4 @@
+import { formatPhone } from '../utils/whatsapp-id.js';
 import type { DatabaseClient } from '../db/supabase.js';
 import { HttpError } from '../utils/http-error.js';
 import { isUuid } from './tenant.service.js';
@@ -10,7 +11,7 @@ async function stats(db:DatabaseClient,tenantId:string,clientId:string|null=null
  const result=await db.rpc('client_card_stats',{p_tenant_id:tenantId,p_client_id:clientId});if(result.error)fail();
  return new Map((result.data??[]).map((row:any)=>[String(row.client_id),{...row,inquiry_count:Number(row.inquiry_count??0)}]));
 }
-function card(row:any,stat?:CardStat){return{...row,phone:row.whatsapp_jid,inquiry_count:stat?.inquiry_count??0,status:stat?.current_status??'new',current_agent:stat?.current_agent??null,current_conversation_id:stat?.current_conversation_id??null};}
+function card(row:any,stat?:CardStat){return{...row,phone:formatPhone(row.phone),inquiry_count:stat?.inquiry_count??0,status:stat?.current_status??'new',current_agent:stat?.current_agent??null,current_conversation_id:stat?.current_conversation_id??null};}
 
 export async function listClientCards(db:DatabaseClient,tenantId:string,search='',page=1,limit=20,status=''){
  const safePage=Math.max(1,page),safeLimit=Math.min(50,Math.max(1,limit)),from=(safePage-1)*safeLimit;

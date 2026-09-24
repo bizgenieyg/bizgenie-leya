@@ -7,7 +7,11 @@ import { enqueueMessage, outboundIdsForProviderId, type OutboundKind } from '../
 import type { AIProvider } from "../providers/ai/ai-provider.interface.js";
 import { polishOwnerAnswer, translateOwnerAnswer } from "./ai-fallback.service.js";
 import { loadContext } from "./context.service.js";
+import { handleSuggestionReply, proposeKnowledgeSuggestion } from "./knowledge-suggestions.service.js";
+import { formatPhone } from "../utils/whatsapp-id.js";
+import { randomUUID } from "node:crypto";
 import { meterAI } from "./metered-providers.js";
+import { createAIProvider } from "../providers/ai/index.js";
 import type { DatabaseClient } from '../db/supabase.js';
 import type { WhatsAppProvider } from '../providers/whatsapp/whatsapp-provider.interface.js';
 import { allowedRecipient, ownerIdentityField, readSessionIdentity } from '../utils/incoming-policy.js';
@@ -22,7 +26,7 @@ export interface Escalation {
   response_language?:string|null;
   pending_since?:string|null;reminded_at?:string|null;created_at?:string;
   inbound_id:string|null;status:string;owner_message_ids:string[];answer:string|null;learning_state:string;learning_message_ids:string[];
-  client_message_id?:string|null;
+  client_message_id?:string|null;batch_id?:string|null;batch_position?:number;
 }
 const JOB='owner_escalation';
 const TIMEOUT_JOB='escalation_timeout';
@@ -117,7 +121,8 @@ export async function notifyOwner(db:DatabaseClient,provider:WhatsAppProvider,e:
   if(!await claim(db,e,'queued','notifying')) return false;
   let pendingSince:Date;
   try {
-    const id=await send(db,e.tenant_id,provider,e.session,destination,buildEscalationText(e.client_name,e.question,settings),'owner_notice',`escalation:${e.id}:notice`);
+    const client=await db.from('clients').select('phone').eq('tenant_id',e.tenant_id).eq('whatsapp_jid',e.client_chat_id).maybeSingle();check(client.error);
+    const id=await send(db,e.tenant_id,provider,e.session,destination,buildEscalationText(e.client_name,e.question,settings,formatPhone(client.data?.phone)),'owner_notice',`escalation:${e.id}:notice`);
     pendingSince=new Date();
     await patch(db,e,{status:'pending',pending_since:pendingSince.toISOString(),owner_message_ids:[...new Set([...e.owner_message_ids,id])]});
   } catch {
@@ -128,23 +133,38 @@ export async function notifyOwner(db:DatabaseClient,provider:WhatsAppProvider,e:
   await scheduleEscalationTimeout(db,{...e,pending_since:pendingSince.toISOString()},settings,pendingSince);
   return true;
 }
-export async function createEscalation(db:DatabaseClient,provider:WhatsAppProvider,input:Omit<Escalation,'id'|'status'|'owner_message_ids'|'answer'|'learning_state'|'learning_message_ids'>,settings:OwnerSettings,clientZone?:string|null) {
+/**
+ * One escalation per question the knowledge base could not answer; one owner notification each
+ * (a quoted reply maps to exactly one question) and ONE client message for the whole batch:
+ * the answered part (if any) followed by the waiting text.
+ */
+export async function createEscalation(db:DatabaseClient,provider:WhatsAppProvider,input:Omit<Escalation,'id'|'status'|'owner_message_ids'|'answer'|'learning_state'|'learning_message_ids'>,settings:OwnerSettings,clientZone?:string|null,options:{questions?:string[];answered?:string|null}={}) {
   if(!ownerDestination(settings)) {console.warn('webhook_escalation_skipped',{reason:'missing_owner_phone'});return;}
   if(!allowedRecipient(ownerDestination(settings))) return;
-  const {data,error}=await db.from('escalations').insert(input).select('*').single();
-  if(error?.code==='23505') return;
-  check(error); if(!data) throw new Error('Escalation not created');
-  const e=data as unknown as Escalation;
+  const questions=options.questions?.length?options.questions:[input.question];
+  const batchId=questions.length>1?randomUUID():null;
+  const rows:Escalation[]=[];
+  for(const [position,question] of questions.entries()){
+    const {data,error}=await db.from('escalations').insert({...input,question,batch_id:batchId,batch_position:position}).select('*').single();
+    if(error?.code==='23505'){if(position===0)return;continue;}
+    check(error); if(!data) throw new Error('Escalation not created');
+    rows.push(data as unknown as Escalation);
+  }
   const now=new Date(),quiet=isWithinQuietHours(settings,now);
   const quietEnd=quiet?nextQuietHoursEnd(settings,now):null;
   // Quiet with no working window ahead: schedule and notify now, promise a callback — never a far-future date.
   const scheduledAt=quietEnd??now;
-  const {error:jobError}=await db.from('scheduled_jobs').insert({tenant_id:e.tenant_id,job_type:JOB,payload:{escalation_id:e.id},scheduled_at:scheduledAt.toISOString(),status:'pending'});check(jobError);
+  for(const e of rows){
+    const {error:jobError}=await db.from('scheduled_jobs').insert({tenant_id:e.tenant_id,job_type:JOB,payload:{escalation_id:e.id},scheduled_at:scheduledAt.toISOString(),status:'pending'});check(jobError);
+  }
   scheduleWake(scheduledAt);
-  const waiting=escalationWaitingMessage(e.question,settings,clientZone,e.response_language??languageOf(e.question),now);
-  await sendClient(db,provider,e,waiting.text,'reply',[],`escalation:${e.id}:waiting`);
-  if(!quiet||!quietEnd) await notifyOwner(db,provider,e,settings);
-  return waiting.text;
+  const first=rows[0]!;
+  const waiting=escalationWaitingMessage(input.question,settings,clientZone,first.response_language??languageOf(input.question),now);
+  const answered=options.answered?clientText(options.answered):'';
+  const text=answered?`${answered}\n\n${withoutRepeatedIntroduction(waiting.text,true)}`:waiting.text;
+  await sendClient(db,provider,first,text,'reply',[],`escalation:${first.id}:waiting`);
+  if(!quiet||!quietEnd) for(const e of rows) await notifyOwner(db,provider,e,settings);
+  return text;
 }
 
 export function escalationWaitingMessage(question:string,settings:OwnerSettings,clientZone:string|null|undefined,responseLanguage:string,now=new Date()):{text:string;quietHours?:{active:true;until:string}} {
@@ -154,20 +174,6 @@ export function escalationWaitingMessage(question:string,settings:OwnerSettings,
     text:waitingText(question,quiet?{at,ownerZone:settings.time_zone??'UTC',clientZone:clientZone??null}:undefined,settings,responseLanguage),
     ...(quiet&&at?{quietHours:{active:true as const,until:at.toISOString()}}:{}),
   };
-}
-const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-/** client_message_id is the outbound row (legacy: a WhatsApp id, already delivered). */
-async function answerDelivered(db:DatabaseClient,e:Escalation):Promise<boolean>{
-  const id=e.client_message_id;if(!id||!UUID.test(id))return true;
-  const row=await db.from('outbound_messages').select('status').eq('tenant_id',e.tenant_id).eq('id',id).maybeSingle();check(row.error);
-  return !row.data||row.data.status==='sent';
-}
-async function requestLearning(db:DatabaseClient,provider:WhatsAppProvider,e:Escalation,from:string,settings:OwnerSettings) {
-  if(!await answerDelivered(db,e))return;
-  const {data,error}=await db.from('escalations').update({learning_state:'prompting'}).eq('tenant_id',e.tenant_id).eq('id',e.id).eq('status','delivered').eq('learning_state','none').select('id');check(error);
-  if(!data?.length) return;
-  const id=await send(db,e.tenant_id,provider,e.session,from,renderText(settings,'owner.learning',behavior(settings).owner_language,{question:e.question,answer:e.answer??''}));
-  await patch(db,e,{learning_state:'awaiting',learning_message_ids:[id]});
 }
 export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProvider,tenantId:string,session:string,from:string,text:string,quoted:string|null,settings:OwnerSettings,ai?:AIProvider|null,inboundMessageId?:string|null):Promise<boolean> {
   if(await pairOwner(db,tenantId,from,text,settings)) return true;
@@ -198,7 +204,9 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
   }
   if(!quoted) {await send(db,tenantId,provider,session,from,renderText(settings,'owner.owner_reply_15',behavior(settings).owner_language));return true;}
   // Stored ids are outbound queue row ids (legacy rows: WhatsApp ids); a quote carries the WhatsApp id.
-  const keys=[replyId(quoted),...await outboundIdsForProviderId(db,tenantId,quoted)];
+  const outboundIds=await outboundIdsForProviderId(db,tenantId,quoted);
+  if(await handleSuggestionReply(db,tenantId,outboundIds,text))return true;
+  const keys=[replyId(quoted),...outboundIds];
   const byIds=async(column:'learning_message_ids'|'owner_message_ids')=>{
     for(const key of keys){const r=await db.from('escalations').select('*').eq('tenant_id',tenantId).contains(column,[key]).limit(1);check(r.error);if(r.data?.[0])return r.data[0] as Escalation;}
     return undefined;
@@ -220,7 +228,6 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
     if(!paused) await rescheduleTenantEscalationTimeouts(db,tenantId,settings,new Date());
     await send(db,tenantId,provider,session,from,paused?renderText(settings,'owner.owner_reply_22',behavior(settings).owner_language):renderText(settings,'owner.owner_reply_23',behavior(settings).owner_language));return true;
   }
-  if(e.status==='delivered'){await requestLearning(db,provider,e,from,settings);return true;}
   if(e.status!=='pending') return true;
   if(isDeferredAnswer(text)) {await send(db,tenantId,provider,session,from,renderText(settings,'owner.owner_reply_24',behavior(settings).owner_language));return true;}
   if(settings.auto_replies_paused||await conversationPaused(db,tenantId,e.conversation_id,settings)){
@@ -228,6 +235,14 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
   }
   const answer=clientText(text);if(!answer) return true;
   if(!allowedRecipient(e.client_chat_id)) return true;
+  if(e.batch_id){
+    // A batch answers the client once: park this answer until every sibling question is answered.
+    if(!await claim(db,e,'pending','answered')) return true;
+    await patch(db,e,{answer});
+    await cancelEscalationTimeout(db,e);
+    await deliverBatchIfReady(db,provider,e,settings,ai,false,inboundMessageId);
+    return true;
+  }
   if(!await claim(db,e,'pending','delivering')) return true;
   await patch(db,e,{answer});
   try {
@@ -243,18 +258,52 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
     console.error('escalation_client_delivery_uncertain',{tenantId,escalationId:e.id});
     await send(db,tenantId,provider,session,from,renderText(settings,'owner.owner_reply_26',behavior(settings).owner_language));return true;
   }
-  // Learning is offered once the sender confirms delivery (onOwnerAnswerDeliveryOutcome).
   return true;
+}
+
+const OPEN=['queued','notifying','pending','reminding'];
+/**
+ * Deliver the answered questions of a batch as one client message. Normally only when no sibling
+ * is still open; `partial` (reminder deadline passed) sends what is answered plus a note that the
+ * rest is still being checked. The lowest-position answered row acts as the delivery lock.
+ */
+async function deliverBatchIfReady(db:DatabaseClient,provider:WhatsAppProvider,e:Escalation,settings:OwnerSettings,ai:AIProvider|null|undefined,partial:boolean,inboundMessageId?:string|null):Promise<boolean>{
+  const siblings=await db.from('escalations').select('*').eq('tenant_id',e.tenant_id).eq('batch_id',e.batch_id!).order('batch_position',{ascending:true});check(siblings.error);
+  const rows=(siblings.data??[]) as Escalation[];
+  const answered=rows.filter(row=>row.status==='answered'&&row.answer);
+  const open=rows.filter(row=>OPEN.includes(row.status));
+  if(!answered.length||(open.length&&!partial))return false;
+  const lock=answered[0]!;
+  if(!await claim(db,lock,'answered','delivering'))return false;
+  const others=answered.slice(1);
+  for(const row of others)await patch(db,row,{status:'delivering'});
+  const group=[lock,...others];
+  try{
+    const language=lock.response_language??languageOf(lock.question);
+    const c=await db.from('conversations').select('assistant_introduced_at').eq('tenant_id',lock.tenant_id).eq('id',lock.conversation_id).maybeSingle();check(c.error);
+    const numbered=(values:string[])=>values.length===1?values[0]!:values.map((v,i)=>`${i+1}) ${v}`).join('\n');
+    let text=await composeOwnerAnswer(db,lock.tenant_id,{question:numbered(group.map(r=>r.question)),answer:numbered(group.map(r=>r.answer??'')),language,introduced:!!c.data?.assistant_introduced_at},settings,ai);
+    if(open.length)text=`${text}\n\n${renderText(settings,'client.partial_pending',language)}`;
+    const id=await sendClient(db,provider,lock,text,'owner_answer_delivery',inboundMessageId?[inboundMessageId]:[],`escalation:${lock.id}:answer`);
+    for(const row of group){await patch(db,row,{status:'delivered',client_message_id:id,delivered_at:new Date().toISOString()});await cancelEscalationTimeout(db,row);}
+    if(!open.length){const route=await db.from('conversations').update({routed_agent:null,route_selected_at:null}).eq('tenant_id',lock.tenant_id).eq('id',lock.conversation_id);check(route.error);}
+    return true;
+  }catch{
+    for(const row of group)await patch(db,row,{status:'delivery_uncertain'});
+    console.error('escalation_client_delivery_uncertain',{tenantId:lock.tenant_id,escalationId:lock.id});
+    return false;
+  }
 }
 
 /** Called by the outbound sender when an owner-answer delivery reaches a final state. */
 export async function onOwnerAnswerDeliveryOutcome(db:DatabaseClient,provider:WhatsAppProvider,row:{id:string;tenant_id:string;session:string},outcome:'sent'|'failed'):Promise<void>{
-  const found=await db.from('escalations').select('*').eq('tenant_id',row.tenant_id).eq('client_message_id',row.id).eq('status','delivered').maybeSingle();check(found.error);
-  const e=found.data as Escalation|null;if(!e)return;
+  const found=await db.from('escalations').select('*').eq('tenant_id',row.tenant_id).eq('client_message_id',row.id).eq('status','delivered');check(found.error);
+  const delivered=(found.data??[]) as Escalation[];if(!delivered.length)return;
+  // Sent: each Q/A pair is only *considered* for the knowledge base; the owner sees it in the next summary.
+  if(outcome==='sent'){for(const e of delivered)await proposeKnowledgeSuggestion(db,e);return;}
   const settings=await loadOwnerSettings(db,row.tenant_id),owner=ownerDestination(settings);
-  if(outcome==='sent'){if(owner&&allowedRecipient(owner))await requestLearning(db,provider,e,owner,settings);return;}
-  await patch(db,e,{status:'delivery_uncertain'});
-  console.error('escalation_client_delivery_uncertain',{tenantId:row.tenant_id,escalationId:e.id});
+  for(const e of delivered)await patch(db,e,{status:'delivery_uncertain'});
+  console.error('escalation_client_delivery_uncertain',{tenantId:row.tenant_id,escalationId:delivered[0]!.id});
   if(owner&&allowedRecipient(owner))await send(db,row.tenant_id,provider,row.session,owner,renderText(settings,'owner.owner_reply_26',behavior(settings).owner_language));
 }
 export async function runDueScheduledEscalations(db:DatabaseClient,providerFor:()=>WhatsAppProvider,now=new Date(),tenantId?:string,jobId?:string):Promise<number> {
@@ -316,6 +365,8 @@ export async function runEscalationTimeouts(db:DatabaseClient,providerFor:()=>Wh
     try{const id=await send(db,e.tenant_id,provider,e.session,to,renderText(settings,'owner.remind',config.owner_language,{name:e.client_name,question:e.question}),'reminder',`escalation:${e.id}:remind`);
      await patch(db,e,{status:'pending',reminded_at:now.toISOString(),owner_message_ids:[...e.owner_message_ids,id]});
     }catch{await patch(db,e,{status:'pending',reminded_at:now.toISOString()});console.error('escalation_reminder_uncertain',{tenantId:e.tenant_id,escalationId:e.id});}
+    // Some questions of the batch are answered while this one still waits: send what we have.
+    if(e.batch_id)await deliverBatchIfReady(db,provider,e,settings,meterAI(db,e.tenant_id,createAIProvider()),true);
    }
   }catch{console.error('escalation_timeout_failed',{tenantId:e.tenant_id,escalationId:e.id});}
  }
