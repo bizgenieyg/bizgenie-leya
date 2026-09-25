@@ -194,3 +194,13 @@ test('simulator follows the same path: request, repeat and profile stored per si
     assert.equal((await f.pg.query<{ profile_md: string }>('select profile_md from simulator_sessions where id=$1', [fresh])).rows[0]!.profile_md, '', 'a new simulator dialogue starts with an empty profile');
   } finally { await f.close(); await rm(root, { recursive: true, force: true }); }
 });
+
+test('the database rejects a client profile longer than 2000 characters (client and simulator)', async () => {
+  const f = await fixture();
+  try {
+    const client = (await f.pg.query<{ id: string }>("insert into clients(tenant_id,phone,whatsapp_jid) values($1,'972501234567','972501234567@c.us') returning id", [f.tenantId])).rows[0]!.id;
+    await f.pg.query('insert into client_profiles(tenant_id,client_id,profile_md) values($1,$2,$3)', [f.tenantId, client, 'x'.repeat(2000)]);
+    await assert.rejects(f.pg.query('update client_profiles set profile_md=$1', ['x'.repeat(2001)]), /client_profiles_profile_length/);
+    await assert.rejects(f.pg.query('insert into simulator_sessions(tenant_id,id,profile_md) values($1,$2,$3)', [f.tenantId, crypto.randomUUID(), 'x'.repeat(2001)]), /check constraint/);
+  } finally { await f.close(); }
+});
