@@ -11,14 +11,14 @@ import { recordUsageEvent, usageAllowsMessage } from './usage.service.js';
 import { reserveSimulatorCall } from './simulator-rate-limit.js';
 import { processCustomerMessage, type PipelineResult, type PipelineSink } from './message-pipeline.service.js';
 import { composeOwnerAnswer, escalationWaitingMessage } from './owner-workflow.service.js';
-import { languageOf } from './templates.service.js';
+import { languageOf, renderText } from './templates.service.js';
 import { clientText, withoutRepeatedIntroduction } from '../utils/assistant-text.js';
 import { HttpError } from '../utils/http-error.js';
 import { allowedRecipient } from '../utils/incoming-policy.js';
 
 export type SimulationResult = PipelineResult;
 type SessionState = { introduced: boolean; routed_agent: string | null; route_selected_at: string | null;
-  source_label: string | null; reception_message_count: number; client_time_zone: string | null };
+  source_label: string | null; reception_message_count: number; client_time_zone: string | null; profile_md?: string; open_request?: string | null };
 
 async function sessionState(db: DatabaseClient, tenantId: string, sessionId: string): Promise<SessionState> {
   const find = () => db.from('simulator_sessions').select('*').eq('tenant_id', tenantId).eq('id', sessionId).maybeSingle();
@@ -88,6 +88,25 @@ export async function simulateCustomerMessage(db: DatabaseClient, tenantId: stri
       await saveReply(reply);
       return reply;
     },
+    createRequest: async (language, summary, repeatReply) => {
+      const tenant = await db.from('tenants').select('name').eq('id', tenantId).maybeSingle();
+      const ownerName = String(tenant.data?.name ?? '');
+      let reply: string;
+      if (state.open_request) {
+        const lines = new Set(state.open_request.split('\n'));
+        state.open_request = [state.open_request, ...summary.split('\n').filter(line => line.trim() && !lines.has(line))].join('\n').slice(0, 2000);
+        reply = withoutRepeatedIntroduction(repeatReply ?? renderText(settings, 'client.request_repeat', language, { owner_name: ownerName }), true);
+      } else {
+        state.open_request = summary.slice(0, 2000);
+        reply = withoutRepeatedIntroduction(renderText(settings, 'client.request_sent', language, { owner_name: ownerName }), memory.introduced);
+      }
+      sentReply = reply;
+      await saveReply(reply);
+      return reply;
+    },
+    openRequest: async () => state.open_request ?? null,
+    loadClientProfile: async () => state.profile_md ?? '',
+    saveClientProfile: async profile => { state.profile_md = profile; },
     markIntroduced: async () => { memory.introduced = true; },
     recordUsage: async (eventType, options) => {
       if (eventType !== 'model_call') return;
@@ -101,7 +120,7 @@ export async function simulateCustomerMessage(db: DatabaseClient, tenantId: stri
   const model = meterAI(db, tenantId, ai, { simulation: true, purpose: 'simulator_reply' });
   const response = await processCustomerMessage({ db, tenantId, text, client, conversation, memory, settings, ai, model,
     usageKey: randomUUID(), sink, now });
-  const updated = await db.from('simulator_sessions').update({ introduced: memory.introduced,
+  const updated = await db.from('simulator_sessions').update({ introduced: memory.introduced, profile_md: state.profile_md ?? '', open_request: state.open_request ?? null,
     routed_agent: conversation.routed_agent, route_selected_at: now.toISOString(), source_label: conversation.source_label,
     reception_message_count: conversation.reception_message_count ?? 0, client_time_zone: client.time_zone, updated_at: now.toISOString() })
     .eq('tenant_id', tenantId).eq('id', sessionId);
@@ -131,7 +150,8 @@ export async function simulateOwnerAnswer(db: DatabaseClient, tenantId: string, 
   const saved = await db.from('simulator_messages').insert({ tenant_id: tenantId, session_id: sessionId,
     from_me: true, body: reply, created_at: now.toISOString() });
   if (saved.error) throw new HttpError(500, 'Could not save simulator reply');
-  const updated = await db.from('simulator_sessions').update({ introduced: true, updated_at: now.toISOString() })
+  // The owner answered: an open simulated request is closed like a real one.
+  const updated = await db.from('simulator_sessions').update({ introduced: true, open_request: null, updated_at: now.toISOString() })
     .eq('tenant_id', tenantId).eq('id', sessionId);
   if (updated.error) throw new HttpError(500, 'Could not save simulator session');
   return { reply };

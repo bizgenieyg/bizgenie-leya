@@ -2,6 +2,7 @@
 export const BEHAVIOR_DEFAULTS = {
   translate_owner_answer: false,
   polish_owner_answer: true,
+  client_discovery_questions: [] as string[],
   escalation_remind_minutes: 120,
   escalation_close_minutes: 1440,
   auto_resume_hours: 4,

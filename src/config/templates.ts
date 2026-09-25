@@ -69,6 +69,36 @@ export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
     "en": "{index}. Q: {question} — A: {answer}",
     "he": "{index}. ש: {question} — ת: {answer}"
   },
+  "client.request_sent": {
+    "ru": "Передала вашу заявку — {owner_name} свяжется с вами.",
+    "he": "העברתי את הבקשה שלך — {owner_name} ייצור איתך קשר.",
+    "en": "I've passed on your request — {owner_name} will get in touch with you."
+  },
+  "client.request_repeat": {
+    "ru": "Я уже передала вашу заявку — {owner_name} свяжется с вами.",
+    "he": "כבר העברתי את הבקשה שלך — {owner_name} ייצור איתך קשר.",
+    "en": "I've already passed on your request — {owner_name} will get in touch with you."
+  },
+  "owner.request": {
+    "ru": "📩 Заявка: {name} ({phone})\n{summary}\n\nОтветьте реплеем — я передам клиенту.",
+    "he": "📩 בקשה: {name} ({phone})\n{summary}\n\nהשיבו בציטוט להודעה — אעביר ללקוח.",
+    "en": "📩 Request: {name} ({phone})\n{summary}\n\nReply to this message — I'll pass it to the client."
+  },
+  "owner.request_time": {
+    "ru": "Время: {time}",
+    "he": "זמן: {time}",
+    "en": "Time: {time}"
+  },
+  "owner.summary_requests": {
+    "ru": "Заявки без ответа: {count}\n{items}",
+    "he": "בקשות ללא מענה: {count}\n{items}",
+    "en": "Requests without a reply: {count}\n{items}"
+  },
+  "owner.summary_request_item": {
+    "ru": "- {name} — {summary}",
+    "he": "- {name} — {summary}",
+    "en": "- {name} — {summary}"
+  },
   "client.partial_pending": {
     "ru": "По остальным вопросам ещё уточняю у владельца и напишу, как только получу ответ.",
     "he": "לגבי שאר השאלות אני עדיין בודקת עם בעל העסק ואעדכן ברגע שאקבל תשובה.",

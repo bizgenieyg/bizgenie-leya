@@ -11,7 +11,8 @@ import { meterAI } from '../services/metered-providers.js';
 import { enqueueMessage } from './outbound-queue.js';
 import { notifyUsageFailure, deliverUsageNotices } from '../services/usage-notifications.service.js';
 import { behavior } from '../services/runtime-settings.service.js';
-import { createEscalation, handleOwnerMessage, conversationPaused } from '../services/owner-workflow.service.js';
+import { createEscalation, createOwnerRequest, handleOwnerMessage, conversationPaused, openRequestFor } from '../services/owner-workflow.service.js';
+import { loadClientProfile, saveClientProfile } from '../services/client-profile.service.js';
 import { loadOwnerSettings } from '../services/owner-settings.service.js';
 import { logSystemEvent, recordAgentAction } from '../services/logging.service.js';
 import { findOrCreateClient, findOrCreateConversation, getTenantRouting, isTenantServiceable } from '../services/tenant.service.js';
@@ -122,6 +123,12 @@ export async function handleWebhookEvent(tenantId: string, body: Record<string, 
         response_language: language, inbound_id: incomingMsgId, client_phone: client.phone }, settings, client.time_zone, { ...(questions ? { questions } : {}), answered: answered ?? null });
       return answer ? withoutRepeatedIntroduction(answer, memory.introduced) : null;
     },
+    createRequest: (language, summary, repeatReply) => createOwnerRequest(db, provider, { tenant_id: tenantId, session, conversation_id: conversation.id,
+      client_chat_id: from, client_name: pushName || client.name || formatPhone(client.phone) || '', question: text,
+      response_language: language, inbound_id: incomingMsgId, client_phone: client.phone }, settings, summary, repeatReply),
+    openRequest: async () => (await openRequestFor(db, tenantId, conversation.id))?.question ?? null,
+    loadClientProfile: () => loadClientProfile(db, tenantId, client.id),
+    saveClientProfile: profile => saveClientProfile(db, tenantId, client.id, profile),
     markIntroduced: async () => {
       if (memory.introduced) return;
       await db.from('conversations').update({ assistant_introduced_at: new Date().toISOString() }).eq('tenant_id', tenantId).eq('id', conversation.id).is('assistant_introduced_at', null);

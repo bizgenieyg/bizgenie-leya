@@ -1,3 +1,4 @@
+import { loadClientProfile } from './client-profile.service.js';
 import { formatPhone } from '../utils/whatsapp-id.js';
 import type { DatabaseClient } from '../db/supabase.js';
 import { HttpError } from '../utils/http-error.js';
@@ -26,7 +27,9 @@ export async function listClientCards(db:DatabaseClient,tenantId:string,search='
 export async function getClientCard(db:DatabaseClient,tenantId:string,clientId:string,messageLimit=20){
  if(!isUuid(clientId))throw new HttpError(400,'Invalid client id');
  const [client,byClient,recent]=await Promise.all([db.from('clients').select(CLIENT_COLUMNS).eq('tenant_id',tenantId).eq('id',clientId).eq('chat_type','individual').is('deleted_at',null).maybeSingle(),stats(db,tenantId,clientId),db.rpc('client_recent_messages',{p_tenant_id:tenantId,p_client_id:clientId,p_limit:messageLimit})]);if(client.error||recent.error)fail();if(!client.data)throw new HttpError(404,'Client not found');const messages=(recent.data??[]).reverse();
- return{...card(client.data,byClient.get(clientId)),messages};
+ // What Leya learned about the client (read-only in the cabinet), next to the owner's own notes.
+ const leyaProfile=await loadClientProfile(db,tenantId,clientId);
+ return{...card(client.data,byClient.get(clientId)),messages,leya_profile:leyaProfile};
 }
 
 export async function updateClientCard(db:DatabaseClient,tenantId:string,clientId:string,input:Record<string,unknown>){

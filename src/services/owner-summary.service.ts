@@ -13,6 +13,12 @@ import { OWNER_SUMMARY_LEASE_MS,OWNER_SUMMARY_MAX_ATTEMPTS,OWNER_SUMMARY_RETRY_M
 import { scheduleWake } from '../workers/job-wake.js';
 const OPEN=['queued','notifying','pending','reminding','delivering','delivery_uncertain','closing'];
 const fail=()=>{throw new HttpError(500,'Could not build owner summary');};
+/** Requests still waiting for the owner, regardless of the summary period. */
+export async function openRequests(db:DatabaseClient,tenantId:string):Promise<Array<{name:string;summary:string}>>{
+ const rows=await db.from('escalations').select('client_name,question,created_at').eq('tenant_id',tenantId).eq('kind','request').in('status',['queued','notifying','pending','reminding']).order('created_at',{ascending:true}).limit(20);
+ if(rows.error)fail();
+ return (rows.data??[]).map(row=>({name:String(row.client_name??''),summary:String(row.question??'').split('\n')[0]!.slice(0,200)}));
+}
 export async function buildOwnerSummary(db:DatabaseClient,tenantId:string,from:Date,to:Date){
  const start=from.toISOString(),end=to.toISOString();
  const individualClients=await db.from('clients').select('id,first_seen_at').eq('tenant_id',tenantId).eq('chat_type','individual');
@@ -24,10 +30,10 @@ export async function buildOwnerSummary(db:DatabaseClient,tenantId:string,from:D
  const empty={data:[],error:null};
  const [messages,escalations,knowledgeGaps]=await Promise.all([
   conversationIds.length?db.from('messages').select('conversation_id,from_me,msg_type').eq('tenant_id',tenantId).in('conversation_id',conversationIds).gte('created_at',start).lt('created_at',end):empty,
-  conversationIds.length?db.from('escalations').select('conversation_id,status,question,answer').eq('tenant_id',tenantId).in('conversation_id',conversationIds).gte('created_at',start).lt('created_at',end):empty,
+  conversationIds.length?db.from('escalations').select('conversation_id,status,question,answer,kind').eq('tenant_id',tenantId).in('conversation_id',conversationIds).gte('created_at',start).lt('created_at',end):empty,
   conversationIds.length?db.from('agent_actions').select('input').eq('tenant_id',tenantId).eq('action_type','knowledge_missing').in('conversation_id',conversationIds).gte('created_at',start).lt('created_at',end).not('input','is',null).limit(100):empty,]);
  if(messages.error||escalations.error||knowledgeGaps.error)fail();const escalationRows=escalations.data??[],escalated=new Set(escalationRows.map(row=>String(row.conversation_id))),inquiries=new Set((messages.data??[]).filter(row=>!row.from_me).map(row=>String(row.conversation_id))),answeredByBot=new Set((messages.data??[]).filter(row=>row.from_me&&!['owner_text','owner_media'].includes(String(row.msg_type))).map(row=>String(row.conversation_id))),counts=new Map<string,number>();for(const row of knowledgeGaps.data??[]){const clean=String(row.input??'').trim();if(clean)counts.set(clean,(counts.get(clean)??0)+1);}
- return{period_start:start,period_end:end,inquiries:inquiries.size,new_clients:clientRows.filter(row=>{const seen=new Date(String(row.first_seen_at)).getTime();return seen>=from.getTime()&&seen<to.getTime();}).length,closed_by_bot:[...answeredByBot].filter(id=>!escalated.has(id)).length,escalated:escalationRows.length,unanswered:escalationRows.filter(row=>OPEN.includes(String(row.status))).length,missing_knowledge:[...counts].sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0])).slice(0,5).map(([question,count])=>({question,count}))};
+ return{period_start:start,period_end:end,inquiries:inquiries.size,new_clients:clientRows.filter(row=>{const seen=new Date(String(row.first_seen_at)).getTime();return seen>=from.getTime()&&seen<to.getTime();}).length,closed_by_bot:[...answeredByBot].filter(id=>!escalated.has(id)).length,escalated:escalationRows.length,unanswered:escalationRows.filter(row=>row.kind!=='request'&&OPEN.includes(String(row.status))).length,open_requests:await openRequests(db,tenantId),missing_knowledge:[...counts].sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0])).slice(0,5).map(([question,count])=>({question,count}))};
 }
 function localParts(now:Date,zone:string){const p=zonedDateTimeFormat('en-CA',{year:'numeric',month:'2-digit',day:'2-digit',weekday:'short',hour:'2-digit',minute:'2-digit',hourCycle:'h23'},zone).formatToParts(now),get=(t:string)=>p.find(x=>x.type===t)?.value??'';return{date:`${get('year')}-${get('month')}-${get('day')}`,weekday:['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].indexOf(get('weekday')),time:`${get('hour')}:${get('minute')}`};}
 export function summaryDue(settings:OwnerSettings,now:Date){
@@ -97,7 +103,9 @@ export async function deliverOwnerSummaryIfDue(db:DatabaseClient,tenantId:string
  const claimed=await claimSummary(db,tenantId,due.periodKey,now);if(!claimed)return;const summary=await buildOwnerSummary(db,tenantId,new Date(now.getTime()-due.days*86400000),now),missing=summary.missing_knowledge.length?summary.missing_knowledge.map(x=>`${x.question} (${x.count})`).join('; '):'—';
  let sent=false;
  try{const language=behavior(settings).owner_language,suggestions=await summarySuggestionBlock(db,tenantId,settings,language);
-  const summaryText=renderText(settings,'owner.summary',language,{...summary,missing_knowledge:missing});
+  const {open_requests:_requests,missing_knowledge:_missing,...counts}=summary;
+  const requests=summary.open_requests.length?renderText(settings,'owner.summary_requests',language,{count:summary.open_requests.length,items:summary.open_requests.map(r=>renderText(settings,'owner.summary_request_item',language,r)).join('\n')}):'';
+  const summaryText=[renderText(settings,'owner.summary',language,{...counts,missing_knowledge:missing}),requests].filter(Boolean).join('\n\n');
   const queued=await enqueueMessage(db,tenantId,provider,{session,chatId:to,text:suggestions?`${summaryText}\n\n${suggestions.text}`:summaryText},{kind:'summary',dedupeKey:`summary:${claimed.id}`});
   if(suggestions)await markSuggestionsOffered(db,tenantId,suggestions.ids,queued.id);await db.from('scheduled_jobs').update({status:'done',executed_at:new Date().toISOString(),error:null}).eq('id',claimed.id);sent=true;}catch{const failure=summaryFailureState(claimed.attempts,now);await db.from('scheduled_jobs').update({status:failure.status,scheduled_at:failure.scheduled_at,error:'summary_delivery_failed'}).eq('id',claimed.id);if(failure.retry)scheduleWake(new Date(failure.scheduled_at));console.error('owner_summary_delivery_failed',{tenantId,attempt:claimed.attempts,retry:failure.retry});}
  if(sent)await ensureOwnerSummaryJob(db,tenantId,settings,now);

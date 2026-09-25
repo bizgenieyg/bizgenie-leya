@@ -7,6 +7,7 @@ import { DEFAULT_TIME_ZONE,SUPPORTED_TIME_ZONES,supportedTimeZone } from '../con
 import type { WeeklySchedule } from '../config/behavior.js';
 import { logSystemEvent } from './logging.service.js';
 import { invalidateTenantRouting } from './tenant.service.js';
+import { DISCOVERY_MAX_CHARS, DISCOVERY_MAX_QUESTIONS, discoveryQuestions } from '../config/discovery.js';
 export function behavior(settings:OwnerSettings) {
  const stored=settings.behavior&&typeof settings.behavior==='object'&&!Array.isArray(settings.behavior)?settings.behavior:{};
  return Object.fromEntries(Object.entries(BEHAVIOR_DEFAULTS).map(([key,fallback])=>[key,stored[key]??fallback])) as typeof BEHAVIOR_DEFAULTS;
@@ -24,7 +25,8 @@ export async function readRuntimeSettings(db:DatabaseClient,tenantId:string){
  const planCode=data?.plan;
  const plan=planCode?await db.from('plans').select('code,display_name,messages_per_month,voice_minutes_per_month,warning_percent,unlimited').eq('code',planCode).maybeSingle():{data:null,error:{}};
  if(plan.error||!plan.data){console.error('critical_tenant_plan_integrity_violation',{tenantId});try{await logSystemEvent(db,{tenantId,level:'error',event:'tenant_plan_integrity_violation'});}catch{}throw new Error('Tenant plan unavailable');}
- return { ...behavior(owner),business_sector:tenant.data.business_sector??null,translate_owner_answer:owner.translate_owner_answer??BEHAVIOR_DEFAULTS.translate_owner_answer,
+ const config=behavior(owner);
+ return { ...config,client_discovery_questions:discoveryQuestions(config.client_discovery_questions,tenant.data.business_sector,config.cabinet_language??config.owner_language),business_sector:tenant.data.business_sector??null,translate_owner_answer:owner.translate_owner_answer??BEHAVIOR_DEFAULTS.translate_owner_answer,
  messages_per_month:data?.messages_overridden?data.messages_per_month:plan.data.messages_per_month,
  voice_minutes_per_month:data?.voice_overridden?data.voice_minutes_per_month:plan.data.voice_minutes_per_month,
  warning_percent:data?.warning_overridden?data.warning_percent:plan.data.warning_percent,plan:plan.data.code,plan_name:plan.data.display_name,unlimited:Boolean(plan.data.unlimited),
@@ -56,6 +58,10 @@ export function validateRuntimePatch(input:Record<string,unknown>) {
  for(const [key,value]of Object.entries(input)){
   if(SYSTEM_FIELDS.has(key))throw new HttpError(403,'System settings cannot be changed by tenant');
   if(['translate_owner_answer','auto_replies_paused'].includes(key)){if(typeof value!=='boolean')throw new HttpError(400,'Expected boolean');notification[key]=value;}
+  else if(key==='client_discovery_questions'){
+   if(!Array.isArray(value)||value.length>DISCOVERY_MAX_QUESTIONS||value.some(q=>typeof q!=='string'||!q.trim()||q.trim().length>DISCOVERY_MAX_CHARS||/[<>{}]/.test(q)))throw new HttpError(400,'Invalid discovery questions');
+   behaviorPatch[key]=value.map(q=>String(q).trim());
+  }
   else if(key==='polish_owner_answer'){if(typeof value!=='boolean')throw new HttpError(400,'Expected boolean');behaviorPatch[key]=value;}
   else if(key==='auto_resume_hours')behaviorPatch[key]=integer(key,value,1,48);
   else if(key==='reception_max_messages')behaviorPatch[key]=integer(key,value,0,8760);

@@ -9,6 +9,29 @@ import { loadContext } from './context.service.js';
 import { findExactKnowledgeAnswer } from './knowledge.service.js';
 import { loadKnowledgeMaterials } from './knowledge-context.service.js';
 import { meterAI } from './metered-providers.js';
+import { behavior } from './runtime-settings.service.js';
+import { discoveryQuestions, REPEAT_SIMILARITY_THRESHOLD } from '../config/discovery.js';
+import { mergeClientProfile } from './client-profile.service.js';
+import type { OwnerRequest, ReplyExtras } from './ai-fallback.service.js';
+
+const normalizeReply = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+function editDistance(a: string, b: string): number {
+  let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j++) current[j] = Math.min(previous[j]! + 1, current[j - 1]! + 1, previous[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+    previous = current;
+  }
+  return previous[b.length]!;
+}
+/** Same as the previous bot message after normalization, or less than 15 % of characters changed. */
+export function isRepeat(reply: string, previous: string | null): boolean {
+  if (!previous) return false;
+  const a = normalizeReply(reply), b = normalizeReply(previous);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  return editDistance(a, b) / Math.max(a.length, b.length) < REPEAT_SIMILARITY_THRESHOLD;
+}
 import { entrySource, routeConversation } from './conversation-routing.service.js';
 import { generateKnowledgeReplyResult, generateReceptionReply } from './ai-fallback.service.js';
 import { renderText, replyLanguage } from './templates.service.js';
@@ -37,6 +60,12 @@ export interface PipelineSink {
   loadChatHistory?: (() => Promise<{ messages: ConversationMemory[]; introduced: boolean }>) | undefined;
   /** One escalation per question (default: the whole message); returns the single client text sent. */
   createEscalation(responseLanguage: string, questions?: string[], answered?: string | null): Promise<string | null>;
+  /** Owner request (demo, booking, callback…): one open request per client; returns the client text sent. */
+  createRequest(responseLanguage: string, summary: string, repeatReply: string | null): Promise<string | null>;
+  /** Summary of the client's open request, if any. */
+  openRequest(): Promise<string | null>;
+  loadClientProfile(): Promise<string>;
+  saveClientProfile(profile: string): Promise<void>;
   markIntroduced(): Promise<void>;
   recordUsage(eventType: string, options?: { eventKey?: string; metadata?: Record<string, unknown> }): Promise<void>;
   recordAgentAction(actionType: string, input?: string, output?: string): Promise<void>;
@@ -138,11 +167,33 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
     return result(reply, 'escalated', quiet ? { active: true, until: quiet.toISOString() } : undefined);
   };
 
+  const config = behavior(settings);
+  const clientProfile = await sink.loadClientProfile();
+  const extras: ReplyExtras = { clientProfile, openRequest: await sink.openRequest(),
+    discoveryQuestions: discoveryQuestions(config.client_discovery_questions, context.business?.business_sector, language) };
+  const lastAssistant = [...memory.messages].reverse().find(item => item.fromMe)?.text ?? null;
+  const updateProfile = async (facts: string[] | null | undefined) => {
+    if (!facts) return;
+    const next = mergeClientProfile(clientProfile, facts, now, settings.time_zone ?? 'Asia/Jerusalem');
+    if (next !== null) await sink.saveClientProfile(next);
+  };
+  const request = async (req: OwnerRequest, repeatReply: string | null): Promise<PipelineResult> => {
+    const summary = req.time ? `${req.summary}\n${renderText(settings, 'owner.request_time', config.owner_language, { time: req.time })}` : req.summary;
+    const reply = await sink.createRequest(language, summary, repeatReply ? clientReply(repeatReply) : null);
+    await sink.recordUsage('request_created');
+    if (reply) memory.introduced = true;
+    return result(reply, 'escalated');
+  };
+
   if (route.kind === 'reception') return agentContext.run({ agent: 'RECEPTION' }, async () => {
     await sink.recordUsage('message_received', { eventKey: usageKey });
     const clarification = renderText(settings, 'client.reception_question', language);
-    const reception = await generateReceptionReply(context, text, clarification, knowledgeModel, memory.messages, memory.introduced, language);
-    if (reception.escalate || !reception.reply) return escalate();
+    let reception = await generateReceptionReply(context, text, clarification, knowledgeModel, memory.messages, memory.introduced, language, extras);
+    if (!reception.request && reception.reply && isRepeat(reception.reply, lastAssistant))
+      reception = await generateReceptionReply(context, text, clarification, knowledgeModel, memory.messages, memory.introduced, language, { ...extras, avoidRepeat: lastAssistant });
+    await updateProfile(reception.profile);
+    if (reception.request) return request(reception.request, reception.reply);
+    if (reception.escalate || !reception.reply || isRepeat(reception.reply, lastAssistant)) return escalate();
     const reply = clientReply(reception.reply);
     const id = await sink.sendToClient(reply);
     await sink.persistAssistantMessage(reception.reply, id);
@@ -173,7 +224,14 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
     }
     let agentResult: PipelineResult | null = null;
     await agent.execute({ answerFromKnowledge: async () => {
-      const answer = await generateKnowledgeReplyResult(context, text, knowledgeModel, agent.systemPrompt, memory.messages, memory.introduced, language);
+      let answer = await generateKnowledgeReplyResult(context, text, knowledgeModel, agent.systemPrompt, memory.messages, memory.introduced, language, extras);
+      // Never send the same text twice in a row: regenerate once, then hand the message to the owner.
+      if (!answer.request && !answer.unanswered.length && answer.reply && isRepeat(answer.reply, lastAssistant)) {
+        answer = await generateKnowledgeReplyResult(context, text, knowledgeModel, agent.systemPrompt, memory.messages, memory.introduced, language, { ...extras, avoidRepeat: lastAssistant });
+        if (!answer.request && answer.reply && isRepeat(answer.reply, lastAssistant)) { await updateProfile(answer.profile); agentResult = await escalate(); return; }
+      }
+      await updateProfile(answer.profile);
+      if (answer.request) { agentResult = await request(answer.request, answer.reply); return; }
       if (answer.unanswered.length) {
         if (answer.reply) await sink.recordAgentAction('knowledge_ai_answer');
         for (const question of answer.unanswered) await sink.recordAgentAction('knowledge_missing', question);

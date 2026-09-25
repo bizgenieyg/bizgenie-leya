@@ -36,12 +36,12 @@ test('tenant time zones reach Intl only through the shared formatter',()=>{
 test('summary delivery retries twice, then releases no further attempt',()=>{const now=new Date('2026-09-10T10:00:00Z');assert.deepEqual(summaryFailureState(1,now),{retry:true,status:'pending',scheduled_at:'2026-09-10T10:05:00.000Z'});assert.equal(summaryFailureState(3,now).status,'error');});
 test('owner summary never counts a manual owner message as a bot resolution',async()=>{
  const rows:any={messages:[{conversation_id:'bot',from_me:false,msg_type:'text'},{conversation_id:'bot',from_me:true,msg_type:'text'},{conversation_id:'owner',from_me:false,msg_type:'text'},{conversation_id:'owner',from_me:true,msg_type:'owner_text'}],clients:[{id:'client',first_seen_at:'2026-09-02T00:00:00Z'}],conversations:[{id:'bot'},{id:'owner'}],escalations:[],agent_actions:[]};
- const riser:any={from(table:string){const q:any={select(){return q},eq(){return q},in(){return q},gte(){return q},lt(){return q},not(){return q},limit(){return q},then(resolve:any){return Promise.resolve(resolve({data:rows[table],error:null}))}};return q;}};
+ const riser:any={from(table:string){const q:any={select(){return q},eq(){return q},in(){return q},order(){return q},gte(){return q},lt(){return q},not(){return q},limit(){return q},then(resolve:any){return Promise.resolve(resolve({data:rows[table],error:null}))}};return q;}};
  const result=await buildOwnerSummary(riser,'tenant',new Date('2026-09-01'),new Date('2026-09-08'));assert.equal(result.inquiries,2);assert.equal(result.closed_by_bot,1);
 });
 test('owner summary counts only explicit knowledge gaps, not unresolved routes',async()=>{
  const rows:any={messages:[],clients:[{id:'client',first_seen_at:'2026-09-02T00:00:00Z'}],conversations:[{id:'conversation'}],escalations:[],agent_actions:[{input:'Сколько стоит доставка?'},{input:'Сколько стоит доставка?'}],unrecognized_routes:[{message_text:'👍'}]};
- const riser:any={from(table:string){const q:any={select(){return q},eq(){return q},in(){return q},gte(){return q},lt(){return q},not(){return q},limit(){return q},then(resolve:any){return Promise.resolve(resolve({data:rows[table],error:null}))}};return q;}};
+ const riser:any={from(table:string){const q:any={select(){return q},eq(){return q},in(){return q},order(){return q},gte(){return q},lt(){return q},not(){return q},limit(){return q},then(resolve:any){return Promise.resolve(resolve({data:rows[table],error:null}))}};return q;}};
  const result=await buildOwnerSummary(riser,'tenant',new Date('2026-09-01'),new Date('2026-09-08'));assert.deepEqual(result.missing_knowledge,[{question:'Сколько стоит доставка?',count:2}]);
 });
 test('041 soft-delete preserves attribution, aggregate count and hard-delete removes profile only',async()=>{

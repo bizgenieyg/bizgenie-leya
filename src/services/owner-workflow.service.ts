@@ -9,6 +9,7 @@ import { polishOwnerAnswer, translateOwnerAnswer } from "./ai-fallback.service.j
 import { loadContext } from "./context.service.js";
 import { handleSuggestionReply, proposeKnowledgeSuggestion } from "./knowledge-suggestions.service.js";
 import { formatPhone, storedPhone } from "../utils/whatsapp-id.js";
+import { loadClientProfile } from "./client-profile.service.js";
 import { randomUUID } from "node:crypto";
 import { meterAI } from "./metered-providers.js";
 import { createAIProvider } from "../providers/ai/index.js";
@@ -26,7 +27,7 @@ export interface Escalation {
   response_language?:string|null;
   pending_since?:string|null;reminded_at?:string|null;created_at?:string;
   inbound_id:string|null;status:string;owner_message_ids:string[];answer:string|null;learning_state:string;learning_message_ids:string[];
-  client_message_id?:string|null;batch_id?:string|null;batch_position?:number;client_phone?:string|null;
+  client_message_id?:string|null;batch_id?:string|null;batch_position?:number;client_phone?:string|null;kind?:'question'|'request';
 }
 const JOB='owner_escalation';
 const TIMEOUT_JOB='escalation_timeout';
@@ -120,6 +121,40 @@ async function escalationPhone(db:DatabaseClient,e:Escalation):Promise<string|nu
   const client=await db.from('clients').select('phone').eq('tenant_id',e.tenant_id).eq('id',conversation.data.client_id).maybeSingle();check(client.error);
   return storedPhone(client.data?.phone);
 }
+/** 📩 request notice: what the client asks (+ named time) and up to two facts Leya already knows. */
+async function requestNotice(db:DatabaseClient,e:Escalation,settings:OwnerSettings,phone:string|null):Promise<string>{
+  const conversation=await db.from('conversations').select('client_id').eq('tenant_id',e.tenant_id).eq('id',e.conversation_id).maybeSingle();check(conversation.error);
+  const profile=conversation.data?.client_id?await loadClientProfile(db,e.tenant_id,String(conversation.data.client_id)):'';
+  const known=profile.split('\n').map(line=>line.replace(/^- \d{2}\.\d{2}: /,'').trim()).filter(Boolean).slice(-2);
+  const summary=[...e.question.split('\n').slice(0,3),...known].slice(0,5).join('\n');
+  const text=renderText(settings,'owner.request',behavior(settings).owner_language,{name:e.client_name,phone:phone??'',summary});
+  return phone?text:text.replace(/\s*\(\s*\)/,'');
+}
+export async function openRequestFor(db:DatabaseClient,tenantId:string,conversationId:string):Promise<Escalation|null>{
+  const found=await db.from('escalations').select('*').eq('tenant_id',tenantId).eq('conversation_id',conversationId).eq('kind','request')
+    .in('status',['queued','notifying','pending','reminding','answered','delivering']).limit(1);check(found.error);
+  return (found.data?.[0] as Escalation|undefined)??null;
+}
+/**
+ * Owner request: one open request per client conversation. A repeat extends its text silently
+ * (no new owner message); the client hears the request is already with the owner.
+ */
+export async function createOwnerRequest(db:DatabaseClient,provider:WhatsAppProvider,input:Omit<Escalation,'id'|'status'|'owner_message_ids'|'answer'|'learning_state'|'learning_message_ids'>,settings:OwnerSettings,summary:string,repeatReply:string|null):Promise<string|null>{
+  const tenant=await db.from('tenants').select('name').eq('id',input.tenant_id).maybeSingle();check(tenant.error);
+  const ownerName=String(tenant.data?.name??'');
+  const language=input.response_language??languageOf(input.question);
+  const open=await openRequestFor(db,input.tenant_id,input.conversation_id);
+  if(open){
+    const lines=new Set(open.question.split('\n'));
+    const extra=summary.split('\n').filter(line=>line.trim()&&!lines.has(line));
+    if(extra.length)await patch(db,open,{question:[open.question,...extra].join('\n').slice(0,2000)});
+    const text=repeatReply??renderText(settings,'client.request_repeat',language,{owner_name:ownerName});
+    await sendClient(db,provider,{...open,client_chat_id:input.client_chat_id,session:input.session},text,'reply',[],`request:${open.id}:repeat:${input.inbound_id??randomUUID()}`);
+    return withoutRepeatedIntroduction(text,true);
+  }
+  const text=renderText(settings,'client.request_sent',language,{owner_name:ownerName});
+  return (await createEscalation(db,provider,{...input,question:summary},settings,null,{kind:'request',clientText:text}))??null;
+}
 export async function notifyOwner(db:DatabaseClient,provider:WhatsAppProvider,e:Escalation,settings:OwnerSettings):Promise<boolean> {
   const now=new Date(),stale=await obsolete(db,e,settings,now);if(stale){await closeObsolete(db,e,stale,now);return false;}
   const destination=ownerDestination(settings);
@@ -132,7 +167,9 @@ export async function notifyOwner(db:DatabaseClient,provider:WhatsAppProvider,e:
   if(!await claim(db,e,'queued','notifying')) return false;
   let pendingSince:Date;
   try {
-    const id=await send(db,e.tenant_id,provider,e.session,destination,buildEscalationText(e.client_name,e.question,settings,formatPhone(await escalationPhone(db,e))),'owner_notice',`escalation:${e.id}:notice`);
+    const phone=formatPhone(await escalationPhone(db,e));
+    const text=e.kind==='request'?await requestNotice(db,e,settings,phone):buildEscalationText(e.client_name,e.question,settings,phone);
+    const id=await send(db,e.tenant_id,provider,e.session,destination,text,'owner_notice',`escalation:${e.id}:notice`);
     pendingSince=new Date();
     await patch(db,e,{status:'pending',pending_since:pendingSince.toISOString(),owner_message_ids:[...new Set([...e.owner_message_ids,id])]});
   } catch {
@@ -148,14 +185,14 @@ export async function notifyOwner(db:DatabaseClient,provider:WhatsAppProvider,e:
  * (a quoted reply maps to exactly one question) and ONE client message for the whole batch:
  * the answered part (if any) followed by the waiting text.
  */
-export async function createEscalation(db:DatabaseClient,provider:WhatsAppProvider,input:Omit<Escalation,'id'|'status'|'owner_message_ids'|'answer'|'learning_state'|'learning_message_ids'>,settings:OwnerSettings,clientZone?:string|null,options:{questions?:string[];answered?:string|null}={}) {
+export async function createEscalation(db:DatabaseClient,provider:WhatsAppProvider,input:Omit<Escalation,'id'|'status'|'owner_message_ids'|'answer'|'learning_state'|'learning_message_ids'>,settings:OwnerSettings,clientZone?:string|null,options:{questions?:string[];answered?:string|null;kind?:'question'|'request';clientText?:string}={}) {
   if(!ownerDestination(settings)) {console.warn('webhook_escalation_skipped',{reason:'missing_owner_phone'});return;}
   if(!allowedRecipient(ownerDestination(settings))) return;
   const questions=options.questions?.length?options.questions:[input.question];
   const batchId=questions.length>1?randomUUID():null;
   const rows:Escalation[]=[];
   for(const [position,question] of questions.entries()){
-    const {data,error}=await db.from('escalations').insert({...input,question,batch_id:batchId,batch_position:position}).select('*').single();
+    const {data,error}=await db.from('escalations').insert({...input,question,batch_id:batchId,batch_position:position,kind:options.kind??'question'}).select('*').single();
     if(error?.code==='23505'){if(position===0)return;continue;}
     check(error); if(!data) throw new Error('Escalation not created');
     rows.push(data as unknown as Escalation);
@@ -171,7 +208,7 @@ export async function createEscalation(db:DatabaseClient,provider:WhatsAppProvid
   const first=rows[0]!;
   const waiting=escalationWaitingMessage(input.question,settings,clientZone,first.response_language??languageOf(input.question),now);
   const answered=options.answered?clientText(options.answered):'';
-  const text=answered?`${answered}\n\n${withoutRepeatedIntroduction(waiting.text,true)}`:waiting.text;
+  const text=options.clientText??(answered?`${answered}\n\n${withoutRepeatedIntroduction(waiting.text,true)}`:waiting.text);
   await sendClient(db,provider,first,text,'reply',[],`escalation:${first.id}:waiting`);
   if(!quiet||!quietEnd) for(const e of rows) await notifyOwner(db,provider,e,settings);
   return text;
