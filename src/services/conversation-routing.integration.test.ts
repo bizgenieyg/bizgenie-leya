@@ -78,7 +78,11 @@ test('route is sticky, another-agent signal switches, and inactivity reclassifie
     const db = pgliteDatabaseClient(pg);
     const tenant = await seedTenant(db);
     const conversation = await seedConversation(db, tenant, { routed_agent: 'SUPPORT', last_message_at: '2020-01-01T00:00:00Z' });
-    const result = await routeConversation(db, tenant, conversation as never, 'hello', base, { async generateReply() { return { text: '{"agent":"SALE","confidence":0.9}' }; } });
+    // After inactivity the route is open again: replies go to reception (its answer carries the intent),
+    // the model classifier runs only for paused replies.
+    const reply = await routeConversation(db, tenant, conversation as never, 'hello', base, { async generateReply() { throw new Error('classifier must not run'); } });
+    assert.deepEqual([reply.kind, reply.method], ['reception', 'reception_intent']);
+    const result = await routeConversation(db, tenant, conversation as never, 'hello', base, { async generateReply() { return { text: '{"agent":"SALE","confidence":0.9}' }; } }, undefined, false, true, true);
     assert.equal(result.kind === 'agent' && result.agent.name, 'SALE');
   } finally { await pg.close(); }
 });
@@ -91,7 +95,7 @@ test('low confidence remains in RECEPTION unless tenant message limit is reached
     const db = pgliteDatabaseClient(pg);
     const tenant = await seedTenant(db);
     const conversation = await seedConversation(db, tenant);
-    const result = await routeConversation(db, tenant, conversation as never, 'неясно', base, ai);
+    const result = await routeConversation(db, tenant, conversation as never, 'неясно', base, ai, undefined, false, true, true);
     assert.equal(result.kind, 'reception');
     const unresolved = await pg.query<{ count: string }>('select count(*)::text as count from unrecognized_routes where conversation_id=$1', [conversation.id]);
     assert.equal(unresolved.rows[0]!.count, '1');

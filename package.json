@@ -11,7 +11,8 @@
     "lint": "tsc --noEmit",
     "test": "node scripts/run-tests.mjs fast",
     "start": "node dist/server.js",
-    "test:integration": "node scripts/run-tests.mjs full"
+    "test:integration": "node scripts/run-tests.mjs full",
+    "eval:dialogs": "npm run build && node dist/scripts/eval-dialogs.js"
   },
   "engines": {
     "node": ">=20"
@@ -30,6 +31,7 @@
     "@types/node": "^24.5.2",
     "@types/pdf-parse": "1.1.5",
     "tsx": "^4.20.5",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "yaml": "^2.9.1"
   }
 }

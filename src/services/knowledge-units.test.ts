@@ -34,10 +34,10 @@ test('oversized units split by paragraph, repeat the heading and never break a s
   assert.ok(flat.every(u => u.length <= 500 && /\.$/.test(u)));
 });
 
-test('short greetings: prompts cap replies at 1–2 sentences and forbid filler phrases in he/ru/en', () => {
+test('short replies: prompts cap answers at 1–3 sentences and forbid filler phrases in he/ru/en', () => {
   for (const phrase of ['с радостью помогу', 'постараюсь помочь', 'чем могу быть полезен', 'расскажите, пожалуйста, что вам нужно', "I'll be happy to help", 'אשמח לעזור'])
     assert.ok(SHORT_REPLY_RULES.includes(phrase), phrase);
-  assert.match(SHORT_REPLY_RULES, /1–2 предложениями/);
+  assert.match(SHORT_REPLY_RULES, /1–3 предложения/);
   assert.ok(KNOWLEDGE_SYSTEM_PROMPT.includes(SHORT_REPLY_RULES));
   for (const languages of Object.values(TEMPLATE_DEFAULTS))
     for (const text of Object.values(languages))

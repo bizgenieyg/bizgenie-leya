@@ -69,6 +69,26 @@ export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
     "en": "{index}. Q: {question} — A: {answer}",
     "he": "{index}. ש: {question} — ת: {answer}"
   },
+  "client.greeting": {
+    "ru": "Здравствуйте! Это {assistant_name}, ассистент {owner_name}. Чем могу помочь?",
+    "en": "Hi! This is {assistant_name}, {owner_name}'s assistant. How can I help?",
+    "he": "היי! כאן {assistant_name}, בשם {owner_name}. במה אפשר לעזור?"
+  },
+  "client.greeting_known": {
+    "ru": "Здравствуйте{, client_first_name}! Чем могу помочь?",
+    "en": "Hi{ client_first_name}! How can I help?",
+    "he": "היי{ client_first_name}! במה אפשר לעזור?"
+  },
+  "client.acknowledgement": {
+    "ru": "Пожалуйста! Если появятся вопросы — пишите.",
+    "en": "You're welcome! Write any time if you have questions.",
+    "he": "בשמחה! אם יהיו שאלות — כתבו."
+  },
+  "owner.escalation_model_unavailable": {
+    "ru": "(ассистент был недоступен)",
+    "en": "(the assistant was unavailable)",
+    "he": "(העוזר לא היה זמין)"
+  },
   "client.request_sent": {
     "ru": "Передала вашу заявку — {owner_name} свяжется с вами.",
     "he": "העברתי את הבקשה שלך — {owner_name} ייצור איתך קשר.",

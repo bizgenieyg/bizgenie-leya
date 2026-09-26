@@ -1,4 +1,4 @@
-import { AIProviderError } from "../providers/ai/ai-provider.interface.js";
+import { AIProviderError, failureReason } from "../providers/ai/ai-provider.interface.js";
 import { randomUUID } from 'node:crypto';
 import type { AIProvider } from '../providers/ai/ai-provider.interface.js';
 import type { DatabaseClient } from '../db/supabase.js';
@@ -21,7 +21,7 @@ export function meterAI(db:DatabaseClient,tenantId:string,provider:AIProvider|nu
       const result=await provider.generateReply(input);
       await recordUsageEvent(db,{tenantId,eventType:'model_call',eventKey,metadata:{...metadata,status:'success',...(result.usage??{})}});
       return result;
-    }catch(error){await recordUsageEvent(db,{tenantId,eventType:'model_call',eventKey,metadata:{...metadata,status:'failed',...(error instanceof AIProviderError?error.usage??{}:{})}});throw error;}
+    }catch(error){await recordUsageEvent(db,{tenantId,eventType:'model_call',eventKey,metadata:{...metadata,status:'failed',failure_reason:failureReason(error),...(error instanceof AIProviderError?error.usage??{}:{})}});throw error;}
   }};
   return wrapped;
 }

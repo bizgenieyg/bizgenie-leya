@@ -99,7 +99,7 @@ test('morning summary shows the open questions and a separate block of unanswere
   } finally { await f.close(); }
 });
 
-test('discovery: sector picks the starter set; the prompt asks at most one question from it', async () => {
+test('discovery: sector picks the starter set; the code passes one question only once the gate opens', async () => {
   assert.equal(discoverySet('косметолог'), 'beauty');
   assert.equal(discoverySet('Автоматизация бизнеса'), 'business');
   assert.equal(discoverySet('קייטרינג'), 'food');
@@ -107,13 +107,22 @@ test('discovery: sector picks the starter set; the prompt asks at most one quest
   assert.deepEqual(discoveryQuestions([], 'косметолог', 'ru'), DISCOVERY_DEFAULTS.beauty.ru);
   assert.deepEqual(discoveryQuestions(['Свой вопрос?'], 'косметолог', 'ru'), ['Свой вопрос?']);
   const f = await fixture({ sector: 'автоматизация' });
+  const chat = '261885798707406@lid';
   try {
     const prompts: Array<{ system: string; user: Record<string, unknown> }> = [];
-    await f.send('261885798707406@lid', 'm1', 'хотел узнать о ваших услугах', model([{ reply: 'Делаем WhatsApp-ассистентов. Чем занимается ваш бизнес?', unanswered: [] }], prompts));
-    assert.match(prompts[0]!.system, /Не больше одного вопроса из списка за сообщение/);
-    for (const question of DISCOVERY_DEFAULTS.business.ru) assert.ok(prompts[0]!.system.includes(question), question);
-    assert.match(prompts[0]!.system, /Медицинские вопросы/);
-    assert.equal(f.toClient('261885798707406@lid').at(-1)!.text, 'Делаем WhatsApp-ассистентов. Чем занимается ваш бизнес?');
+    const ai = model([{ reply: 'Делаем WhatsApp-ассистентов, которые отвечают клиентам. Что для вас сейчас актуально?', unanswered: [], intent: 'sale' },
+      { reply: 'Для салона это запись и напоминания. Чтобы подсказать, что подойдёт именно вам: чем занимается бизнес и сколько в нём человек?', unanswered: [], asked_question: true }], prompts);
+    await f.send(chat, 'm1', 'хотел узнать о ваших услугах', ai);
+    for (const question of DISCOVERY_DEFAULTS.business.ru) assert.ok(!prompts[0]!.system.includes(question), 'no discovery list on the first turn');
+    assert.match(prompts[0]!.system, /ВОПРОСЫ О ПОТРЕБНОСТИ в этом ответе не задавай/);
+    await f.send(chat, 'm2', 'у меня салон, пишут в WhatsApp', ai);
+    const second = prompts[1]!.system;
+    assert.ok(second.includes(DISCOVERY_DEFAULTS.business.ru[0]!), 'exactly the next question');
+    for (const question of DISCOVERY_DEFAULTS.business.ru.slice(1)) assert.ok(!second.includes(question), 'the rest of the list is never passed');
+    assert.match(second, /Медицинские вопросы/);
+    const state = (await f.pg.query<{ dialog_state: Record<string, unknown> }>('select dialog_state from conversations')).rows[0]!.dialog_state;
+    assert.deepEqual(state.discovery_asked, [DISCOVERY_DEFAULTS.business.ru[0]]);
+    assert.equal(state.intent, 'sale'); assert.equal(state.last_question_turn, 2);
   } finally { await f.close(); }
 });
 
@@ -122,7 +131,7 @@ test('profile: a new fact lands in client_profiles, reaches the next prompt, own
   const chat = '261885798707406@lid';
   try {
     const prompts: Array<{ system: string; user: Record<string, unknown> }> = [];
-    const ai = model([{ reply: 'Чистка лица занимает час. Когда удобно прийти?', unanswered: [], profile: ['впервые, интересует чистка лица'] },
+    const ai = model([{ reply: 'Чистка лица занимает час.', unanswered: [], profile: ['впервые, интересует чистка лица'] },
       { reply: 'Есть окно в пятницу утром.', unanswered: [], profile: null }], prompts);
     await f.pg.query("insert into clients(tenant_id,phone,whatsapp_jid,notes) values($1,'972501234567',$2,'VIP — заметка владельца')", [f.tenantId, chat]);
     await f.send(chat, 'm1', 'я впервые, интересует чистка', ai);

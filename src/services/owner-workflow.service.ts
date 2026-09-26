@@ -27,7 +27,7 @@ export interface Escalation {
   response_language?:string|null;
   pending_since?:string|null;reminded_at?:string|null;created_at?:string;
   inbound_id:string|null;status:string;owner_message_ids:string[];answer:string|null;learning_state:string;learning_message_ids:string[];
-  client_message_id?:string|null;batch_id?:string|null;batch_position?:number;client_phone?:string|null;kind?:'question'|'request';
+  client_message_id?:string|null;batch_id?:string|null;batch_position?:number;client_phone?:string|null;kind?:'question'|'request';model_unavailable?:boolean;
 }
 const JOB='owner_escalation';
 const TIMEOUT_JOB='escalation_timeout';
@@ -168,7 +168,9 @@ export async function notifyOwner(db:DatabaseClient,provider:WhatsAppProvider,e:
   let pendingSince:Date;
   try {
     const phone=formatPhone(await escalationPhone(db,e));
-    const text=e.kind==='request'?await requestNotice(db,e,settings,phone):buildEscalationText(e.client_name,e.question,settings,phone);
+    const notice=e.kind==='request'?await requestNotice(db,e,settings,phone):buildEscalationText(e.client_name,e.question,settings,phone);
+    // A model outage is flagged so the owner knows the client got the fallback, not a considered answer.
+    const text=e.model_unavailable?`${notice}\n${renderText(settings,'owner.escalation_model_unavailable',behavior(settings).owner_language)}`:notice;
     const id=await send(db,e.tenant_id,provider,e.session,destination,text,'owner_notice',`escalation:${e.id}:notice`);
     pendingSince=new Date();
     await patch(db,e,{status:'pending',pending_since:pendingSince.toISOString(),owner_message_ids:[...new Set([...e.owner_message_ids,id])]});
@@ -185,14 +187,14 @@ export async function notifyOwner(db:DatabaseClient,provider:WhatsAppProvider,e:
  * (a quoted reply maps to exactly one question) and ONE client message for the whole batch:
  * the answered part (if any) followed by the waiting text.
  */
-export async function createEscalation(db:DatabaseClient,provider:WhatsAppProvider,input:Omit<Escalation,'id'|'status'|'owner_message_ids'|'answer'|'learning_state'|'learning_message_ids'>,settings:OwnerSettings,clientZone?:string|null,options:{questions?:string[];answered?:string|null;kind?:'question'|'request';clientText?:string}={}) {
+export async function createEscalation(db:DatabaseClient,provider:WhatsAppProvider,input:Omit<Escalation,'id'|'status'|'owner_message_ids'|'answer'|'learning_state'|'learning_message_ids'>,settings:OwnerSettings,clientZone?:string|null,options:{questions?:string[];answered?:string|null;kind?:'question'|'request';clientText?:string;modelUnavailable?:boolean}={}) {
   if(!ownerDestination(settings)) {console.warn('webhook_escalation_skipped',{reason:'missing_owner_phone'});return;}
   if(!allowedRecipient(ownerDestination(settings))) return;
   const questions=options.questions?.length?options.questions:[input.question];
   const batchId=questions.length>1?randomUUID():null;
   const rows:Escalation[]=[];
   for(const [position,question] of questions.entries()){
-    const {data,error}=await db.from('escalations').insert({...input,question,batch_id:batchId,batch_position:position,kind:options.kind??'question'}).select('*').single();
+    const {data,error}=await db.from('escalations').insert({...input,question,batch_id:batchId,batch_position:position,kind:options.kind??'question',model_unavailable:options.modelUnavailable===true}).select('*').single();
     if(error?.code==='23505'){if(position===0)return;continue;}
     check(error); if(!data) throw new Error('Escalation not created');
     rows.push(data as unknown as Escalation);

@@ -26,7 +26,7 @@ export async function readRuntimeSettings(db:DatabaseClient,tenantId:string){
  const plan=planCode?await db.from('plans').select('code,display_name,messages_per_month,voice_minutes_per_month,warning_percent,unlimited').eq('code',planCode).maybeSingle():{data:null,error:{}};
  if(plan.error||!plan.data){console.error('critical_tenant_plan_integrity_violation',{tenantId});try{await logSystemEvent(db,{tenantId,level:'error',event:'tenant_plan_integrity_violation'});}catch{}throw new Error('Tenant plan unavailable');}
  const config=behavior(owner);
- return { ...config,client_discovery_questions:discoveryQuestions(config.client_discovery_questions,tenant.data.business_sector,config.cabinet_language??config.owner_language),business_sector:tenant.data.business_sector??null,translate_owner_answer:owner.translate_owner_answer??BEHAVIOR_DEFAULTS.translate_owner_answer,
+ return { ...config,greeting_templates:Object.fromEntries(GREETING_TEMPLATE_KEYS.map(k=>[k,{...(owner.templates?.[k]??{})}])),greeting_template_defaults:Object.fromEntries(GREETING_TEMPLATE_KEYS.map(k=>[k,TEMPLATE_DEFAULTS[k]])),client_discovery_questions:discoveryQuestions(config.client_discovery_questions,tenant.data.business_sector,config.cabinet_language??config.owner_language),business_sector:tenant.data.business_sector??null,translate_owner_answer:owner.translate_owner_answer??BEHAVIOR_DEFAULTS.translate_owner_answer,
  messages_per_month:data?.messages_overridden?data.messages_per_month:plan.data.messages_per_month,
  voice_minutes_per_month:data?.voice_overridden?data.voice_minutes_per_month:plan.data.voice_minutes_per_month,
  warning_percent:data?.warning_overridden?data.warning_percent:plan.data.warning_percent,plan:plan.data.code,plan_name:plan.data.display_name,unlimited:Boolean(plan.data.unlimited),
@@ -51,6 +51,22 @@ function validSchedule(value:unknown):value is WeeklySchedule {
   const r=row as Record<string,unknown>;
   return r.mode==='working_day'||r.mode==='day_off'||(r.mode==='working_hours'&&time(r.start)&&time(r.end)&&r.start!==r.end);
  });
+}
+export const GREETING_TEMPLATE_KEYS=['client.greeting','client.greeting_known'] as const;
+/** Owner-editable greeting templates (ru/he/en), validated like operator templates; empty text = default. */
+export function validateGreetingTemplates(value:unknown):Record<string,Record<string,string>>{
+ if(!value||typeof value!=='object'||Array.isArray(value))throw new HttpError(400,'Invalid greeting templates');
+ const out:Record<string,Record<string,string>>={};
+ for(const[k,languages]of Object.entries(value)){
+  if(!(GREETING_TEMPLATE_KEYS as readonly string[]).includes(k)||!languages||typeof languages!=='object'||Array.isArray(languages))throw new HttpError(400,'Invalid greeting templates');
+  const allowed=new Set(Object.values(TEMPLATE_DEFAULTS[k]!).flatMap(t=>t.match(/\{[^}]*\}/g)??[]));
+  out[k]={};
+  for(const[lang,t]of Object.entries(languages as Record<string,unknown>)){
+   if(!['he','ru','en'].includes(lang)||typeof t!=='string'||t.length>300||/[<>]/.test(t)||(t.match(/\{[^}]*\}/g)??[]).some(p=>!allowed.has(p)))throw new HttpError(400,'Invalid greeting templates');
+   if(t.trim())out[k]![lang]=t.trim();
+  }
+ }
+ return out;
 }
 export function validateRuntimePatch(input:Record<string,unknown>) {
  const notification:Record<string,unknown>={},behaviorPatch:Record<string,unknown>={};
@@ -115,7 +131,7 @@ export function validateRuntimePatch(input:Record<string,unknown>) {
    if(!value||typeof value!=='object'||Array.isArray(value))throw new HttpError(400,'Invalid templates');
    for(const[k,languages]of Object.entries(value)){
     if(!TEMPLATE_DEFAULTS[k]||!languages||typeof languages!=='object')throw new HttpError(400,'Unknown template');
-    const allowed=new Set(Object.values(TEMPLATE_DEFAULTS[k]!).flatMap(t=>t.match(/\{[a-z_]+\}/g)??[]));
+    const allowed=new Set(Object.values(TEMPLATE_DEFAULTS[k]!).flatMap(t=>t.match(/\{[^}]*\}/g)??[]));
     for(const[lang,t]of Object.entries(languages))if(!['he','ru','en'].includes(lang)||typeof t!=='string'||!t.trim()||/[<>]/.test(t)||(t.match(/\{[^}]*\}/g)??[]).some(p=>!allowed.has(p)))throw new HttpError(400,'Invalid template placeholders');
    }notification.templates=value;
   }else throw new HttpError(400,`Unknown setting: ${key}`);
@@ -123,7 +139,16 @@ export function validateRuntimePatch(input:Record<string,unknown>) {
  return {notification,behaviorPatch};
 }
 export async function saveRuntimeSettings(db:DatabaseClient,tenantId:string,input:Record<string,unknown>){
- const {business_sector,...runtimeInput}=input;
+ const {business_sector,greeting_templates,...rest}=input;
+ const runtimeInput:Record<string,unknown>={...rest};
+ if(greeting_templates!==undefined){
+  // Merge owner greetings into the tenant's templates; other templates stay operator-only.
+  const greetings=validateGreetingTemplates(greeting_templates),current=(await loadOwnerSettings(db,tenantId)).templates??{};
+  // Stored overrides of templates that no longer exist are dropped rather than failing validation.
+  const merged:Record<string,Record<string,string>>=Object.fromEntries(Object.entries(current).filter(([k])=>TEMPLATE_DEFAULTS[k]));
+  for(const key of GREETING_TEMPLATE_KEYS){merged[key]=greetings[key]??{};}
+  runtimeInput.templates=merged;
+ }
  if(business_sector!==undefined&&(business_sector!==null&&(typeof business_sector!=='string'||business_sector.trim().length>100)))throw new HttpError(400,'Invalid business sector');
  const patch=validateRuntimePatch(runtimeInput),existing=await loadOwnerSettings(db,tenantId);
  const merged={...behavior(existing),...patch.behaviorPatch};
@@ -137,6 +162,11 @@ export async function saveRuntimeSettings(db:DatabaseClient,tenantId:string,inpu
  if(Object.keys(runtimeInput).length){
   const result=await db.rpc('update_tenant_runtime_settings',{p_tenant_id:tenantId,p_notification:patch.notification,p_behavior:patch.behaviorPatch,p_default_time_zone:DEFAULT_TIME_ZONE});
   if(result.error)throw new Error('Settings save failed');
+  // update_tenant_runtime_settings (027) does not write templates: store them explicitly.
+  if(patch.notification.templates!==undefined){
+   const saved=await db.from('notification_settings').update({templates:patch.notification.templates}).eq('tenant_id',tenantId);
+   if(saved.error)throw new Error('Templates save failed');
+  }
   invalidateOwnerSettings(db,tenantId);
  }
  if(business_sector!==undefined){

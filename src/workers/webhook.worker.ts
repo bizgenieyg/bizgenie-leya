@@ -117,10 +117,10 @@ export async function handleWebhookEvent(tenantId: string, body: Record<string, 
         { limit: config.history_fetch_limit, maxCharacters: config.history_max_characters, timeoutSeconds: config.history_timeout_seconds });
       return { messages: history, introduced: history.some(item => item.fromMe) };
     },
-    createEscalation: async (language, questions, answered) => {
+    createEscalation: async (language, questions, answered, options) => {
       const answer = await createEscalation(db, provider, { tenant_id: tenantId, session, conversation_id: conversation.id,
         client_chat_id: from, client_name: pushName || client.name || formatPhone(client.phone) || '', question: text,
-        response_language: language, inbound_id: incomingMsgId, client_phone: client.phone }, settings, client.time_zone, { ...(questions ? { questions } : {}), answered: answered ?? null });
+        response_language: language, inbound_id: incomingMsgId, client_phone: client.phone }, settings, client.time_zone, { ...(questions ? { questions } : {}), answered: answered ?? null, modelUnavailable: options?.modelUnavailable === true });
       return answer ? withoutRepeatedIntroduction(answer, memory.introduced) : null;
     },
     createRequest: (language, summary, repeatReply) => createOwnerRequest(db, provider, { tenant_id: tenantId, session, conversation_id: conversation.id,
@@ -129,6 +129,15 @@ export async function handleWebhookEvent(tenantId: string, body: Record<string, 
     openRequest: async () => (await openRequestFor(db, tenantId, conversation.id))?.question ?? null,
     loadClientProfile: () => loadClientProfile(db, tenantId, client.id),
     saveClientProfile: profile => saveClientProfile(db, tenantId, client.id, profile),
+    loadDialogState: async () => {
+      const row = await db.from('conversations').select('dialog_state').eq('tenant_id', tenantId).eq('id', conversation.id).maybeSingle();
+      if (row.error) throw new Error('Dialog state unavailable');
+      return row.data?.dialog_state ?? {};
+    },
+    saveDialogState: async state => {
+      const saved = await db.from('conversations').update({ dialog_state: state }).eq('tenant_id', tenantId).eq('id', conversation.id);
+      if (saved.error) console.error('dialog_state_save_failed', { tenantId, conversationId: conversation.id });
+    },
     markIntroduced: async () => {
       if (memory.introduced) return;
       await db.from('conversations').update({ assistant_introduced_at: new Date().toISOString() }).eq('tenant_id', tenantId).eq('id', conversation.id).is('assistant_introduced_at', null);

@@ -65,7 +65,7 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
       assert.doesNotMatch(JSON.stringify(warnings), /Нет в FAQ|972500000001/);
 
       await handleWebhookEvent(tenantId, { ...body, payload: { ...body.payload, body: "Когда вы открыты?" } }, db, provider, ai as never); await settleAllOutboundQueues();
-      assert.equal(aiCalls, 2);
+      assert.equal(aiCalls, 1, "one model call per message: no separate classifier");
       assert.equal(sent[1], "Открыты с 9 до 18.");
 
       await handleWebhookEvent(tenantId, { ...body, payload: { ...body.payload, body: "Другой вопрос" } }, db, provider, { async generateReply() { throw new Error("private error"); } } as never); await settleAllOutboundQueues();

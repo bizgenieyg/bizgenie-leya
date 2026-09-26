@@ -13,14 +13,20 @@ export function entrySource(text:string):string|null{
  if(url)try{const parsed=new URL(url),value=parsed.searchParams.get('utm_campaign')??parsed.searchParams.get('utm_source')??parsed.searchParams.get('campaign')??parsed.searchParams.get('source');if(value)return value.toLowerCase().slice(0,100);if(parsed.pathname.includes('/c/'))return'catalog';}catch{}
  return /\bкаталог\b|\bcatalog\b|קטלוג/i.test(text)?'catalog':null;
 }
-async function assign(db:DatabaseClient,tenantId:string,conversationId:string,agent:string,source?:string|null){const values:Record<string,unknown>={routed_agent:agent,route_selected_at:new Date().toISOString()};if(source)values.source_label=source;const r=await db.from('conversations').update(values).eq('tenant_id',tenantId).eq('id',conversationId);if(r.error)throw new Error('Conversation route save failed');}
+export async function assignConversationRoute(db:DatabaseClient,tenantId:string,conversationId:string,agent:string,source?:string|null){const values:Record<string,unknown>={routed_agent:agent,route_selected_at:new Date().toISOString()};if(source)values.source_label=source;const r=await db.from('conversations').update(values).eq('tenant_id',tenantId).eq('id',conversationId);if(r.error)throw new Error('Conversation route save failed');}
 async function unresolved(db:DatabaseClient,tenantId:string,conversationId:string,text:string){const r=await db.from('unrecognized_routes').insert({tenant_id:tenantId,conversation_id:conversationId,message_text:text});if(r.error)throw new Error('Unrecognized route save failed');}
 
-export async function routeConversation(db:DatabaseClient,tenantId:string,conversation:ConversationRow,text:string,settings:OwnerSettings,ai:AIProvider|null,onModel?:(usage:Record<string,unknown>)=>void,isFirstMessage=false,persist=true):Promise<RouteOutcome>{
+/**
+ * Route by code first: campaign/source, open case, keyword signal, sticky intent (route_stickiness_hours).
+ * Without those the reply goes to reception, whose structured answer also returns the intent — so a
+ * reply costs at most one model call. The model classifier runs only when `classifyWithModel` (paused
+ * replies, where it is the only call).
+ */
+export async function routeConversation(db:DatabaseClient,tenantId:string,conversation:ConversationRow,text:string,settings:OwnerSettings,ai:AIProvider|null,onModel?:(usage:Record<string,unknown>)=>void,isFirstMessage=false,persist=true,classifyWithModel=false):Promise<RouteOutcome>{
  const config=behavior(settings),source=conversation.source_label??(isFirstMessage?entrySource(text):null);
  const configuredSource=config.source_routes.find((r:{source:string;agent:string})=>r.source.toLowerCase()===source)?.agent;
  const campaign=config.campaign_routes.find((r:{keyword:string;agent:string})=>text.toLowerCase().includes(r.keyword.toLowerCase()))?.agent;
- const saveRoute=(agent:string)=>persist?assign(db,tenantId,conversation.id,agent,source):Promise.resolve();
+ const saveRoute=(agent:string)=>persist?assignConversationRoute(db,tenantId,conversation.id,agent,source):Promise.resolve();
  const forced=registry.byName(campaign??configuredSource??'',settings);if(forced){await saveRoute(forced.name);return{kind:'agent',agent:forced,method:campaign?'campaign':'source'};}
  const open=persist?await db.from('escalations').select('id').eq('tenant_id',tenantId).eq('conversation_id',conversation.id).in('status',openStatuses).limit(1):{data:[],error:null};if(open.error)throw new Error('Open case lookup failed');
  const support=open.data?.length?registry.byName('SUPPORT',settings):null;if(support){await saveRoute(support.name);return{kind:'agent',agent:support,method:'open_case'};}
@@ -28,10 +34,12 @@ export async function routeConversation(db:DatabaseClient,tenantId:string,conver
  const lastMessageAt=conversation.last_message_at?new Date(conversation.last_message_at).getTime():0;
  if(conversation.routed_agent&&conversation.routed_agent!=='RECEPTION'&&Date.now()-lastMessageAt<config.route_stickiness_hours*3600000){const sticky=registry.byName(conversation.routed_agent,settings);if(sticky)return{kind:'agent',agent:sticky,method:'sticky'};}
  if(cheap.agent){await saveRoute(cheap.agent.name);return{kind:'agent',agent:cheap.agent,method:'signal'};}
- const classified=await registry.classify(text,settings,ai,onModel,isFirstMessage?'Контекст: это новый контакт; считай его кандидатом SALE, но не назначай SALE без достаточной уверенности.':'');
- if(classified.agent&&classified.confidence>=config.intent_confidence_threshold){await saveRoute(classified.agent.name);return{kind:'agent',agent:classified.agent,method:'model'};}
- if(persist)await unresolved(db,tenantId,conversation.id,text);
+ if(classifyWithModel){
+  const classified=await registry.classify(text,settings,ai,onModel);
+  if(classified.agent&&classified.confidence>=config.intent_confidence_threshold){await saveRoute(classified.agent.name);return{kind:'agent',agent:classified.agent,method:'model'};}
+ }
+ if(persist&&classifyWithModel)await unresolved(db,tenantId,conversation.id,text);
  if(config.reception_max_messages>0&&Number(conversation.reception_message_count??0)>=config.reception_max_messages)return{kind:'escalate',method:'reception_limit'};
  await saveRoute('RECEPTION');
- return{kind:'reception',method:'low_confidence'};
+ return{kind:'reception',method:classifyWithModel?'low_confidence':'reception_intent'};
 }

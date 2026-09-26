@@ -1,0 +1,155 @@
+# Эталонные диалоги (задание N). Прогон: npm run eval:dialogs -- --tenant=<uuid> [--runs=3]
+# Проверки маршрута (stage, intent, model_calls, request, discovery) — порог 100 %;
+# текстовые (must, must_not, max_questions, max_sentences) — порог 90 %.
+scenarios:
+  - id: greeting-ru
+    title: "«привет» — шаблон, без модели"
+    turns:
+      - text: привет
+        stage: intent_unknown
+        model_calls: 0
+        must: ['Чем могу помочь\?']
+        max_questions: 1
+
+  - id: greeting-he
+    title: "«שלום» — шаблон на иврите"
+    turns:
+      - text: שלום
+        stage: intent_unknown
+        model_calls: 0
+        must: ['במה אפשר לעזור']
+
+  - id: evening-then-about
+    title: "«добрый вечер!» → «хочу узнать про вас» без вопроса из списка"
+    turns:
+      - text: добрый вечер!
+        model_calls: 0
+      - text: хочу узнать про вас
+        max_model_calls: 1
+        no_discovery: true
+        max_questions: 1
+        max_sentences: 4
+        must_not: ['с радостью', 'чем могу помочь']
+
+  - id: greeting-plus-price
+    title: "«привет, сколько стоит бот?» — не голое приветствие"
+    turns:
+      - text: привет, сколько стоит бот?
+        max_model_calls: 1
+        no_discovery: true
+        max_questions: 1
+        must_not: ['^Здравствуйте! Это .*Чем могу помочь\?$', 'зависит[^0-9]*$']
+
+  - id: salon-discovery
+    title: "«что умеете?» → «у меня салон» → «а цена?»; вопрос из списка не раньше 2-го хода, ≤1 за ход"
+    turns:
+      - text: что вы умеете?
+        max_model_calls: 1
+        no_discovery: true
+        max_questions: 1
+      - text: у меня салон красоты
+        max_model_calls: 1
+        max_questions: 1
+        max_discovery_total: 1
+      - text: а цена?
+        max_model_calls: 1
+        max_questions: 1
+        max_discovery_total: 2
+
+  - id: thanks-ok-thumb
+    title: "«спасибо» / «ок» / «👍» — без маршрутизации и вопросов"
+    turns:
+      - text: спасибо
+        model_calls: 0
+        max_questions: 0
+      - text: ок
+        model_calls: 0
+        max_questions: 0
+      - text: 👍
+        model_calls: 0
+        max_questions: 0
+
+  - id: support-broken-order
+    title: "«мой заказ не работает» — support, без вопросов о потребности"
+    turns:
+      - text: мой заказ не работает
+        intent: support
+        max_model_calls: 1
+        no_discovery: true
+
+  - id: sale-then-support
+    title: "продажа → «а у меня ещё проблема с оплатой» — переключение в support"
+    turns:
+      - text: сколько стоит подключение ассистента?
+        intent: sale
+        max_model_calls: 1
+      - text: а у меня ещё проблема с оплатой
+        intent: support
+        max_model_calls: 1
+
+  - id: meeting-thursday
+    title: "«хочу встречу в четверг» — заявка"
+    turns:
+      - text: хочу встречу в четверг
+        request: true
+        max_model_calls: 1
+        must: ['Передала вашу заявку']
+
+  - id: sector-and-size-given
+    title: "клиент сам назвал сферу и размер — не переспрашивать"
+    turns:
+      - text: у меня салон красоты, нас трое, клиенты пишут в WhatsApp. Что вы можете предложить?
+        max_model_calls: 1
+        max_questions: 1
+        must_not: ['сколько (в нём|у вас) человек', 'чем занимается (ваш )?бизнес']
+      - text: интересно, а сколько стоит?
+        max_model_calls: 1
+        max_questions: 1
+        must_not: ['сколько (в нём|у вас) человек', 'чем занимается (ваш )?бизнес']
+
+  - id: out-of-base
+    title: "вопрос вне базы — честная эскалация"
+    turns:
+      - text: вы работаете с клиниками пластической хирургии в Эйлате по субботам?
+        max_model_calls: 1
+        must_not: ['да, работаем']
+
+  - id: three-substantive
+    title: "3 содержательных хода подряд — вопросов из списка ≤ 3"
+    turns:
+      - text: расскажите, что вы делаете для малого бизнеса
+        max_model_calls: 1
+      - text: а как это работает с WhatsApp?
+        max_model_calls: 1
+        max_questions: 1
+      - text: сколько времени занимает подключение?
+        max_model_calls: 1
+        max_questions: 1
+        max_discovery_total: 3
+
+  - id: is-it-yuri
+    title: "«Здравствуйте, Юрий?» — честно: ассистент"
+    turns:
+      - text: Здравствуйте, Юрий?
+        max_model_calls: 1
+        must: ['ассистент']
+        must_not: ['^Да, это Юрий', 'я Юрий']
+
+  - id: known-by-history
+    title: "знакомый по истории клиент пишет «привет» — без повторного представления, профиль из истории"
+    history:
+      - { from: client, text: 'Добрый день! Сделаете мне лендинг для кейтеринга?' }
+      - { from: business, text: 'Да, конечно. Пришлите меню и фото.' }
+      - { from: client, text: 'Спасибо, пришлю завтра. Кстати, я Марина.' }
+    turns:
+      - text: привет
+        max_model_calls: 1
+        must_not: ['Это .*ассистент']
+        must: ['Чем могу помочь\?']
+
+  - id: english-hi
+    title: "«hi» — шаблон на английском"
+    turns:
+      - text: hi
+        model_calls: 0
+        must: ['How can I help\?']

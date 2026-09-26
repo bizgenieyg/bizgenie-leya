@@ -55,7 +55,7 @@ test('small base goes to the model whole: low-similarity units no longer escalat
     const ai = { async generateReply(input: { systemPrompt: string; userMessage: string }) {
       if (input.systemPrompt.includes('классификатор')) return { text: classifier };
       materials = JSON.parse(input.userMessage).uploadedMaterials;
-      assert.match(input.systemPrompt, /ОДИН уточняющий вопрос/);
+      assert.match(input.systemPrompt, /Общий вопрос/);
       return { text: '{"reply":"Мы делаем WhatsApp-ассистентов, сайты и автоматизацию. Что из этого вам интересно?","unanswered":[]}' };
     } };
     await handleWebhookEvent(f.tenantId, f.incoming('m1', 'какие услуги вы оказываете?'), f.db, f.provider, ai as never); await settleAllOutboundQueues();

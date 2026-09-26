@@ -12,13 +12,21 @@ import { reserveSimulatorCall } from './simulator-rate-limit.js';
 import { processCustomerMessage, type PipelineResult, type PipelineSink } from './message-pipeline.service.js';
 import { composeOwnerAnswer, escalationWaitingMessage } from './owner-workflow.service.js';
 import { languageOf, renderText } from './templates.service.js';
+import { normalizeDialogState } from './dialog-state.js';
 import { clientText, withoutRepeatedIntroduction } from '../utils/assistant-text.js';
 import { HttpError } from '../utils/http-error.js';
 import { allowedRecipient } from '../utils/incoming-policy.js';
 
-export type SimulationResult = PipelineResult;
+/** Dialogue trace for evaluations (stage and intent after the turn, whether a request was created). */
+export interface SimulationTrace { stage: string; intent: string; request: boolean; client_turns: number; discovery_asked: string[] }
+export type SimulationResult = PipelineResult & { trace?: SimulationTrace };
+/**
+ * Evaluation-only options (never exposed through the HTTP route): skip the simulator rate limit,
+ * seed a WhatsApp history and a client profile for a new session, return the dialogue trace.
+ */
+export interface SimulationOptions { now?: Date; root?: string; evaluation?: { history?: ConversationMemory[]; profile?: string } }
 type SessionState = { introduced: boolean; routed_agent: string | null; route_selected_at: string | null;
-  source_label: string | null; reception_message_count: number; client_time_zone: string | null; profile_md?: string; open_request?: string | null };
+  source_label: string | null; reception_message_count: number; client_time_zone: string | null; profile_md?: string; open_request?: string | null; dialog_state?: unknown };
 
 async function sessionState(db: DatabaseClient, tenantId: string, sessionId: string): Promise<SessionState> {
   const find = () => db.from('simulator_sessions').select('*').eq('tenant_id', tenantId).eq('id', sessionId).maybeSingle();
@@ -34,15 +42,19 @@ async function sessionState(db: DatabaseClient, tenantId: string, sessionId: str
 }
 
 export async function simulateCustomerMessage(db: DatabaseClient, tenantId: string, sessionId: string, text: string,
-  ai: AIProvider | null = createAIProvider(), limitOptions?: { now?: Date; root?: string }): Promise<SimulationResult> {
+  ai: AIProvider | null = createAIProvider(), limitOptions?: SimulationOptions): Promise<SimulationResult> {
   const settings = await loadOwnerSettings(db, tenantId);
   const config = behavior(settings);
   const now = limitOptions?.now ?? new Date();
-  const reservation = await reserveSimulatorCall(tenantId, config.simulator_hourly_limit, config.simulator_daily_limit, now, limitOptions?.root);
-  if (!reservation.allowed) throw new HttpError(429, reservation.period === 'hour' ? 'Simulator hourly limit reached' : 'Simulator daily limit reached',
-    { code: reservation.period === 'hour' ? 'simulator_hourly_limit' : 'simulator_daily_limit' });
+  const evaluation = limitOptions?.evaluation;
+  if (!evaluation) {
+    const reservation = await reserveSimulatorCall(tenantId, config.simulator_hourly_limit, config.simulator_daily_limit, now, limitOptions?.root);
+    if (!reservation.allowed) throw new HttpError(429, reservation.period === 'hour' ? 'Simulator hourly limit reached' : 'Simulator daily limit reached',
+      { code: reservation.period === 'hour' ? 'simulator_hourly_limit' : 'simulator_daily_limit' });
+  }
 
   const state = await sessionState(db, tenantId, sessionId);
+  if (evaluation?.profile && !state.profile_md) state.profile_md = evaluation.profile;
   const cutoff = new Date(now.getTime() - config.context_retention_hours * 3600000).toISOString();
   const history = await db.from('simulator_messages').select('from_me,body,created_at')
     .eq('tenant_id', tenantId).eq('session_id', sessionId).gte('created_at', cutoff)
@@ -67,6 +79,8 @@ export async function simulateCustomerMessage(db: DatabaseClient, tenantId: stri
   };
   const sink: PipelineSink = {
     mode: 'simulation',
+    // Evaluation only: the seeded WhatsApp history of a first contact, exactly like loadChatHistory in WhatsApp.
+    ...(evaluation?.history?.length && !previous.length ? { loadChatHistory: async () => ({ messages: evaluation.history!, introduced: evaluation.history!.some(item => item.fromMe) }) } : {}),
     isConversationPaused: async () => false,
     onClientOptOut: async () => {},
     admit: async () => {
@@ -107,6 +121,8 @@ export async function simulateCustomerMessage(db: DatabaseClient, tenantId: stri
     openRequest: async () => state.open_request ?? null,
     loadClientProfile: async () => state.profile_md ?? '',
     saveClientProfile: async profile => { state.profile_md = profile; },
+    loadDialogState: async () => state.dialog_state ?? {},
+    saveDialogState: async dialog => { state.dialog_state = dialog; },
     markIntroduced: async () => { memory.introduced = true; },
     recordUsage: async (eventType, options) => {
       if (eventType !== 'model_call') return;
@@ -120,12 +136,14 @@ export async function simulateCustomerMessage(db: DatabaseClient, tenantId: stri
   const model = meterAI(db, tenantId, ai, { simulation: true, purpose: 'simulator_reply' });
   const response = await processCustomerMessage({ db, tenantId, text, client, conversation, memory, settings, ai, model,
     usageKey: randomUUID(), sink, now });
-  const updated = await db.from('simulator_sessions').update({ introduced: memory.introduced, profile_md: state.profile_md ?? '', open_request: state.open_request ?? null,
+  const updated = await db.from('simulator_sessions').update({ introduced: memory.introduced, profile_md: state.profile_md ?? '', open_request: state.open_request ?? null, dialog_state: state.dialog_state ?? {},
     routed_agent: conversation.routed_agent, route_selected_at: now.toISOString(), source_label: conversation.source_label,
     reception_message_count: conversation.reception_message_count ?? 0, client_time_zone: client.time_zone, updated_at: now.toISOString() })
     .eq('tenant_id', tenantId).eq('id', sessionId);
   if (updated.error) throw new HttpError(500, 'Could not save simulator session');
-  return { ...response, reply: sentReply ?? response.reply };
+  const dialog = normalizeDialogState(state.dialog_state);
+  return { ...response, reply: sentReply ?? response.reply,
+    ...(evaluation ? { trace: { stage: dialog.stage, intent: dialog.intent, request: dialog.stage === 'request', client_turns: dialog.client_turns, discovery_asked: dialog.discovery_asked } } : {}) };
 }
 
 /** Owner answers the last simulated customer question; returns exactly what the client would get. */

@@ -25,7 +25,7 @@ test('sector appears in knowledge and reception prompts only when set',async()=>
 test("explicit no-knowledge marker is distinguishable from provider failure",async()=>{
  const missing=await generateKnowledgeReplyResult(context,'Гарантия?',{async generateReply(){return{text:'NO_KNOWLEDGE_ANSWER'}}});
  assert.deepEqual(missing,{reply:null,missingKnowledge:true,unanswered:[]});
- const warn=console.warn;console.warn=()=>undefined;try{const failure=await generateKnowledgeReplyResult(context,'Гарантия?',{async generateReply(){throw new Error('offline')}});assert.deepEqual(failure,{reply:null,missingKnowledge:false,unanswered:[]});}finally{console.warn=warn;}
+ const warn=console.warn;console.warn=()=>undefined;try{const failure=await generateKnowledgeReplyResult(context,'Гарантия?',{async generateReply(){throw new Error('offline')}});assert.deepEqual(failure,{reply:null,missingKnowledge:false,unanswered:[],failure:'unavailable'});}finally{console.warn=warn;}
 });
 test("Gemini receives tenant knowledge/settings and hard rules, returns only final text", async () => {
   const originalFetch = globalThis.fetch;

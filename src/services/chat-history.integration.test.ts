@@ -25,6 +25,7 @@ async function fixture(history: WhatsAppChatMessage[] | Error) {
   };
   const ai = { async generateReply(input: { systemPrompt: string; userMessage: string }) {
     if (input.systemPrompt.includes('классификатор намерений')) return { text: '{"agent":"SUPPORT","confidence":0.9}' };
+    if (input.systemPrompt.includes('прошлая переписка')) return { text: '{"intent":"sale","facts":["хочет маникюр"]}' };
     prompts.push({ system: input.systemPrompt, history: JSON.parse(input.userMessage).conversationHistory });
     return { text: 'Открыты с 9 до 18.' };
   } };

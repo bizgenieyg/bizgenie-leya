@@ -23,6 +23,11 @@ export function mergeClientProfile(existing: string, facts: string[], now: Date,
   return next === existing.trim() ? null : next;
 }
 
+/** Fact texts of a dated profile (dates stripped), to extend it with new facts. */
+export function profileFacts(profile: string): string[] {
+  return profile.split('\n').map(line => LINE.exec(line.trim())?.[2] ?? '').filter(Boolean);
+}
+
 export async function loadClientProfile(db: DatabaseClient, tenantId: string, clientId: string): Promise<string> {
   const row = await db.from('client_profiles').select('profile_md').eq('tenant_id', tenantId).eq('client_id', clientId).maybeSingle();
   if (row.error) throw new Error('Client profile unavailable');
