@@ -1,4 +1,4 @@
-import { AIProviderError, failureReason } from "../providers/ai/ai-provider.interface.js";
+import { AIProviderError, failureReason, MODEL_UNAVAILABLE, modelUnavailable } from "../providers/ai/ai-provider.interface.js";
 import { randomUUID } from 'node:crypto';
 import type { AIProvider } from '../providers/ai/ai-provider.interface.js';
 import type { DatabaseClient } from '../db/supabase.js';
@@ -15,7 +15,7 @@ export function meterAI(db:DatabaseClient,tenantId:string,provider:AIProvider|nu
     const source=existing[meterSource]!;
     return meterAI(db,tenantId,source.provider,{...source.metadata,...metadata});
   }
-  const wrapped:Metered={ [tenantMeter]:tenantId, [meterSource]:{provider,metadata}, async generateReply(input){
+  const wrapped:Metered={ [tenantMeter]:tenantId, [meterSource]:{provider,metadata}, ...(modelUnavailable(provider)?{[MODEL_UNAVAILABLE]:true}:{}), async generateReply(input){
     const eventKey=randomUUID();
     try{
       const result=await provider.generateReply(input);

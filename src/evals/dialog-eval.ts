@@ -9,6 +9,8 @@ export interface TurnExpectation {
   text: string; stage?: string; intent?: string; model_calls?: number; max_model_calls?: number;
   must?: string[]; must_not?: string[]; max_questions?: number; request?: boolean; max_sentences?: number;
   no_discovery?: boolean; max_discovery_total?: number;
+  /** Days after the start of the scenario at which this message is sent (e.g. a greeting on another day). */
+  after_days?: number;
 }
 export interface Scenario { id: string; title: string; history?: Array<{ from: 'client' | 'business'; text: string }>; profile?: string; turns: TurnExpectation[] }
 export interface CheckResult { scenario: string; turn: number; check: string; kind: 'route' | 'text'; pass: boolean; detail?: string }
@@ -62,9 +64,11 @@ export async function runDialogEval(db: DatabaseClient, tenantId: string, scenar
     const session = crypto.randomUUID();
     const counter = countingModel(metered);
     const history: ConversationMemory[] | undefined = scenario.history?.map((item, i) => ({ fromMe: item.from === 'business', text: item.text, createdAt: new Date(Date.now() - (scenario.history!.length - i) * 86_400_000).toISOString() }));
+    const start = Date.now();
     try {
       for (const [index, turn] of scenario.turns.entries()) {
-        const result = await simulateCustomerMessage(db, tenantId, session, turn.text, counter.model, { evaluation: { ...(history ? { history } : {}), ...(scenario.profile ? { profile: scenario.profile } : {}) } });
+        const now = new Date(start + (turn.after_days ?? 0) * 86_400_000 + index * 60_000);
+        const result = await simulateCustomerMessage(db, tenantId, session, turn.text, counter.model, { now, evaluation: { ...(history ? { history } : {}), ...(scenario.profile ? { profile: scenario.profile } : {}) } });
         const calls = counter.take(); totalCalls += calls;
         const checks = checkTurn(scenario.id, index + 1, turn, result, calls, result.trace?.discovery_asked.length ?? 0);
         results.push(...checks);
@@ -88,4 +92,33 @@ export function formatReport(summary: EvalSummary, prices: { inputPerMillion: nu
     `Маршрут и этапы: ${summary.routePass}/${summary.routeTotal} (${(routeShare * 100).toFixed(1)} %, порог 100 %) — ${routeShare === 1 ? 'PASS' : 'FAIL'}`,
     `Текстовые проверки: ${summary.textPass}/${summary.textTotal} (${(textShare * 100).toFixed(1)} %, порог 90 %) — ${textShare >= 0.9 ? 'PASS' : 'FAIL'}`,
     `Вызовов модели: ${summary.modelCalls}; токены: вход ${summary.inputTokens}, выход ${summary.outputTokens}; оценка стоимости прогона ≈ $${cost.toFixed(4)}`].join('\n');
+}
+
+/** Accept a full tenant UUID or a unique prefix ("ef795be3"); ambiguity or no match is an error listing candidates. */
+export function resolveTenant(input: string, tenants: Array<{ id: string; name?: string | null }>): string {
+  const wanted = input.trim().toLowerCase();
+  if (!/^[0-9a-f-]{4,36}$/.test(wanted)) throw new Error('Tenant must be a UUID or its hex prefix');
+  const matches = tenants.filter(t => t.id.toLowerCase().startsWith(wanted));
+  if (matches.length === 1) return matches[0]!.id;
+  const list = (matches.length ? matches : tenants).slice(0, 20).map(t => `  ${t.id}${t.name ? ` (${t.name})` : ''}`).join('\n');
+  throw new Error(matches.length ? `Tenant prefix "${input}" is ambiguous:\n${list}` : `No tenant starts with "${input}". Known tenants:\n${list}`);
+}
+
+/**
+ * Offline check of the scenarios (no --live): a deterministic stand-in model that answers in the
+ * structured formats of the real prompts. It validates the file, the harness and the code paths
+ * (templates, zero-call greetings, gates), not the quality of real replies.
+ */
+export function scriptedModel(): AIProvider {
+  return { async generateReply(input) {
+    const message = (() => { try { return String((JSON.parse(input.userMessage) as { customerMessage?: unknown }).customerMessage ?? ''); } catch { return ''; } })().toLowerCase();
+    if (input.systemPrompt.includes('прошлая переписка')) return { text: JSON.stringify({ intent: 'sale', facts: [{ fact: 'заказывал лендинг для кейтеринга', answers_question: null }, { fact: 'имя — Марина', answers_question: null }] }) };
+    if (input.systemPrompt.includes('классификатор намерений')) return { text: '{"agent":"UNKNOWN","confidence":0.2}' };
+    if (/встреч|запиш|демо/.test(message)) return { text: JSON.stringify({ reply: null, unanswered: [], request: { summary: 'Просит встречу', time: /четверг/.test(message) ? 'четверг' : null }, intent: 'sale' }) };
+    if (/не работает|проблем|заказ/.test(message)) return { text: JSON.stringify({ reply: 'Разберёмся: опишите, что именно не работает.', unanswered: [], intent: 'support' }) };
+    if (/юрий\?|ты бот|это владелец/.test(message)) return { text: JSON.stringify({ reply: 'Я ассистент Юрия, отвечу на вопросы о его услугах.', unanswered: [], intent: 'unknown' }) };
+    if (/эйлат|пластическ/.test(message)) return { text: JSON.stringify({ reply: null, unanswered: ['Работаете ли с клиниками в Эйлате по субботам?'], intent: 'sale' }) };
+    const asked = input.systemPrompt.includes('в конце задай своими словами один вопрос');
+    return { text: JSON.stringify({ reply: `Делаем WhatsApp-ассистентов для малого бизнеса, подключение от 1500 ₪.${asked ? ' Чтобы подсказать, что подойдёт вам: откуда приходят клиенты?' : ''}`, unanswered: [], intent: 'sale', asked_question: asked }) };
+  } };
 }

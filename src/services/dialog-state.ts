@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 /**
  * Conversation flow is decided by code; the model only writes text. The state lives in
  * conversations.dialog_state (simulator: simulator_sessions.dialog_state).
@@ -10,6 +12,8 @@ export interface DialogState {
   client_turns: number;
   discovery_asked: string[];
   last_question_turn: number | null;
+  /** Hashes of discovery questions already answered by facts in the profile (stable when the owner reorders the list). */
+  discovery_answered: string[];
   history_analyzed?: boolean;
 }
 
@@ -26,8 +30,20 @@ export function normalizeDialogState(value: unknown): DialogState {
     client_turns: Number.isSafeInteger(v.client_turns) && Number(v.client_turns) >= 0 ? Number(v.client_turns) : 0,
     discovery_asked: Array.isArray(v.discovery_asked) ? v.discovery_asked.filter((q): q is string => typeof q === 'string').slice(0, 20) : [],
     last_question_turn: Number.isSafeInteger(v.last_question_turn) ? Number(v.last_question_turn) : null,
+    discovery_answered: Array.isArray(v.discovery_answered) ? v.discovery_answered.filter((h): h is string => typeof h === 'string').slice(0, 50) : [],
     ...(v.history_analyzed === true ? { history_analyzed: true } : {}),
   };
+}
+
+/** Identity of a discovery question by its text, so reordering the owner's list does not shift answers. */
+export const questionHash = (question: string): string =>
+  createHash('sha256').update(question.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()).digest('hex').slice(0, 16);
+/** Record 1-based question numbers the model marked as answered by profile facts. */
+export function markAnswered(state: DialogState, questions: string[], numbers: number[]): void {
+  for (const n of numbers) {
+    const q = questions[n - 1];
+    if (q && !state.discovery_answered.includes(questionHash(q))) state.discovery_answered.push(questionHash(q));
+  }
 }
 
 export const agentIntent = (agent: string | null | undefined): DialogIntent =>
@@ -39,12 +55,12 @@ export type DiscoveryGate = { mode: 'closed' } | { mode: 'open' | 'situational';
  * Needs-discovery gate: sale intent, a substantive message, fewer than DISCOVERY_MAX_ASKED questions
  * asked, at least DISCOVERY_MIN_GAP client turns since the last one. From turn DISCOVERY_MIN_TURN the
  * question is offered normally; on the first substantive turn only if the client described a situation.
- * One question at a time, never one already asked or already answered (`known`).
+ * One question at a time, never one already asked or already answered by the client's profile.
  */
 export function discoveryGate(state: DialogState, questions: string[], substantive: boolean): DiscoveryGate {
   if (state.intent !== 'sale' || !substantive || state.discovery_asked.length >= DISCOVERY_MAX_ASKED) return { mode: 'closed' };
   if (state.last_question_turn !== null && state.client_turns - state.last_question_turn < DISCOVERY_MIN_GAP) return { mode: 'closed' };
-  const question = questions.find(q => !state.discovery_asked.includes(q));
+  const question = questions.find(q => !state.discovery_asked.includes(q) && !state.discovery_answered.includes(questionHash(q)));
   if (!question) return { mode: 'closed' };
   return { mode: state.client_turns >= DISCOVERY_MIN_TURN ? 'open' : 'situational', question };
 }

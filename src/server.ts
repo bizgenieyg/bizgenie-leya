@@ -5,6 +5,7 @@ import { startWahaMonitor } from './workers/waha-monitor.js';
 import { deepHealth } from './services/deep-health.service.js';
 import { requireAdmin } from './utils/admin-auth.js';
 import { sendPlatformAlert } from './services/platform-alerts.service.js';
+import { modelKeyConfigured } from './providers/ai/index.js';
 import express from "express";
 
 import { env } from "./config/env.js";
@@ -73,5 +74,7 @@ if (require.main === module) {
   app.listen(env.port, () => {
     console.log(`Leya backend listening on port ${env.port}`);
     void sendPlatformAlert('api_started', 'leya-api перезапущен');
+    // A missing model key would otherwise only surface after three failed client messages.
+    if (!modelKeyConfigured()) void sendPlatformAlert('model_key_missing', '⚠️ Не задан ключ модели: ассистент отвечает заглушкой.');
   });
 }

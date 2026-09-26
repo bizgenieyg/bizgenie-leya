@@ -174,3 +174,48 @@ test('simulator: the same path; dialogue state per session, history analysed onc
     assert.equal(reset.trace?.client_turns, 0);
   } finally { await f.close(); }
 });
+
+test('history answers discovery question 1 → the gate offers question 2; all answered → no discovery block', async () => {
+  const f = await fixture();
+  try {
+    const qs = ['Чем занимается бизнес и сколько в нём человек?', 'Откуда приходят клиенты: WhatsApp, Instagram, сайт, рекомендации?'];
+    const session = crypto.randomUUID();
+    const history = [{ fromMe: false, text: 'У меня салон красоты, нас трое.', createdAt: '2026-09-01T10:00:00Z' }, { fromMe: true, text: 'Понял, спасибо.', createdAt: '2026-09-01T10:05:00Z' }];
+    f.reply({ intent: 'sale', facts: [{ fact: 'салон красоты, трое сотрудников', answers_question: 1 }] },
+      { reply: 'Подключение 1500 ₪.', unanswered: [], intent: 'sale' },
+      { reply: 'Работает с вашим номером.', unanswered: [], asked_question: true });
+    await simulateCustomerMessage(f.db, f.tenantId, session, 'сколько стоит?', f.ai as never, { evaluation: { history } });
+    await simulateCustomerMessage(f.db, f.tenantId, session, 'а как подключается?', f.ai as never, { evaluation: {} });
+    const last = f.prompts.at(-1)!;
+    assert.ok(last.includes(JSON.stringify(qs[1])), 'question 2 is offered');
+    assert.ok(!last.includes(`в конце задай своими словами один вопрос: ${JSON.stringify(qs[0])}`), 'question 1 is known from history');
+    assert.doesNotMatch(last, /question_known/);
+    const state = (await f.pg.query<{ dialog_state: Record<string, unknown> }>('select dialog_state from simulator_sessions where id=$1', [session])).rows[0]!.dialog_state;
+    assert.equal((state.discovery_answered as string[]).length, 1);
+    assert.deepEqual(state.discovery_asked, [qs[1]]);
+  } finally { await f.close(); }
+});
+
+test('no model key: "какие услуги?" escalates as an outage (missing_api_key), never as missing knowledge', async () => {
+  const f = await fixture();
+  try {
+    const { createAIProvider } = await import('../providers/ai/index.js');
+    const { handleWebhookEvent } = await import('../workers/webhook.worker.js');
+    const { resetModelHealth } = await import('./model-health.service.js');
+    const alerts: string[] = [];
+    resetModelHealth(async kind => { alerts.push(kind); return true; });
+    for (const [id, text] of [['m1', 'какие услуги?'], ['m2', 'а сколько стоит?'], ['m3', 'можно записаться?']] as const)
+      await handleWebhookEvent(f.tenantId, { event: 'message', payload: { id, from: chat, fromMe: false, hasMedia: false, body: text, author: null, replyTo: null,
+        _data: { Info: { PushName: 'Марина', Chat: chat } } } }, f.db, { ...({} as WhatsAppProvider), async getSessionStatus() { return { status: 'WORKING', me: { id: '972500000009@c.us' } }; },
+        async sendMessage(input) { f.sent.push({ ...input, id: `x${f.sent.length}` }); return { id: `x${f.sent.length}` }; } }, createAIProvider(''));
+    await settleAllOutboundQueues();
+    const escalations = (await f.pg.query<{ model_unavailable: boolean }>('select model_unavailable from escalations')).rows;
+    assert.ok(escalations.length >= 1 && escalations.every(r => r.model_unavailable));
+    assert.equal((await f.pg.query<{ n: number }>("select count(*)::int n from agent_actions where action_type='knowledge_missing'")).rows[0]!.n, 0);
+    assert.equal((await f.pg.query<{ n: number }>('select count(*)::int n from knowledge_suggestions')).rows[0]!.n, 0);
+    const reasons = (await f.pg.query<{ reason: string }>("select distinct metadata->>'failure_reason' reason from usage_events where event_type='model_call'")).rows.map(r => r.reason);
+    assert.deepEqual(reasons, ['missing_api_key']);
+    assert.ok(alerts.includes('model_down'), 'counted by the model health alert');
+    resetModelHealth();
+  } finally { await f.close(); }
+});

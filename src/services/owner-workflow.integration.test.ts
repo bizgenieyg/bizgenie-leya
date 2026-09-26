@@ -508,7 +508,7 @@ test('polish: simulator returns exactly the text real delivery sends for the sam
     assert.equal(simulated.reply, real.text);
     const saved = await real.h.pg.query<{ body: string }>('select body from simulator_messages where session_id=$1 and from_me order by sequence desc limit 1', [session]);
     assert.equal(saved.rows[0]!.body, real.text);
-    const events = await real.h.pg.query<{ purpose: string; simulation: string | null }>("select metadata->>'purpose' purpose,metadata->>'simulation' simulation from usage_events where tenant_id=$1 and event_type='model_call' order by created_at", [real.h.tenant]);
+    const events = await real.h.pg.query<{ purpose: string; simulation: string | null }>("select metadata->>'purpose' purpose,metadata->>'simulation' simulation from usage_events where tenant_id=$1 and event_type='model_call' and metadata->>'purpose' like 'owner_answer_%' order by created_at", [real.h.tenant]);
     assert.deepEqual(events.rows.map(r => [r.purpose, r.simulation]), [['owner_answer_polish', null], ['owner_answer_verify', null], ['owner_answer_polish', 'true'], ['owner_answer_verify', 'true']]);
     await assert.rejects(simulateOwnerAnswer(real.h.db, real.h.tenant, randomUUID(), 'да', ai, { root }), (e: { status?: number }) => e.status === 409);
   } finally { await rm(root, { recursive: true, force: true }); }

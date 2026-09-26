@@ -10,7 +10,7 @@ import { findExactKnowledgeAnswer } from './knowledge.service.js';
 import { loadKnowledgeMaterials } from './knowledge-context.service.js';
 import { meterAI } from './metered-providers.js';
 import { behavior } from './runtime-settings.service.js';
-import { agentIntent, asksListedQuestion, discoveryGate, normalizeDialogState, replyQuestions, untilFirstQuestion, type DialogState, type DiscoveryGate } from './dialog-state.js';
+import { agentIntent, asksListedQuestion, discoveryGate, markAnswered, normalizeDialogState, replyQuestions, untilFirstQuestion, type DialogState, type DiscoveryGate } from './dialog-state.js';
 import { isAcknowledgement, isBareGreeting, withoutLeadingGreeting } from '../utils/small-talk.js';
 import { analyzeChatHistory } from './chat-history-analysis.service.js';
 import { assignConversationRoute } from './conversation-routing.service.js';
@@ -150,14 +150,16 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
   const finish = async (value: PipelineResult): Promise<PipelineResult> => { await sink.saveDialogState(state); return value; };
   const context = await loadContext(db, tenantId);
   let clientProfile = await sink.loadClientProfile();
+  const questions = discoveryQuestions(config.client_discovery_questions, context.business?.business_sector, language);
   const lastAssistant = [...memory.messages].reverse().find(item => item.fromMe)?.text ?? null;
 
   // WhatsApp history on first contact: analysed once per client (intent + up to 5 facts), never quoted back.
   if (history?.messages.length && !state.history_analyzed) {
     state.history_analyzed = true;
-    const analysis = await analyzeChatHistory(meterAI(db, tenantId, model, { purpose: 'history_analysis' }), history.messages);
+    const analysis = await analyzeChatHistory(meterAI(db, tenantId, model, { purpose: 'history_analysis' }), history.messages, questions);
     if (analysis) {
       if (state.intent === 'unknown' && analysis.intent !== 'unknown') state.intent = analysis.intent;
+      markAnswered(state, questions, analysis.answers);
       const next = mergeClientProfile(clientProfile, [...profileFacts(clientProfile), ...analysis.facts], now, settings.time_zone ?? 'Asia/Jerusalem');
       if (next !== null) { await sink.saveClientProfile(next); clientProfile = next; }
     }
@@ -236,9 +238,10 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
     return finish(result(reply, 'escalated', quiet ? { active: true, until: quiet.toISOString() } : undefined));
   };
 
-  const questions = discoveryQuestions(config.client_discovery_questions, context.business?.business_sector, language);
-  const extras: ReplyExtras = { clientProfile, openRequest: await sink.openRequest() };
-  const updateProfile = async (facts: string[] | null | undefined) => {
+  const extras: ReplyExtras = { clientProfile, openRequest: await sink.openRequest(), discoveryIndex: questions };
+  /** Facts replace the profile; the questions they answer are recorded by code for the discovery gate. */
+  const updateProfile = async (facts: string[] | null | undefined, answers: number[] = []) => {
+    markAnswered(state, questions, answers);
     if (!facts) return;
     const next = mergeClientProfile(clientProfile, facts, now, settings.time_zone ?? 'Asia/Jerusalem');
     if (next !== null) { await sink.saveClientProfile(next); clientProfile = next; }
@@ -264,7 +267,7 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
       reception = await generateReceptionReply(context, question, clarification, knowledgeModel, memory.messages, memory.introduced, language,
         { ...extras, discovery: closed, limitQuestions: true, ...(isRepeat(reception.reply, lastAssistant) ? { avoidRepeat: lastAssistant } : {}) });
     if (reception.failure) return escalate(undefined, null, { modelUnavailable: true });
-    await updateProfile(reception.profile);
+    await updateProfile(reception.profile, reception.profileAnswers);
     if (reception.intent === 'sale' || reception.intent === 'support') {
       const agentName = reception.intent === 'sale' ? 'SALE' : 'SUPPORT';
       if (registry.byName(agentName, settings)) {
@@ -303,13 +306,13 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
       if (!answer.failure && !answer.request && !answer.unanswered.length && answer.reply && (repeated || questionViolation(answer.reply, gate))) {
         answer = await generateKnowledgeReplyResult(context, question, knowledgeModel, agent.systemPrompt, memory.messages, memory.introduced, language,
           { ...agentExtras, limitQuestions: true, ...(repeated ? { avoidRepeat: lastAssistant } : {}) });
-        if (!answer.request && answer.reply && isRepeat(answer.reply, lastAssistant)) { await updateProfile(answer.profile); agentResult = await escalate(); return; }
+        if (!answer.request && answer.reply && isRepeat(answer.reply, lastAssistant)) { await updateProfile(answer.profile, answer.profileAnswers); agentResult = await escalate(); return; }
       }
       if (answer.failure) { agentResult = await escalate(undefined, null, { modelUnavailable: true }); return; }
-      await updateProfile(answer.profile);
-      if (gate.mode !== 'closed' && (answer.askedQuestion || answer.questionKnown)) {
+      await updateProfile(answer.profile, answer.profileAnswers);
+      if (gate.mode !== 'closed' && answer.askedQuestion) {
         state.discovery_asked = [...state.discovery_asked, gate.question];
-        if (answer.askedQuestion) state.last_question_turn = state.client_turns;
+        state.last_question_turn = state.client_turns;
       }
       if (answer.request) { agentResult = await request(answer.request, answer.reply); return; }
       if (answer.unanswered.length) {

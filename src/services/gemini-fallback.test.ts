@@ -7,9 +7,23 @@ import { replyLanguage } from './templates.service.js';
 
 const context = { business:{owner_name:"Даниэль",business_name:"BizGenie",language:"ru"}, assistant: { assistant_name: "Лея", allowed_languages: ["he", "ru", "en"], tone: "friendly", mode: null, system_rules: null, style_profile_md: "Пиши тепло и по делу." }, knowledge: [{ id: "a", question: "Часы?", answer: "9–18" }] };
 
-test("absent key disables fallback without an API call", async () => {
-  assert.equal(createAIProvider(""), null);
-  assert.equal(await generateKnowledgeReply(context, "Когда?", null), null);
+test("absent key is a model outage: no API call, failure 'missing_api_key', never missing knowledge", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetched = 0;
+  globalThis.fetch = (async () => { fetched++; throw new Error("no network"); }) as typeof fetch;
+  try {
+    const provider = createAIProvider("");
+    assert.ok(!(provider instanceof GeminiProvider));
+    const viaProvider = await generateKnowledgeReplyResult(context, "Когда?", provider);
+    assert.deepEqual(viaProvider, { reply: null, missingKnowledge: false, unanswered: [], failure: "missing_api_key" });
+    const empty = await generateKnowledgeReplyResult({ ...context, knowledge: [] }, "Когда?", provider);
+    assert.equal(empty.missingKnowledge, false, "an empty base without a key is still an outage");
+    assert.equal(empty.failure, "missing_api_key");
+    assert.deepEqual(await generateKnowledgeReplyResult(context, "Когда?", null), { reply: null, missingKnowledge: false, unanswered: [], failure: "missing_api_key" });
+    const reception = await generateReceptionReply(context, "Привет", "Уточните", provider, [], false);
+    assert.equal(reception.failure, "missing_api_key");
+    assert.equal(fetched, 0);
+  } finally { globalThis.fetch = originalFetch; }
 });
 test('sector appears in knowledge and reception prompts only when set',async()=>{
  const prompts:string[]=[];

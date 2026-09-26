@@ -63,3 +63,33 @@ test('evals file: at least 14 scenarios incl. every required case; checks separa
   assert.ok(checks.every(c => c.pass));
   assert.deepEqual(checks.map(c => c.kind), ['route', 'route', 'text', 'text']);
 });
+
+test('answered discovery questions are skipped by code, by question text, whatever the order', async () => {
+  const { markAnswered, questionHash } = await import('./dialog-state.js');
+  const { parseProfile } = await import('./ai-fallback.service.js');
+  const qs = ['Чем занимается бизнес и сколько в нём человек?', 'Откуда приходят клиенты?', 'Что отнимает больше всего времени?'];
+  const state = normalizeDialogState({ intent: 'sale', stage: 'intent_known', client_turns: 2 });
+  const profile = parseProfile([{ fact: 'салон красоты, трое сотрудников', answers_question: 1 }, 'пишет на «вы»', { fact: 'x', answers_question: 'нет' }]);
+  assert.deepEqual(profile, { facts: ['салон красоты, трое сотрудников', 'пишет на «вы»', 'x'], answers: [1] });
+  markAnswered(state, qs, profile!.answers);
+  assert.deepEqual(discoveryGate(state, qs, true), { mode: 'open', question: qs[1] });
+  const reordered = [qs[2]!, qs[0]!, qs[1]!];
+  assert.deepEqual(discoveryGate(state, reordered, true), { mode: 'open', question: qs[2] }, 'still skips the answered question after the owner reorders the list');
+  assert.equal(state.discovery_answered[0], questionHash('чем занимается   бизнес и сколько в нём человек'));
+  markAnswered(state, qs, [2, 3]);
+  assert.deepEqual(discoveryGate(state, qs, true), { mode: 'closed' }, 'everything answered: no discovery block');
+});
+
+test('eval tenant: full UUID or a unique prefix; ambiguous or unknown prefixes list the candidates', async () => {
+  const { resolveTenant } = await import('../evals/dialog-eval.js');
+  const tenants = [{ id: 'ef795be3-1111-4111-8111-111111111111', name: 'BizGenie' }, { id: 'd8911997-2222-4222-8222-222222222222', name: 'Гоша' }, { id: 'd8913333-3333-4333-8333-333333333333', name: null }];
+  assert.equal(resolveTenant('ef795be3', tenants), tenants[0]!.id);
+  assert.equal(resolveTenant(tenants[1]!.id, tenants), tenants[1]!.id);
+  assert.throws(() => resolveTenant('d891', tenants), /ambiguous:[\s\S]*d8911997[\s\S]*d8913333/);
+  assert.throws(() => resolveTenant('aaaa', tenants), /No tenant starts with "aaaa"/);
+  const script = readFileSync('src/scripts/eval-dialogs.ts', 'utf8');
+  assert.match(script, /const live = process\.argv\.includes\('--live'\)/);
+  assert.match(script, /if \(!modelKeyConfigured\(\)\) throw/);
+  const greeting = loadScenarios(readFileSync('evals/dialogs.yaml', 'utf8')).find(s => s.id === 'known-by-history')!;
+  assert.deepEqual(greeting.turns.map(t => [t.model_calls, t.after_days ?? 0]), [[1, 0], [0, 1]]);
+});

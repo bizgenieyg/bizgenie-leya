@@ -113,12 +113,14 @@ test('discovery: sector picks the starter set; the code passes one question only
     const ai = model([{ reply: 'Делаем WhatsApp-ассистентов, которые отвечают клиентам. Что для вас сейчас актуально?', unanswered: [], intent: 'sale' },
       { reply: 'Для салона это запись и напоминания. Чтобы подсказать, что подойдёт именно вам: чем занимается бизнес и сколько в нём человек?', unanswered: [], asked_question: true }], prompts);
     await f.send(chat, 'm1', 'хотел узнать о ваших услугах', ai);
-    for (const question of DISCOVERY_DEFAULTS.business.ru) assert.ok(!prompts[0]!.system.includes(question), 'no discovery list on the first turn');
+    // The list is only a reference for marking profile facts (task O); asking is never requested on turn 1.
+    assert.doesNotMatch(prompts[0]!.system, /в конце задай своими словами один вопрос/);
+    assert.match(prompts[0]!.system, /Справочник вопросов о потребности — только для поля answers_question, сам эти вопросы не задавай/);
     assert.match(prompts[0]!.system, /ВОПРОСЫ О ПОТРЕБНОСТИ в этом ответе не задавай/);
     await f.send(chat, 'm2', 'у меня салон, пишут в WhatsApp', ai);
     const second = prompts[1]!.system;
-    assert.ok(second.includes(DISCOVERY_DEFAULTS.business.ru[0]!), 'exactly the next question');
-    for (const question of DISCOVERY_DEFAULTS.business.ru.slice(1)) assert.ok(!second.includes(question), 'the rest of the list is never passed');
+    assert.ok(second.includes(`в конце задай своими словами один вопрос: ${JSON.stringify(DISCOVERY_DEFAULTS.business.ru[0])}`), 'exactly the next question is asked');
+    for (const question of DISCOVERY_DEFAULTS.business.ru.slice(1)) assert.ok(!second.includes(`один вопрос: ${JSON.stringify(question)}`), 'no other question is asked');
     assert.match(second, /Медицинские вопросы/);
     const state = (await f.pg.query<{ dialog_state: Record<string, unknown> }>('select dialog_state from conversations')).rows[0]!.dialog_state;
     assert.deepEqual(state.discovery_asked, [DISCOVERY_DEFAULTS.business.ru[0]]);

@@ -12,6 +12,9 @@ export class AIProviderError extends Error {
   readonly failure: AIFailure;
   constructor(message:string,usage?:AIUsage,failure:AIFailure={reason:'unavailable'}){super(message);this.usage=usage;this.failure=failure;}
 }
+/** Marks a provider that cannot answer at all (no API key); kept by metering wrappers. */
+export const MODEL_UNAVAILABLE=Symbol.for('leya.model-unavailable');
+export const modelUnavailable=(ai:unknown):boolean=>!ai||(ai as Record<symbol,unknown>)[MODEL_UNAVAILABLE]===true;
 export const failureReason=(error:unknown):string=>error instanceof AIProviderError?error.failure.reason:'unavailable';
 export interface AIReplyResult {
   usage?: AIUsage;
