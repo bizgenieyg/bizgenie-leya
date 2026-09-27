@@ -60,6 +60,8 @@ test("create persists the matching encrypted secret before WAHA starts; reconnec
     const secret = decryptCredential(String(row?.webhook_secret_encrypted), process.env.CREDENTIAL_ENCRYPTION_KEY!);
     assert.equal(input.config.webhooks[0]?.customHeaders[0]?.value, secret);
     assert.equal(input.config.markOnline, false);
+    // New and reconnected sessions subscribe at PUBLIC_BASE_URL (the service's base), trailing slash collapsed.
+    assert.equal(input.config.webhooks[0]?.url, `https://api.bizgenie.site/webhook/${tenantId}`);
     return Promise.resolve({ status: "STARTING" });
   }
   const provider: WhatsAppSessionProvider = {
@@ -71,7 +73,7 @@ test("create persists the matching encrypted secret before WAHA starts; reconnec
     getSessionStatus: async () => { if (!starts) throw new SessionNotFoundError(); return { status: "FAILED" }; },
     getQrImage: async () => { throw new Error("sensitive upstream 422"); },
   };
-  const service = new WahaAdminService(db, provider, "https://leya.example.com", "http://waha.internal");
+  const service = new WahaAdminService(db, provider, "https://api.bizgenie.site/", "http://waha.internal");
   await service.create(tenantId);
   const firstSecret = row?.webhook_secret_encrypted;
   await service.reconnect(tenantId);

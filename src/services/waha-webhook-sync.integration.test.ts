@@ -5,7 +5,7 @@ import { createTestDatabase, pgliteDatabaseClient } from './test-support/pglite-
 import { WahaAdminService } from './waha-admin.service.js';
 import { sessionNameForTenant } from './waha-admin.utils.js';
 
-async function fixture(sessions: Record<string, { status: string[]; events: string[] | null; token?: string }>) {
+async function fixture(sessions: Record<string, { status: string[]; events: string[] | null; token?: string; host?: string }>, publicBaseUrl = 'https://leya.example') {
   const pg = await createTestDatabase();
   const db = pgliteDatabaseClient(pg);
   const tenants: string[] = [];
@@ -31,13 +31,14 @@ async function fixture(sessions: Record<string, { status: string[]; events: stri
       const s = byTenant[session]!; if (!s.events) return null;
       const tenantId = tenants[Object.keys(byTenant).indexOf(session)]!;
       return { markOnline: false, metadata: { tenant_id: tenantId }, proxy: null,
-        webhooks: [{ url: `https://leya.example/webhook/${tenantId}`, events: s.events, hmac: null,
+        webhooks: [{ url: `${s.host ?? 'https://leya.example'}/webhook/${tenantId}`, events: s.events, hmac: null,
           retries: { policy: 'linear', delaySeconds: 2, attempts: 4 },
-          customHeaders: s.token === '' ? [] : [{ name: 'X-Webhook-Token', value: s.token ?? 'secret-token' }] }] };
+          customHeaders: s.token === '' ? [] : [{ name: 'X-Webhook-Token', value: s.token ?? 'secret-token' }] },
+          { url: 'https://other.example/hook', events: ['message'] }] };
     },
     async updateSessionConfig(session: string, config: Record<string, unknown>) { puts.push({ session, config }); },
   } as unknown as WhatsAppSessionProvider;
-  const service = new WahaAdminService(db, provider, 'https://leya.example', 'http://waha');
+  const service = new WahaAdminService(db, provider, publicBaseUrl, 'http://waha');
   return { pg, db, tenants, puts, polls, service };
 }
 
@@ -80,3 +81,58 @@ test('a restart that falls back to a QR is reported as requires_reconnect', asyn
     assert.equal(result!.result, 'requires_reconnect'); assert.equal(result!.status, 'SCAN_QR_CODE');
   } finally { await f.pg.close(); }
 });
+
+const EVENTS = ['message.any', 'session.status'];
+
+test('webhook on the old domain moves to PUBLIC_BASE_URL in one PUT, keeping token, retries, hmac and other webhooks', async () => {
+  const f = await fixture({ old: { status: ['WORKING', 'WORKING'], events: EVENTS, host: 'https://leya.bizgenie.site' } }, 'https://api.bizgenie.site/');
+  try {
+    const [result] = await f.service.syncAllWebhookEvents(undefined, { pauseMs: 0, waitMs: 1_000, pollMs: 1 });
+    const target = `https://api.bizgenie.site/webhook/${f.tenants[0]}`;
+    assert.equal(result!.result, 'updated');
+    assert.equal(result!.url_before, `https://leya.bizgenie.site/webhook/${f.tenants[0]}`);
+    assert.equal(result!.url_after, target);
+    assert.equal(f.puts.length, 1);
+    const hooks = f.puts[0]!.config.webhooks as Array<Record<string, unknown>>;
+    assert.deepEqual(hooks[0], { url: target, events: EVENTS, hmac: null,
+      retries: { policy: 'linear', delaySeconds: 2, attempts: 4 }, customHeaders: [{ name: 'X-Webhook-Token', value: 'secret-token' }] });
+    assert.deepEqual(hooks[1], { url: 'https://other.example/hook', events: ['message'] });
+    assert.ok(!JSON.stringify(result).includes('secret-token'), 'result never carries the token');
+  } finally { await f.pg.close(); }
+});
+
+test('matching URL and events is unchanged without a PUT; a tokenless webhook on the old domain is never written', async () => {
+  const f = await fixture({ current: { status: ['WORKING'], events: EVENTS, host: 'https://api.bizgenie.site' },
+    tokenless: { status: ['WORKING'], events: EVENTS, host: 'https://leya.bizgenie.site', token: '' } }, 'https://api.bizgenie.site');
+  try {
+    const results = await f.service.syncAllWebhookEvents(undefined, { pauseMs: 0 });
+    assert.deepEqual(results.map(r => r.result), ['unchanged', 'failed']);
+    assert.equal(results[1]!.url_after, results[1]!.url_before);
+    assert.equal(f.puts.length, 0);
+  } finally { await f.pg.close(); }
+});
+
+test('dryRun reports url_before/url_after and the new events without any PUT', async () => {
+  const f = await fixture({ a: { status: ['WORKING'], events: ['message'], host: 'https://leya.bizgenie.site' },
+    b: { status: ['WORKING'], events: EVENTS, host: 'https://api.bizgenie.site' } }, 'https://api.bizgenie.site');
+  try {
+    const results = await f.service.syncAllWebhookEvents(undefined, { dryRun: true });
+    assert.deepEqual(results.map(r => [r.result, r.dryRun ?? false, r.url_before?.split('/webhook/')[0], r.url_after?.split('/webhook/')[0], r.after]), [
+      ['updated', true, 'https://leya.bizgenie.site', 'https://api.bizgenie.site', EVENTS],
+      ['unchanged', false, 'https://api.bizgenie.site', 'https://api.bizgenie.site', EVENTS],
+    ]);
+    assert.equal(f.puts.length, 0);
+  } finally { await f.pg.close(); }
+});
+
+test('empty or non-https PUBLIC_BASE_URL is an error before anything is read or written', async () => {
+  for (const base of ['', 'http://api.bizgenie.site', 'not a url']) {
+    const f = await fixture({ a: { status: ['WORKING'], events: ['message'] } }, base);
+    try {
+      await assert.rejects(f.service.syncAllWebhookEvents(undefined, { pauseMs: 0 }), /public_base_url_invalid/);
+      await assert.rejects(f.service.syncWebhookEvents(f.tenants[0]!), /public_base_url_invalid/);
+      assert.equal(f.puts.length, 0);
+    } finally { await f.pg.close(); }
+  }
+});
+

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { once } from 'node:events';
+import { request } from 'node:http';
 import { encryptCredential } from '../utils/crypto.js';
 
 process.env.SUPABASE_URL = 'https://database.invalid';
@@ -48,6 +49,18 @@ test('webhook authenticates before writes, returns 5xx on persistence failure an
     assert.equal(accepted.status, 200);
     assert.equal(saved, 1);
     assert.deepEqual(await accepted.json(), { received: true });
+    // During the domain move WAHA may call either hostname: nothing in auth or intake depends on Host.
+    for (const host of ['leya.bizgenie.site', 'api.bizgenie.site']) {
+      const status = await new Promise<number>((resolve, reject) => {
+        const body = JSON.stringify({ id: `event-${host}`, event: 'message', payload: { id: `inbound-${host}`, from: '972500000001@c.us', fromMe: false, hasMedia: false, body: 'x' } });
+        const req = request({ host: '127.0.0.1', port: address.port, path: '/webhook/123e4567-e89b-42d3-a456-426614174000', method: 'POST',
+          headers: { Host: host, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'X-Webhook-Token': 'tenant-secret' } },
+        res => { res.resume(); resolve(res.statusCode ?? 0); });
+        req.on('error', reject); req.end(body);
+      });
+      assert.equal(status, 200, host);
+    }
+    assert.equal(saved, 3);
   } finally {
     server.close(); server.closeAllConnections();
     globalThis.fetch = originalFetch;

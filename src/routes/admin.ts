@@ -38,11 +38,13 @@ function queryTenantId(value: unknown): string {
   return value;
 }
 
-// Operator tool: move existing sessions to the target webhook events. Restarts each running session (no QR).
+// Operator tool: move existing sessions to the target webhook events and URL. Restarts each running session (no QR).
+// `?dryRun=1` reports the planned change without touching WAHA.
 adminRouter.post("/waha/sync-webhooks", async (request, response) => {
   const tenantId = request.query.tenantId === undefined ? undefined : queryTenantId(request.query.tenantId);
+  const dryRun = request.query.dryRun === "1" || request.query.dryRun === "true";
   response.setHeader("Cache-Control", "no-store");
-  response.json(await waha.syncAllWebhookEvents(tenantId));
+  response.json(await waha.syncAllWebhookEvents(tenantId, { dryRun }));
 });
 adminRouter.post("/waha/create", async (request, response) => {
   const tenantId = requiredString(objectBody(request.body), "tenantId");
