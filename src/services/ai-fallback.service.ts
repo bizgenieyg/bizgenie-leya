@@ -26,6 +26,14 @@ export const REPLY_PRINCIPLES = `ПРИНЦИПЫ ОТВЕТА:
 7. Цена: если она есть в базе — «от N» и что входит; если есть пробный период или гарантия — упомяни. «Зависит» без цифры, когда цифра в базе есть, запрещено.
 8. Ничего не выдумывай: только факты базы и профиля клиента.`;
 
+/** Owner rules (task S) follow the reply principles; examples show the manner, never facts. */
+export function assistantGuidance(context:Pick<TenantContext,'assistantRules'|'assistantExamples'>):string{
+  const rules=context.assistantRules?.length?`\nПРАВИЛА ВЛАДЕЛЬЦА (выполняй, если не противоречат правилам выше):\n${context.assistantRules.map(r=>`- ${r}`).join('\n')}`:'';
+  const examples=context.assistantExamples?.length?`\nВ assistantExamples — примеры ответов в манере владельца: перенимай тон и длину, но факты бери только из базы.`:'';
+  return rules+examples;
+}
+const hasKnowledge=(context:TenantContext)=>context.knowledge.length>0||!!context.materials?.length||!!context.businessProfile?.trim();
+
 /** How the model introduces itself: never as "the owner's assistant" and never by the owner's name. */
 export function selfIntroduction(context:Pick<TenantContext,'business'>):string{
   const business=context.business?.business_name?.trim();
@@ -37,7 +45,7 @@ export const ANSWER_RULES = `Общий вопрос («что вы делает
 Конкретный вопрос (цена, наличие, запись): сначала прямой ответ по базе. Если цена зависит от параметров — назови диапазон из базы и задай один вопрос о параметре. Ответ «зависит» без цифры запрещён, если цифра в базе есть.
 Встречу или запись предлагай, только если клиент сам попросил, подтвердил интерес (например «да, нам это надо», вопрос о сроках или цене) или вопрос требует индивидуальной оценки. Предлагай с пользой для клиента, например «покажу за 20 минут, как это будет работать у вас». После отказа в этом разговоре встречу больше не предлагай.`;
 
-export const KNOWLEDGE_SYSTEM_PROMPT = `Отвечай ТОЛЬКО на основе предоставленной базы знаний (пары вопрос-ответ и материалы).
+export const KNOWLEDGE_SYSTEM_PROMPT = `Отвечай ТОЛЬКО на основе предоставленной базы знаний (пары вопрос-ответ и материалы или профиль бизнеса businessProfile — факты по темам).
 Никогда не выдумывай цены, сроки, условия, наличие и любые факты о товарах, услугах и работе бизнеса. Не дополняй контекст общими знаниями модели.
 Отвечай на языке сообщения клиента (иврит, русский или английский).
 ${SHORT_REPLY_RULES}
@@ -112,10 +120,10 @@ function sectorContext(context:TenantContext):string {
 export async function generateKnowledgeReplyResult(context: TenantContext, text: string, ai: AIProvider | null = createAIProvider(), agentPrompt='',memory:ConversationMemory[]=[],introduced=false,responseLanguage=languageOf(text),extras:ReplyExtras={}): Promise<KnowledgeReplyResult> {
   // No model is an outage, never a knowledge gap; an empty base with a working model is a gap.
   if (!ai) return {reply:null,missingKnowledge:false,unanswered:[],failure:'missing_api_key'};
-  if (!modelUnavailable(ai) && context.knowledge.length === 0 && !context.materials?.length) return {reply:null,missingKnowledge:true,unanswered:[]};
+  if (!modelUnavailable(ai) && !hasKnowledge(context)) return {reply:null,missingKnowledge:true,unanswered:[]};
   try {
     const result = await ai.generateReply({
-      systemPrompt: KNOWLEDGE_SYSTEM_PROMPT + sectorContext(context) + `\nЯзык этого ответа: ${responseLanguage}. Это обязательное требование; не выбирай язык по настройкам ассистента или истории.\nИстория текущего диалога дана только для контекста. ${introduced?'Ассистент уже представлялся: не приветствуй клиента и не представляйся снова.':`Это первый ответ ассистента: представься одной короткой фразой как ${selfIntroduction(context)} и сразу отвечай по делу.`}` + conversationRules(extras) + (agentPrompt ? "\n"+agentPrompt : ""),
+      systemPrompt: KNOWLEDGE_SYSTEM_PROMPT + sectorContext(context) + `\nЯзык этого ответа: ${responseLanguage}. Это обязательное требование; не выбирай язык по настройкам ассистента или истории.\nИстория текущего диалога дана только для контекста. ${introduced?'Ассистент уже представлялся: не приветствуй клиента и не представляйся снова.':`Это первый ответ ассистента: представься одной короткой фразой как ${selfIntroduction(context)} и сразу отвечай по делу.`}` + conversationRules(extras) + assistantGuidance(context) + (agentPrompt ? "\n"+agentPrompt : ""),
       userMessage: JSON.stringify({
         businessIdentity: context.business ?? null,
         clientProfile: extras.clientProfile ?? '',
@@ -125,6 +133,8 @@ export async function generateKnowledgeReplyResult(context: TenantContext, text:
           tone: context.assistant.tone,
           style: context.assistant.style_profile_md,
         } : null,
+        ...(context.assistantExamples?.length ? { assistantExamples: context.assistantExamples } : {}),
+        ...(context.businessProfile !== undefined ? { businessProfile: context.businessProfile } : {}),
         knowledge: context.knowledge.map(item => ({ question: item.question, answer: item.answer })),
         uploadedMaterials: context.materials?.map(item=>({source:item.file_name,text:item.content}))??[],
         conversationHistory: memory.map(item=>({role:item.fromMe?'assistant':'customer',text:item.text})),
@@ -167,12 +177,12 @@ export async function generateKnowledgeReply(context: TenantContext, text: strin
 export async function generateReceptionReply(context:TenantContext,text:string,clarification:string,ai:AIProvider|null,memory:ConversationMemory[],introduced:boolean,responseLanguage=languageOf(text),extras:ReplyExtras={}):Promise<{reply:string|null;escalate:boolean;request?:OwnerRequest|null;profile?:string[]|null;profileAnswers?:number[];failure?:string;intent?:'sale'|'support'|'unknown';unanswered?:string[];clientName?:string|null;consent?:boolean|null}> {
  if(!ai)return{reply:null,escalate:true,failure:'missing_api_key'};
  try{
-  const result=await ai.generateReply({systemPrompt:`Ты дружелюбный цифровой ассистент бизнеса. В businessIdentity переданы имя владельца и название бизнеса из настроек. Название бизнеса называй точно; имя владельца — только когда говоришь, кто свяжется с клиентом.${sectorContext(context)} Соблюдай стиль владельца: ${context.assistant?.style_profile_md||'дружелюбно и по делу'}. Веди естественную короткую беседу и постарайся понять задачу клиента из его слов. Отвечай по базе знаний. Если деталей недостаточно, задай уместный вопрос по существу: что именно нужно, для какого бизнеса, товара, услуги или ситуации. Не проси клиента выбирать отдел, направление или внутреннюю роль и не описывай устройство системы. Не превращай разговор в анкету и не повторяй один вопрос в каждой реплике. Факты о бизнесе, цены, сроки и условия бери ТОЛЬКО из базы знаний; ничего не выдумывай. Если клиент прямо просит владельца, вопрос требует решения вне компетенции бота или разговор явно зашёл в тупик, верни "reply": "ESCALATE_OWNER". Когда цель становится понятна, продолжай без объявления о внутренней передаче. Естественный ориентир для первого продолжения: ${clarification}. Язык этого ответа: ${responseLanguage}; это обязательное требование, не выбирай язык по настройкам ассистента или истории. ${SHORT_REPLY_RULES} Без угловых скобок. Ты цифровой ассистент и не выдаёшь себя за владельца.${conversationRules(extras)}
+  const result=await ai.generateReply({systemPrompt:`Ты дружелюбный цифровой ассистент бизнеса. В businessIdentity переданы имя владельца и название бизнеса из настроек. Название бизнеса называй точно; имя владельца — только когда говоришь, кто свяжется с клиентом.${sectorContext(context)} Соблюдай стиль владельца: ${context.assistant?.style_profile_md||'дружелюбно и по делу'}. Веди естественную короткую беседу и постарайся понять задачу клиента из его слов. Отвечай по базе знаний (knowledge, uploadedMaterials или профиль бизнеса businessProfile). Если деталей недостаточно, задай уместный вопрос по существу: что именно нужно, для какого бизнеса, товара, услуги или ситуации. Не проси клиента выбирать отдел, направление или внутреннюю роль и не описывай устройство системы. Не превращай разговор в анкету и не повторяй один вопрос в каждой реплике. Факты о бизнесе, цены, сроки и условия бери ТОЛЬКО из базы знаний; ничего не выдумывай. Если клиент прямо просит владельца, вопрос требует решения вне компетенции бота или разговор явно зашёл в тупик, верни "reply": "ESCALATE_OWNER". Когда цель становится понятна, продолжай без объявления о внутренней передаче. Естественный ориентир для первого продолжения: ${clarification}. Язык этого ответа: ${responseLanguage}; это обязательное требование, не выбирай язык по настройкам ассистента или истории. ${SHORT_REPLY_RULES} Без угловых скобок. Ты цифровой ассистент и не выдаёшь себя за владельца.${conversationRules(extras)}
 ${ANSWER_RULES}
-${REPLY_PRINCIPLES}
+${REPLY_PRINCIPLES}${assistantGuidance(context)}
 НАМЕРЕНИЕ. Определи намерение клиента по этому сообщению и переписке: "sale" — интерес к услугам, товарам, ценам, условиям, записи; "support" — вопрос по уже полученной услуге или заказу, проблема, жалоба, изменение или отмена; "unknown" — приветствие, благодарность, светская беседа или смысл неясен. Сомневаешься — "unknown".
 Сообщение клиента может содержать несколько вопросов: на те, что есть в базе, ответь в reply; каждый вопрос, конкретного ответа на который в базе нет и уточнение не поможет, добавь в unanswered кратко, словами клиента (система передаст его владельцу). Не пиши, что уточнишь у владельца.
-Верни строго JSON: {"reply": "текст клиенту или null", "unanswered": [], "request": null, "profile": null, "intent": "sale|support|unknown", "client_name": null, "consent": null}. ${introduced?'Ассистент уже представлялся: не приветствуй и не представляйся снова.':`Представься одной короткой фразой как ${selfIntroduction(context)} и сразу переходи к делу.`}`,userMessage:JSON.stringify({businessIdentity:context.business??null,clientProfile:extras.clientProfile??'',knowledge:context.knowledge.map(x=>({question:x.question,answer:x.answer})),uploadedMaterials:context.materials?.map(x=>({source:x.file_name,text:x.content}))??[],conversationHistory:memory.map(x=>({role:x.fromMe?'assistant':'customer',text:x.text})),customerMessage:text,responseLanguage})});
+Верни строго JSON: {"reply": "текст клиенту или null", "unanswered": [], "request": null, "profile": null, "intent": "sale|support|unknown", "client_name": null, "consent": null}. ${introduced?'Ассистент уже представлялся: не приветствуй и не представляйся снова.':`Представься одной короткой фразой как ${selfIntroduction(context)} и сразу переходи к делу.`}`,userMessage:JSON.stringify({businessIdentity:context.business??null,...(context.assistantExamples?.length?{assistantExamples:context.assistantExamples}:{}),clientProfile:extras.clientProfile??'',...(context.businessProfile!==undefined?{businessProfile:context.businessProfile}:{}),knowledge:context.knowledge.map(x=>({question:x.question,answer:x.answer})),uploadedMaterials:context.materials?.map(x=>({source:x.file_name,text:x.content}))??[],conversationHistory:memory.map(x=>({role:x.fromMe?'assistant':'customer',text:x.text})),customerMessage:text,responseLanguage})});
   if(result.text.includes('ESCALATE_OWNER'))return{reply:null,escalate:true};
   const parsed=parseKnowledgeReply(result.text);
   const intent=parsed.intent??'unknown',named={clientName:parsed.clientName??null,consent:parsed.consent??null};

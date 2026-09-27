@@ -70,6 +70,22 @@ export const BEHAVIOR_DEFAULTS = {
   request_offer_turns: 2,
   /** The same call to action (demo, booking, passing to the owner) at most once per this many client turns. */
   cta_min_gap_turns: 3,
+  /** Where answers take knowledge from (task R): 'legacy' — Q&A pairs and files, 'facts' — the business profile. */
+  knowledge_mode: 'legacy' as 'legacy' | 'facts',
+  /** A new fact at least this similar (cosine) to an active fact of the same topic is a duplicate. */
+  fact_duplicate_threshold: 0.92,
+  /** Facts found by embeddings (non-core topics) when the whole profile does not fit knowledge_full_context_chars. */
+  facts_search_results: 12,
+  /** Longest pasted text for "Добавить что угодно". */
+  source_text_max_chars: 50_000,
+  /** Long sources are extracted in parts of about this many characters. */
+  extraction_chunk_chars: 20_000,
+  /** Links: download timeout, page size and how many inner pages of the same site are read. */
+  link_timeout_seconds: 15,
+  link_max_bytes: 2 * 1024 * 1024,
+  link_max_pages: 5,
+  /** Open improvement cards per tenant. */
+  audit_max_open_cards: 10,
 };
 // Message storage retention: floor for behavior.message_retention_days, and daily sweep cadence.
 export const MESSAGE_RETENTION_MIN_DAYS = 7;

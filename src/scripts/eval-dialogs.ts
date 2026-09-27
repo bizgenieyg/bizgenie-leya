@@ -8,7 +8,7 @@ const runs = Math.max(1, Number(arg('runs') ?? 1));
 const file = arg('file') ?? 'evals/dialogs.yaml';
 
 /**
- * npm run eval:dialogs -- [--live --tenant=<uuid|prefix>] [--runs=3]
+ * npm run eval:dialogs -- [--live --tenant=<uuid|prefix>] [--runs=3] [--knowledge=facts]
  * Without --live: the scenarios run on a stand-in model in a throwaway PGlite database (no cost,
  * no production data). With --live: the real model on the given tenant, temporary simulator sessions.
  */
@@ -36,6 +36,12 @@ async function main() {
     await pg.query("insert into tenant_usage_limits(tenant_id,plan,messages_per_month,voice_minutes_per_month,warning_percent,messages_overridden,voice_overridden,warning_overridden) values($1,'basic',500,60,80,false,false,false)", [tenant]);
     await pg.query("insert into assistant_profiles(tenant_id,assistant_name,allowed_languages,tone) values($1,'Лея',array['ru','he','en'],'friendly_professional')", [tenant]);
     await pg.query("insert into knowledge_items(tenant_id,type,question,answer,active) values($1,'faq','Сколько стоит подключение?','Подключение 1500 ₪.',true)", [tenant]);
+    // --knowledge=facts: the same base as one business fact, answers in knowledge_mode='facts' (task R comparison).
+    if (arg('knowledge') === 'facts') {
+      await pg.query("insert into business_facts(tenant_id,topic,text,status,created_by) values($1,'services_prices','Подключение 1500 ₪.','active','migration')", [tenant]);
+      const { saveRuntimeSettings } = await import('../services/runtime-settings.service.js');
+      await saveRuntimeSettings(db, tenant, { knowledge_mode: 'facts' });
+    }
     console.log('Offline run on a stand-in model (add --live --tenant=… for the real model)');
     summary = await runDialogEval(db, tenant, scenarios, scriptedModel(), runs, line => console.log(line));
     await pg.close();

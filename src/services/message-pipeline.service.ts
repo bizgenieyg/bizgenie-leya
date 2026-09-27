@@ -8,6 +8,7 @@ import type { OwnerSettings } from './owner-settings.service.js';
 import { loadContext } from './context.service.js';
 import { findExactKnowledgeAnswer } from './knowledge.service.js';
 import { loadKnowledgeMaterials } from './knowledge-context.service.js';
+import { loadFactsContext } from './reply-context.service.js';
 import { meterAI } from './metered-providers.js';
 import { behavior } from './runtime-settings.service.js';
 import { agentIntent, asksListedQuestion, discoveryGate, markAnswered, normalizeDialogState, replyQuestions, untilFirstQuestion, type DialogState, type DiscoveryGate } from './dialog-state.js';
@@ -236,6 +237,9 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
   state.client_turns += 1;
   if (state.stage === 'request' || state.stage === 'greeting') state.stage = state.intent === 'unknown' ? 'intent_unknown' : 'intent_known';
 
+  // knowledge_mode='facts' (task R): answers use only the business profile — no Q&A pairs, no raw files.
+  const factsMode = config.knowledge_mode === 'facts';
+  if (factsMode) context.knowledge = [];
   const exact = findExactKnowledgeAnswer(question, context.knowledge);
   if (exact.matched) return agentContext.run({ agent: conversation.routed_agent ?? 'CORE' }, async () => {
     await sink.recordUsage('message_received', { eventKey: usageKey });
@@ -260,8 +264,11 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
     return finish(result(reply, 'answered'));
   });
 
-  const knowledge = await loadKnowledgeMaterials(db, tenantId, question, context, settings);
-  context.materials = knowledge.materials;
+  const knowledge = factsMode ? await loadFactsContext(db, tenantId, question, settings, input.embedder ?? null) : await loadKnowledgeMaterials(db, tenantId, question, context, settings);
+  if ('businessProfile' in knowledge) {
+    context.materials = []; context.businessProfile = knowledge.businessProfile;
+    context.assistantRules = knowledge.assistantRules; context.assistantExamples = knowledge.assistantExamples;
+  } else context.materials = knowledge.materials;
   // Answer-model calls carry the knowledge size/mode to compare quality and cost after rollout.
   const knowledgeModel = meterAI(db, tenantId, model, { knowledge_chars: knowledge.chars, knowledge_mode: knowledge.mode });
   const route = await routeConversation(db, tenantId, conversation, question, settings, ai, undefined, firstInWindow, sink.mode === 'whatsapp');

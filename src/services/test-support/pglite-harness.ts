@@ -75,6 +75,7 @@ const MIGRATIONS_IN_APPLICATION_ORDER = [
   '20260924220000_058_escalation_client_phone.sql',
   '20260925090000_059_owner_requests_client_profiles.sql',
   '20260926090000_060_dialog_state_model_unavailable.sql',
+  '20260927120000_061_business_knowledge_profile.sql',
 ];
 
 /** PGlite has no real `auth` schema/GoTrue; stub just enough for RLS-authoring
@@ -101,6 +102,9 @@ function pgliteCompatible(sql: string): string {
     .replace(/create index[^;]*using hnsw[^;]*;/g, '')
     .replace(/create or replace function public\.match_knowledge_chunks\([\s\S]*?\$\$;/, () => `create or replace function public.match_knowledge_chunks(p_tenant_id uuid,p_embedding real[],p_embedding_model text,p_threshold double precision,p_limit integer)
 returns table(id uuid,document_id uuid,file_name text,content text,similarity double precision) language sql stable as $$ select null::uuid,null::uuid,null::text,null::text,null::double precision where false $$;`)
+    .replace(/create or replace function public\.match_business_facts\([\s\S]*?\$\$;/, () => `create or replace function public.match_business_facts(p_tenant_id uuid,p_embedding real[],p_embedding_model text,p_limit integer)
+returns table(id uuid,topic text,text text,similarity double precision) language sql stable as $$ select null::uuid,null::text,null::text,null::double precision where false $$;`)
+    .replace(/grant execute on function public\.match_business_facts\([^;]*;/, '')
     .replace(/extensions\.vector\(\d+\)/g, 'real[]')
     .replace(/extensions\.vector/g, 'real[]');
 }

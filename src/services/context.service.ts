@@ -17,6 +17,11 @@ export interface TenantContext {
   business?: { owner_name:string; business_name:string; language:string | null; business_sector?:string } | null;
   knowledge: KnowledgeCandidate[];
   materials?: Array<{content:string;file_name:string;similarity:number}>;
+  /** knowledge_mode='facts' (task R): business profile (markdown by topic) instead of Q&A pairs and files. */
+  businessProfile?: string;
+  /** Owner rules for the assistant and example replies (filled in tasks S/T; empty — no effect). */
+  assistantRules?: string[];
+  assistantExamples?: Array<{client:string;reply:string}>;
 }
 
 export interface ConversationMemory { fromMe:boolean; text:string; createdAt:string; }

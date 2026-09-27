@@ -13,6 +13,7 @@ import { resetTenantCustomerDataAfterNumberChange } from '../services/tenant-res
 import express, { Router } from "express";
 
 import { WahaAdminService } from "../services/waha-admin.service.js";
+import { knowledgeProfileRouter } from "./knowledge-profile.js";
 import { isUuid } from "../services/tenant.service.js";
 import { requireAdmin } from "../utils/admin-auth.js";
 import { HttpError } from "../utils/http-error.js";
@@ -30,6 +31,7 @@ const waha = new WahaAdminService();
 
 export const adminRouter = Router();
 adminRouter.use(requireAdmin);
+adminRouter.use(knowledgeProfileRouter);
 
 function queryTenantId(value: unknown): string {
   if (typeof value !== "string" || !isUuid(value)) {

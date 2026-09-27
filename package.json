@@ -12,7 +12,10 @@
     "test": "node scripts/run-tests.mjs fast",
     "start": "node dist/server.js",
     "test:integration": "node scripts/run-tests.mjs full",
-    "eval:dialogs": "npm run build && node dist/scripts/eval-dialogs.js"
+    "eval:dialogs": "npm run build && node dist/scripts/eval-dialogs.js",
+    "check:task-model": "npm run build && node dist/scripts/check-task-model.js",
+    "knowledge:migrate": "npm run build && node dist/scripts/knowledge-migrate.js",
+    "knowledge:audit": "npm run build && node dist/scripts/knowledge-audit.js"
   },
   "engines": {
     "node": ">=20"

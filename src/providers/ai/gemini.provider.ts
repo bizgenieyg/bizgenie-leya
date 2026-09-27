@@ -3,9 +3,12 @@ import { recordModelOutcome } from "../../services/model-health.service.js";
 import type { AIProvider, AIReplyInput, AIReplyResult } from "./ai-provider.interface.js";
 
 export const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite";
+/** One-off tasks (fact extraction, audit, classification): a stronger model, longer output and time. */
+export const DEFAULT_GEMINI_TASK_MODEL = "gemini-3.8-flash";
+export interface GeminiOptions { maxOutputTokens?: number; timeoutMs?: number; attemptTimeoutMs?: number }
 
 export class GeminiProvider implements AIProvider {
-  constructor(private readonly apiKey: string, private readonly model = DEFAULT_GEMINI_MODEL) {}
+  constructor(private readonly apiKey: string, private readonly model = DEFAULT_GEMINI_MODEL, private readonly options: GeminiOptions = {}) {}
 
   async generateReply(input: AIReplyInput): Promise<AIReplyResult> {
     let usage: AIUsage = { model: this.model };
@@ -21,7 +24,7 @@ export class GeminiProvider implements AIProvider {
       return new Error(reason);
     };
     try {
-      const overall = AbortSignal.timeout(20_000);
+      const overall = AbortSignal.timeout(this.options.timeoutMs ?? 20_000);
       let response: Response | undefined;
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
@@ -29,11 +32,11 @@ export class GeminiProvider implements AIProvider {
             method: "POST",
             headers: { "Content-Type": "application/json", "x-goog-api-key": this.apiKey },
             redirect: "error",
-            signal: AbortSignal.any([overall, AbortSignal.timeout(9_000)]),
+            signal: AbortSignal.any([overall, AbortSignal.timeout(this.options.attemptTimeoutMs ?? 9_000)]),
             body: JSON.stringify({
               systemInstruction: { parts: [{ text: input.systemPrompt }] },
-              contents: [{ role: "user", parts: [{ text: input.userMessage }] }],
-              generationConfig: { maxOutputTokens: 1024 },
+              contents: [{ role: "user", parts: [{ text: input.userMessage }, ...(input.images ?? []).map(image => ({ inlineData: { mimeType: image.mimeType, data: image.data } }))] }],
+              generationConfig: { maxOutputTokens: this.options.maxOutputTokens ?? 1024 },
             }),
           });
         } catch {

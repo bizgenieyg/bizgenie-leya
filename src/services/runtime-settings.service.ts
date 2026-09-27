@@ -94,6 +94,15 @@ export function validateRuntimePatch(input:Record<string,unknown>) {
   else if(key==='repeat_window')behaviorPatch[key]=integer(key,value,1,10);
   else if(key==='request_offer_turns')behaviorPatch[key]=integer(key,value,1,10);
   else if(key==='cta_min_gap_turns')behaviorPatch[key]=integer(key,value,1,20);
+  else if(key==='knowledge_mode'){if(value!=='legacy'&&value!=='facts')throw new HttpError(400,'Invalid knowledge mode');behaviorPatch[key]=value;}
+  else if(key==='fact_duplicate_threshold'){if(typeof value!=='number'||value<0.5||value>1)throw new HttpError(400,'Invalid duplicate threshold');behaviorPatch[key]=value;}
+  else if(key==='facts_search_results')behaviorPatch[key]=integer(key,value,1,50);
+  else if(key==='source_text_max_chars')behaviorPatch[key]=integer(key,value,1000,200000);
+  else if(key==='extraction_chunk_chars')behaviorPatch[key]=integer(key,value,2000,100000);
+  else if(key==='link_timeout_seconds')behaviorPatch[key]=integer(key,value,1,60);
+  else if(key==='link_max_bytes')behaviorPatch[key]=integer(key,value,10000,20*1024*1024);
+  else if(key==='link_max_pages')behaviorPatch[key]=integer(key,value,0,10);
+  else if(key==='audit_max_open_cards')behaviorPatch[key]=integer(key,value,1,50);
   else if(key==='history_fetch_limit')behaviorPatch[key]=integer(key,value,0,100);
   else if(key==='history_max_characters')behaviorPatch[key]=integer(key,value,0,50000);
   else if(key==='history_timeout_seconds'||key==='lid_lookup_timeout_seconds')behaviorPatch[key]=integer(key,value,1,30);
