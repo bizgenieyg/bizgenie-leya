@@ -6,6 +6,7 @@ import { settleAllOutboundQueues, stopOutboundQueue } from '../workers/outbound-
 import { AIProviderError } from '../providers/ai/ai-provider.interface.js';
 import { simulateCustomerMessage } from './simulator.service.js';
 import { saveRuntimeSettings, readRuntimeSettings } from './runtime-settings.service.js';
+import { invalidateOwnerSettings } from './owner-settings.service.js';
 process.env.GEMINI_API_KEY = '';
 process.env.SUPABASE_URL = 'https://database.invalid';
 process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-only';
@@ -50,7 +51,7 @@ test('bare greeting: owner template, zero model calls; the known client gets the
   try {
     await f.send('m1', 'Привет!');
     assert.equal(f.prompts.length, 0);
-    assert.equal(f.toClient()[0]!.text, 'Здравствуйте! Это Гоша, ассистент Юрия. Чем могу помочь?');
+    assert.equal(f.toClient()[0]!.text, 'Здравствуйте, Марина! Это Гоша, цифровой ассистент. Чем могу помочь?');
     assert.equal((await f.state()).stage, 'intent_unknown');
     assert.equal((await f.state()).client_turns, 0);
     await f.send('m2', 'добрый вечер');
@@ -145,7 +146,11 @@ test('owner greeting templates are editable in the cabinet and can be reset to d
     await saveRuntimeSettings(f.db, f.tenantId, { greeting_templates: { 'client.greeting': {} } });
     settings = await readRuntimeSettings(f.db, f.tenantId);
     assert.deepEqual(settings.greeting_templates['client.greeting'], {});
-    assert.equal(settings.greeting_template_defaults['client.greeting']!.ru, 'Здравствуйте! Это {assistant_name}, ассистент {owner_name}. Чем могу помочь?');
+    assert.equal(settings.greeting_template_defaults['client.greeting']!.ru, 'Здравствуйте{, client_first_name}! Это {assistant_name}, цифровой ассистент. Чем могу помочь?');
+    // A stored copy of the old default is shown as "not edited", so the cabinet offers the new default.
+    await f.pg.query(`update notification_settings set templates=jsonb_build_object('client.greeting',jsonb_build_object('ru','Здравствуйте! Это {assistant_name}, ассистент {owner_name}. Чем могу помочь?')) where tenant_id=$1`, [f.tenantId]);
+    invalidateOwnerSettings(f.db, f.tenantId);
+    assert.deepEqual((await readRuntimeSettings(f.db, f.tenantId)).greeting_templates['client.greeting'], {});
   } finally { await f.close(); }
 });
 
@@ -217,5 +222,132 @@ test('no model key: "какие услуги?" escalates as an outage (missing_a
     assert.deepEqual(reasons, ['missing_api_key']);
     assert.ok(alerts.includes('model_down'), 'counted by the model health alert');
     resetModelHealth();
+  } finally { await f.close(); }
+});
+
+// Task Q: an owner request only after a direct request or the client's "yes" to an offer.
+const requests = async (f: Awaited<ReturnType<typeof fixture>>) => Number((await f.pg.query<{ n: string }>("select count(*)::text as n from escalations where kind='request'")).rows[0]!.n);
+
+test('"по объявлениям" is not a request: the assistant asks for consent (and a name); "да" creates it without a model call', async () => {
+  const f = await fixture();
+  try {
+    f.reply({ reply: 'Ассистент сам ответит тем, кто пишет по объявлению, даже ночью. Это вам подходит?', unanswered: [], intent: 'sale',
+      request: { summary: 'Клиенты приходят по объявлениям, хочет автоматизацию', topic: 'ответы клиентам по объявлениям', time: null } });
+    await f.send('m1', 'по объявлениям', 'Мама');
+    assert.equal(await requests(f), 0, 'no request without consent');
+    const offer = f.toClient().at(-1)!.text;
+    assert.match(offer, /^Ассистент сам ответит тем, кто пишет по объявлению, даже ночью\./);
+    assert.match(offer, /Передать Юрия, чтобы связался с вами по поводу «ответы клиентам по объявлениям»\? И как к вам обращаться\?$/);
+    assert.doesNotMatch(offer, /Мама|подходит\?/, 'the model question is dropped, "Мама" is never a name');
+    assert.equal(((await f.state()).pending_offer as { turns_left: number }).turns_left, 2);
+    const calls = f.prompts.length;
+    await f.send('m2', 'да, Аня', 'Мама');
+    assert.equal(f.prompts.length, calls, 'consent needs no model call');
+    assert.equal(await requests(f), 1);
+    assert.equal(f.toClient().at(-1)!.text, 'Спасибо, Аня! Передала вашу заявку — Юрия свяжется с вами.');
+    assert.equal((await f.state()).pending_offer, undefined);
+    assert.equal((await f.state()).client_name, 'Аня');
+  } finally { await f.close(); }
+});
+
+test('"хочу демо" is a direct request: created at once; "не надо звонить" is not', async () => {
+  const f = await fixture();
+  try {
+    f.reply({ reply: null, unanswered: [], intent: 'sale', request: { summary: 'Не надо звонить', time: null } });
+    await f.send('m1', 'не надо звонить, просто напишите');
+    assert.equal(await requests(f), 0);
+    f.reply({ reply: null, unanswered: [], intent: 'sale', request: { summary: 'Хочет демо', time: null } });
+    await f.send('m2', 'хочу демо');
+    assert.equal(await requests(f), 1);
+    assert.equal(f.toClient().at(-1)!.text, 'Спасибо, Марина! Передала вашу заявку — Юрия свяжется с вами.');
+  } finally { await f.close(); }
+});
+
+test('"нет" to the offer: no request and no second offer; an unanswered offer lapses after two client turns', async () => {
+  const f = await fixture();
+  try {
+    const wants = { reply: 'Покажу, как это выглядит у вас.', unanswered: [], intent: 'sale', request: { summary: 'Интерес к ассистенту', topic: 'ассистент', time: null } };
+    f.reply(wants);
+    await f.send('m1', 'интересно');
+    assert.ok((await f.state()).pending_offer);
+    f.reply({ reply: 'Хорошо, если появятся вопросы — пишите.', unanswered: [], intent: 'sale' });
+    await f.send('m2', 'нет, не сейчас');
+    assert.equal((await f.state()).offer_declined, true);
+    assert.equal((await f.state()).pending_offer, undefined);
+    f.reply({ ...wants, reply: 'Подключение 1500 ₪.' });
+    await f.send('m3', 'а цена какая');
+    assert.equal(f.toClient().at(-1)!.text, 'Подключение 1500 ₪.', 'no second offer after a decline');
+    assert.equal(await requests(f), 0);
+
+    const g = await fixture();
+    try {
+      g.reply(wants);
+      await g.send('m1', 'интересно');
+      g.reply({ reply: 'Работает в WhatsApp.', unanswered: [], intent: 'sale' }, { reply: 'Настройка за день.', unanswered: [], intent: 'sale' });
+      await g.send('m2', 'а как это работает');
+      assert.equal(((await g.state()).pending_offer as { turns_left: number }).turns_left, 1);
+      await g.send('m3', 'а сколько настраивать');
+      assert.equal((await g.state()).pending_offer, undefined, 'lapsed after two client turns');
+      await g.send('m4', 'да');
+      assert.equal(await requests(g), 0, 'a late "да" is not consent');
+    } finally { await g.close(); }
+  } finally { await f.close(); }
+});
+
+test('a paraphrased repeat of one of the last three replies (27.09 dialog) is regenerated once, then goes to the owner', async () => {
+  const f = await fixture();
+  try {
+    const session = crypto.randomUUID();
+    // Fixture embeddings: the two "напишите «хочу демо»" calls from the 27.09 dialog are near-identical in meaning.
+    const vectors: Record<string, number[]> = {
+      'Мы делаем ассистента, который отвечает клиентам в WhatsApp. Напишите «хочу демо», и мы покажем.': [1, 0, 0],
+      'Если интересно посмотреть, как это работает, просто напишите «хочу демо».': [0.97, 0.24, 0],
+      'Для аренды авто ассистент ответит на вопросы о цене и свободных машинах сразу, даже ночью.': [0.2, 0.1, 0.97],
+    };
+    const embedder = { model: 'fixture', dimensions: 3, async embed(texts: string[]) { return { vectors: texts.map(t => vectors[t] ?? [0, 1, 0]) }; } };
+    const run = (text: string) => simulateCustomerMessage(f.db, f.tenantId, session, text, f.ai as never, { evaluation: {}, embedder });
+    f.reply({ reply: 'Мы делаем ассистента, который отвечает клиентам в WhatsApp. Напишите «хочу демо», и мы покажем.', unanswered: [], intent: 'unknown' });
+    await run('чем вы занимаетесь?');
+    f.reply({ reply: 'Если интересно посмотреть, как это работает, просто напишите «хочу демо».', unanswered: [], intent: 'unknown' },
+      { reply: 'Для аренды авто ассистент ответит на вопросы о цене и свободных машинах сразу, даже ночью.', unanswered: [], intent: 'unknown' });
+    const second = await run('у меня аренда авто, а как это мне поможет?');
+    assert.equal(second.reply, 'Для аренды авто ассистент ответит на вопросы о цене и свободных машинах сразу, даже ночью.');
+    assert.match(f.prompts.at(-1)!, /НЕ ПОВТОРЯЙСЯ/);
+    f.reply({ reply: 'Если интересно посмотреть, как это работает, просто напишите «хочу демо».', unanswered: [], intent: 'unknown' },
+      { reply: 'Если интересно посмотреть, как это работает, просто напишите «хочу демо».', unanswered: [], intent: 'unknown' });
+    const third = await run('а что ещё он умеет?');
+    assert.equal(third.outcome, 'escalated', 'still a repeat after one regeneration: to the owner, never sent');
+    const events = await f.pg.query<{ n: string }>("select count(*)::text as n from usage_events where event_type='embedding_call' and metadata->>'purpose'='repeat_check'");
+    assert.ok(Number(events.rows[0]!.n) >= 1, 'embedding calls are metered, not billable');
+  } finally { await f.close(); }
+});
+
+test('a broken embedding never blocks the reply', async () => {
+  const f = await fixture();
+  try {
+    const session = crypto.randomUUID();
+    const embedder = { model: 'fixture', dimensions: 3, async embed(): Promise<never> { throw new Error('down'); } };
+    f.reply({ reply: 'Первый ответ.', unanswered: [] });
+    await simulateCustomerMessage(f.db, f.tenantId, session, 'вопрос один', f.ai as never, { evaluation: {}, embedder });
+    f.reply({ reply: 'Второй ответ про другое.', unanswered: [] });
+    const r = await simulateCustomerMessage(f.db, f.tenantId, session, 'вопрос два', f.ai as never, { evaluation: {}, embedder });
+    assert.equal(r.reply, 'Второй ответ про другое.');
+  } finally { await f.close(); }
+});
+
+test('meaning-only repeat (no shared call to action, different words) is caught by embeddings and regenerated', async () => {
+  const f = await fixture();
+  try {
+    const session = crypto.randomUUID();
+    const a = 'Ассистент сам отвечает вашим клиентам круглые сутки.', b = 'Он круглосуточно и без вас ведёт переписку с покупателями.', c = 'Подключение занимает один день.';
+    const vectors: Record<string, number[]> = { [a]: [1, 0, 0], [b]: [0.95, 0.31, 0], [c]: [0, 0, 1] };
+    const embedder = { model: 'fixture', dimensions: 3, async embed(texts: string[]) { return { vectors: texts.map(t => vectors[t] ?? [0, 1, 0]) }; } };
+    const run = (text: string) => simulateCustomerMessage(f.db, f.tenantId, session, text, f.ai as never, { evaluation: {}, embedder });
+    f.reply({ reply: a, unanswered: [] });
+    await run('что делает ассистент?');
+    f.reply({ reply: b, unanswered: [] }, { reply: c, unanswered: [] });
+    const second = await run('а подробнее?');
+    assert.equal(second.reply, c);
+    assert.match(f.prompts.at(-1)!, /НЕ ПОВТОРЯЙСЯ[^\n]*Ассистент сам отвечает/);
   } finally { await f.close(); }
 });

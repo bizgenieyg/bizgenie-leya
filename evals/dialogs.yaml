@@ -158,3 +158,102 @@ scenarios:
       - text: hi
         model_calls: 0
         must: ['How can I help\?']
+
+  # ── Задание Q: приветствие без имени владельца, простой язык, шаг в конце, заявка только с согласия ──
+  - id: q-car-rental-ru
+    title: "аренда авто: «по объявлениям» — не заявка; без жаргона и страшилок; каждый ответ со шагом"
+    turns:
+      - text: привет
+        model_calls: 0
+        must: ['цифровой ассистент']
+        must_not: ['ассистент Юри']
+      - text: чем вы занимаетесь?
+        max_questions: 1
+        must_not: ['\bAPI\b', '\bCRM\b', 'интеграц', 'блокир', 'напишите «']
+      - text: у меня аренда авто
+        max_questions: 1
+        must: ['\?\s*$']
+        must_not: ['\bAPI\b', '\bCRM\b', 'блокир', 'напишите «']
+      - text: а как это мне поможет?
+        max_questions: 1
+        must: ['\?\s*$']
+        must_not: ['\bAPI\b', 'блокир', 'напишите «']
+      - text: по объявлениям
+        request: false
+        max_questions: 2
+        must: ['Передать .*\?']
+        must_not: ['Передала вашу заявку', 'блокир']
+
+  - id: q-car-rental-he
+    title: "השכרת רכב: «מודעות» — לא בקשה, קודם שאלת הסכמה"
+    turns:
+      - text: שלום
+        model_calls: 0
+        must: ['עוזרת דיגיטלית']
+      - text: יש לי השכרת רכב
+        must_not: ['API', 'CRM', 'חסימ']
+      - text: איך זה יעזור לי?
+        must_not: ['API', 'חסימ']
+      - text: מודעות
+        request: false
+        must: ['להעביר']
+        must_not: ['העברתי את הבקשה']
+
+  - id: q-just-looking
+    title: "«не знаю, просто смотрю» — типичная проблема → пример → предложение"
+    turns:
+      - text: не знаю, просто смотрю
+        request: false
+        max_questions: 1
+        must: ['\?\s*$']
+        must_not: ['блокир', 'напишите «']
+
+  - id: q-too-expensive
+    title: "«дорого» — согласие, факт, шаг; второе «нет» — без нового предложения"
+    turns:
+      - text: сколько стоит подключение?
+      - text: дорого
+        request: false
+        must: ['1500', '\?\s*$']
+        must_not: ['блокир']
+      - text: нет
+        request: false
+        max_questions: 0
+        must_not: ['демо', 'Передать']
+
+  - id: q-direct-demo
+    title: "«хочу демо» — заявка сразу"
+    turns:
+      - text: хочу демо
+        request: true
+        must: ['Передала вашу заявку']
+
+  - id: q-offer-yes
+    title: "бот предложил передать → «да» → заявка без вызова модели"
+    turns:
+      - text: интересно, расскажите подробнее
+        request: false
+        must: ['Передать .*\?']
+      - text: да
+        request: true
+        model_calls: 0
+        must: ['Передала вашу заявку']
+
+  - id: q-offer-no
+    title: "бот предложил передать → «нет» → нет заявки и нет повторного предложения"
+    turns:
+      - text: интересно, расскажите подробнее
+        request: false
+      - text: нет
+        request: false
+        must_not: ['Передать']
+      - text: интересно, расскажите подробнее
+        request: false
+        must_not: ['Передать']
+
+  - id: q-risks
+    title: "«это надёжно? не заблокируют?» — честно о рисках"
+    turns:
+      - text: это надёжно? не заблокируют?
+        max_questions: 1
+        must: ['блокир']

@@ -47,7 +47,7 @@ function model(replies: Array<Record<string, unknown>>, prompts: Array<{ system:
   return { async generateReply(input: { systemPrompt: string; userMessage: string }) {
     if (input.systemPrompt.includes('классификатор')) return { text: classifier };
     if (input.systemPrompt.startsWith('Ты проверяющий')) return { text: '{"adds_facts":false,"changes_meaning":false}' };
-    if (input.systemPrompt.startsWith('Ты ассистент владельца бизнеса. Владелец ответил')) return { text: 'Юрий ждёт вас в четверг в 11:00.' };
+    if (input.systemPrompt.startsWith('Ты цифровой ассистент бизнеса. Владелец ответил')) return { text: 'Юрий ждёт вас в четверг в 11:00.' };
     if (input.systemPrompt.includes('пополнять базу знаний')) return { text: '{"useful":false}' };
     prompts.push({ system: input.systemPrompt, user: JSON.parse(input.userMessage) });
     return { text: JSON.stringify(replies.shift() ?? { reply: null, unanswered: [] }) };
@@ -61,7 +61,7 @@ test('"хочу демо" becomes one owner request; a repeat extends it silentl
     const ai = model([{ reply: null, unanswered: [], request: { summary: 'Хочет демо ассистента', time: null }, profile: null },
       { reply: 'Уже передала — Юрий свяжется с вами.', unanswered: [], request: { summary: 'Удобно в четверг утром', time: 'четверг утром' }, profile: null }]);
     await f.send(chat, 'm1', 'хочу демо', ai);
-    assert.equal(f.toClient(chat).at(-1)!.text, 'Передала вашу заявку — Юрий свяжется с вами.');
+    assert.equal(f.toClient(chat).at(-1)!.text, 'Спасибо, Дана! Передала вашу заявку — Юрий свяжется с вами.', 'the confirmation uses a usable first name');
     assert.equal(f.toOwner().length, 1);
     assert.equal(f.toOwner()[0]!.text, '📩 Заявка: Дана (+972 50-123-4567)\nХочет демо ассистента\n\nОтветьте реплеем — я передам клиенту.');
     await f.send(chat, 'm2', 'хочу демо, можно в четверг утром?', ai);
@@ -179,7 +179,7 @@ test('a repeated reply is regenerated once and never sent twice; a request inste
     const conv = await g.pg.query<{ id: string }>("with c as (insert into clients(tenant_id,phone,whatsapp_jid) values($1,'972501234567',$2) returning id) insert into conversations(tenant_id,client_id,status,assistant_introduced_at) select $1,id,'active',now() from c returning id", [g.tenantId, chat]);
     await g.pg.query("insert into messages(tenant_id,conversation_id,from_me,body,msg_type) values($1,$2,true,$3,'text')", [g.tenantId, conv.rows[0]!.id, X]);
     await g.send(chat, 'm1', 'хочу демо', model([{ reply: X, unanswered: [] }, { reply: null, unanswered: [], request: { summary: 'Хочет демо', time: null } }]));
-    assert.equal(g.toClient(chat).at(-1)!.text, 'Передала вашу заявку — Юрий свяжется с вами.');
+    assert.equal(g.toClient(chat).at(-1)!.text, 'Спасибо, Дана! Передала вашу заявку — Юрий свяжется с вами.');
     assert.equal((await g.pg.query<{ kind: string }>('select kind from escalations')).rows[0]!.kind, 'request');
   } finally { await g.close(); }
 });
@@ -192,7 +192,7 @@ test('simulator follows the same path: request, repeat and profile stored per si
     const ai = model([{ reply: null, unanswered: [], request: { summary: 'Хочет демо', time: null }, profile: ['интересует демо'] },
       { reply: 'Уже передала — Юрий свяжется с вами.', unanswered: [], request: { summary: 'Хочет демо', time: null } }]);
     const first = await simulateCustomerMessage(f.db, f.tenantId, session, 'хочу демо', ai as never, { root });
-    assert.equal(first.reply, 'Передала вашу заявку — Юрий свяжется с вами.');
+    assert.equal(first.reply, 'Спасибо! Передала вашу заявку — Юрий свяжется с вами.', 'simulator: no name, no empty placeholder');
     assert.equal(first.outcome, 'escalated');
     const second = await simulateCustomerMessage(f.db, f.tenantId, session, 'хочу демо', ai as never, { root });
     assert.equal(second.reply, 'Уже передала — Юрий свяжется с вами.');

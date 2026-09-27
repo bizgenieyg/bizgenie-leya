@@ -86,7 +86,7 @@ test('three questions, one answered from the base: one client message, two owner
     const ai = { async generateReply(input: { systemPrompt: string; userMessage: string }) {
       if (input.systemPrompt.includes('классификатор')) return { text: classifier };
       if (input.systemPrompt.startsWith('Ты проверяющий')) return { text: '{"adds_facts":false,"changes_meaning":false}' };
-      if (input.systemPrompt.startsWith('Ты ассистент владельца бизнеса. Владелец ответил')) return { text: 'Парковка есть во дворе. Оплата картой возможна.' };
+      if (input.systemPrompt.startsWith('Ты цифровой ассистент бизнеса. Владелец ответил')) return { text: 'Парковка есть во дворе. Оплата картой возможна.' };
       if (input.systemPrompt.includes('пополнять базу знаний')) return { text: '{"useful":false}' };
       return { text: '{"reply":"Лендинг стоит от 3000 ₪.","unanswered":["Есть ли парковка?","Можно оплатить картой?"]}' };
     } };

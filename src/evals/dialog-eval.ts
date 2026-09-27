@@ -114,11 +114,26 @@ export function scriptedModel(): AIProvider {
     const message = (() => { try { return String((JSON.parse(input.userMessage) as { customerMessage?: unknown }).customerMessage ?? ''); } catch { return ''; } })().toLowerCase();
     if (input.systemPrompt.includes('прошлая переписка')) return { text: JSON.stringify({ intent: 'sale', facts: [{ fact: 'заказывал лендинг для кейтеринга', answers_question: null }, { fact: 'имя — Марина', answers_question: null }] }) };
     if (input.systemPrompt.includes('классификатор намерений')) return { text: '{"agent":"UNKNOWN","confidence":0.2}' };
-    if (/встреч|запиш|демо/.test(message)) return { text: JSON.stringify({ reply: null, unanswered: [], request: { summary: 'Просит встречу', time: /четверг/.test(message) ? 'четверг' : null }, intent: 'sale' }) };
-    if (/не работает|проблем|заказ/.test(message)) return { text: JSON.stringify({ reply: 'Разберёмся: опишите, что именно не работает.', unanswered: [], intent: 'support' }) };
-    if (/юрий\?|ты бот|это владелец/.test(message)) return { text: JSON.stringify({ reply: 'Я ассистент Юрия, отвечу на вопросы о его услугах.', unanswered: [], intent: 'unknown' }) };
-    if (/эйлат|пластическ/.test(message)) return { text: JSON.stringify({ reply: null, unanswered: ['Работаете ли с клиниками в Эйлате по субботам?'], intent: 'sale' }) };
+    const he = input.systemPrompt.includes('Язык этого ответа: he');
+    const reply = (value: Record<string, unknown>) => ({ text: JSON.stringify({ unanswered: [], intent: 'sale', ...value }) });
+    // Task Q: a client describing themselves is answered, the model still (wrongly) proposes a request — code must ask first.
+    if (/по объявлениям|интересно, расскажите|מודעות|מעניין, ספרו/.test(message)) return reply({ reply: he ? 'העוזר יענה מיד לכל מי שכותב מהמודעה, גם בלילה.' : 'Ассистент сразу ответит каждому, кто пишет по объявлению, даже ночью.',
+      request: { summary: 'Хочет автоматические ответы клиентам', topic: he ? 'מענה אוטומטי ללקוחות' : 'автоматические ответы клиентам', time: null } });
+    if (/встреч|запиш|демо|דמו|פגישה/.test(message)) return reply({ reply: null, request: { summary: 'Просит встречу', time: /четверг/.test(message) ? 'четверг' : null } });
+    if (/не работает|проблем|заказ/.test(message)) return reply({ reply: 'Разберёмся: опишите, что именно не работает.', intent: 'support' });
+    if (/юрий\?|ты бот|это владелец/.test(message)) return reply({ reply: 'Я цифровой ассистент BizGenie, отвечу на вопросы об услугах.', intent: 'unknown' });
+    if (/эйлат|пластическ/.test(message)) return reply({ reply: null, unanswered: ['Работаете ли с клиниками в Эйлате по субботам?'] });
+    if (/надёжн|надежн|заблокир|אמין|יחסמו/.test(message)) return reply({ reply: he ? 'זה עובד דרך WhatsApp רגיל, ויש סיכון קטן לחסימה אם שולחים הודעות המוניות; אנחנו לא עושים את זה. רוצה שאסביר איך נמנעים מזה?' : 'Работает через обычный WhatsApp; риск блокировки есть при массовых рассылках, мы их не делаем. Рассказать, как этого избегаем?' });
+    if (/дорого|יקר/.test(message)) return reply({ reply: he ? 'מבין, זו הוצאה. החיבור מ-1500 ₪ ויש תקופת ניסיון. לחשב כמה זמן זה יחסוך לך?' : 'Понимаю, это расход. Подключение от 1500 ₪, и есть пробный период. Посчитать, сколько времени это сэкономит вам?' });
+    if (/^нет|^לא/.test(message)) return reply({ reply: he ? 'בסדר. אם יהיו שאלות — כתוב.' : 'Хорошо. Если появятся вопросы — пишите.' });
+    if (/не знаю|просто смотрю|לא יודע|רק מסתכל/.test(message)) return reply({ reply: he ? 'הרבה עסקים מפספסים לקוחות שכותבים בערב. העוזר עונה להם מיד לפי המחירון שלך. להראות דוגמה?' : 'Часто бизнес теряет клиентов, которые пишут вечером. Ассистент отвечает им сразу по вашему прайсу. Показать пример?' });
+    if (/аренд|השכרת רכב/.test(message)) return reply({ reply: he ? 'להשכרת רכב העוזר יענה על מחיר ורכבים פנויים מיד, גם בלילה. מאיפה מגיעים אליך לקוחות?' : 'Для аренды авто ассистент сразу ответит о цене и свободных машинах, даже ночью. Откуда к вам приходят клиенты?' });
+    if (/как это мне поможет|איך זה יעזור/.test(message)) return reply({ reply: he ? 'לקוח ששואל בלילה על רכב יקבל מחיר מיד ולא ילך למתחרה. כמה פניות מגיעות ביום?' : 'Клиент, который ночью спросит про машину, сразу получит цену и не уйдёт к конкуренту. Сколько обращений в день у вас бывает?' });
     const asked = input.systemPrompt.includes('в конце задай своими словами один вопрос');
-    return { text: JSON.stringify({ reply: `Делаем WhatsApp-ассистентов для малого бизнеса, подключение от 1500 ₪.${asked ? ' Чтобы подсказать, что подойдёт вам: откуда приходят клиенты?' : ''}`, unanswered: [], intent: 'sale', asked_question: asked }) };
+    if (he) return reply({ reply: `אנחנו בונים עוזרי WhatsApp לעסקים קטנים, החיבור מ-1500 ₪.${asked ? ' כדי להתאים: מאיפה מגיעים הלקוחות?' : ''}`, asked_question: asked });
+    // Distinct stock answers per turn: the pipeline rejects a reply repeating one of the last three.
+    const turn = (() => { try { return ((JSON.parse(input.userMessage) as { conversationHistory?: Array<{ role: string }> }).conversationHistory ?? []).filter(m => m.role === 'assistant').length; } catch { return 0; } })();
+    const stock = ['Делаем WhatsApp-ассистентов для малого бизнеса, подключение от 1500 ₪.', 'Ассистент отвечает вашим клиентам по прайсу сразу, даже вечером и в выходные.', 'Настройка занимает один день: вы рассказываете о бизнесе, мы запускаем.'];
+    return reply({ reply: `${stock[turn % stock.length]}${asked ? ' Чтобы подсказать, что подойдёт вам: откуда приходят клиенты?' : ''}`, asked_question: asked });
   } };
 }

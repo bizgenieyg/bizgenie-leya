@@ -1,7 +1,7 @@
 import { BEHAVIOR_DEFAULTS } from '../config/behavior.js';
 import { behavior } from './runtime-settings.service.js';
 import { activeElapsedMs } from './escalation.service.js';
-import { renderText } from "./templates.service.js";
+import { renderGreeting, renderText } from "./templates.service.js";
 import { languageOf } from "./templates.service.js";
 import { enqueueMessage, outboundIdsForProviderId, type OutboundKind } from '../workers/outbound-queue.js';
 import type { AIProvider } from "../providers/ai/ai-provider.interface.js";
@@ -139,7 +139,7 @@ export async function openRequestFor(db:DatabaseClient,tenantId:string,conversat
  * Owner request: one open request per client conversation. A repeat extends its text silently
  * (no new owner message); the client hears the request is already with the owner.
  */
-export async function createOwnerRequest(db:DatabaseClient,provider:WhatsAppProvider,input:Omit<Escalation,'id'|'status'|'owner_message_ids'|'answer'|'learning_state'|'learning_message_ids'>,settings:OwnerSettings,summary:string,repeatReply:string|null):Promise<string|null>{
+export async function createOwnerRequest(db:DatabaseClient,provider:WhatsAppProvider,input:Omit<Escalation,'id'|'status'|'owner_message_ids'|'answer'|'learning_state'|'learning_message_ids'>,settings:OwnerSettings,summary:string,repeatReply:string|null,clientFirstName:string|null=null):Promise<string|null>{
   const tenant=await db.from('tenants').select('name').eq('id',input.tenant_id).maybeSingle();check(tenant.error);
   const ownerName=String(tenant.data?.name??'');
   const language=input.response_language??languageOf(input.question);
@@ -152,7 +152,7 @@ export async function createOwnerRequest(db:DatabaseClient,provider:WhatsAppProv
     await sendClient(db,provider,{...open,client_chat_id:input.client_chat_id,session:input.session},text,'reply',[],`request:${open.id}:repeat:${input.inbound_id??randomUUID()}`);
     return withoutRepeatedIntroduction(text,true);
   }
-  const text=renderText(settings,'client.request_sent',language,{owner_name:ownerName});
+  const text=renderGreeting(settings,'client.request_sent',language,{owner_name:ownerName,client_first_name:clientFirstName});
   return (await createEscalation(db,provider,{...input,question:summary},settings,null,{kind:'request',clientText:text}))??null;
 }
 export async function notifyOwner(db:DatabaseClient,provider:WhatsAppProvider,e:Escalation,settings:OwnerSettings):Promise<boolean> {

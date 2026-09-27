@@ -27,10 +27,20 @@ test('model outage alert: 3 failures in a row or ≥50 % of ≥3 calls in 10 min
 
 test('greeting templates: defaults per language, empty substitutions never break the phrase', () => {
   const values = { assistant_name: 'Гоша', owner_name: 'Юрия', business_name: 'BizGenie' };
-  assert.equal(renderGreeting(undefined, 'client.greeting', 'ru', values), 'Здравствуйте! Это Гоша, ассистент Юрия. Чем могу помочь?');
+  // Task Q: "digital assistant", never the owner's name; the client's first name when it is usable.
+  assert.equal(renderGreeting(undefined, 'client.greeting', 'ru', values), 'Здравствуйте! Это Гоша, цифровой ассистент. Чем могу помочь?');
+  assert.equal(renderGreeting(undefined, 'client.greeting', 'ru', { ...values, client_first_name: 'Анна' }), 'Здравствуйте, Анна! Это Гоша, цифровой ассистент. Чем могу помочь?');
   assert.equal(renderGreeting(undefined, 'client.greeting', 'ru', { owner_name: 'Юрия' }), 'Здравствуйте! Чем могу помочь?');
-  assert.equal(renderGreeting(undefined, 'client.greeting', 'en', { assistant_name: 'Leya', owner_name: 'Yuri' }), "Hi! This is Leya, Yuri's assistant. How can I help?");
-  assert.equal(renderGreeting(undefined, 'client.greeting', 'he', { assistant_name: 'לאה', owner_name: 'יורי' }), 'היי! כאן לאה, בשם יורי. במה אפשר לעזור?');
+  assert.equal(renderGreeting(undefined, 'client.greeting', 'en', { assistant_name: 'Leya', owner_name: 'Yuri' }), 'Hi! This is Leya, a digital assistant. How can I help?');
+  assert.equal(renderGreeting(undefined, 'client.greeting', 'en', { assistant_name: 'Leya', client_first_name: 'Dana' }), 'Hi Dana! This is Leya, a digital assistant. How can I help?');
+  assert.equal(renderGreeting(undefined, 'client.greeting', 'he', { assistant_name: 'לאה', owner_name: 'יורי' }), 'היי! כאן לאה, עוזרת דיגיטלית. במה אפשר לעזור?');
+  assert.equal(renderGreeting(undefined, 'client.greeting', 'he', { assistant_name: 'לאה', client_first_name: 'דנה' }), 'היי דנה! כאן לאה, עוזרת דיגיטלית. במה אפשר לעזור?');
+  for (const lang of ['ru', 'en', 'he']) assert.doesNotMatch(renderGreeting(undefined, 'client.greeting', lang, values), /Юри|Yuri|יורי/);
+  // A stored copy of the old default is not an owner edit: the new default applies. A real edit stays.
+  const legacy = { templates: { 'client.greeting': { ru: 'Здравствуйте! Это {assistant_name}, ассистент {owner_name}. Чем могу помочь?', he: 'היי! כאן {assistant_name}, בשם {owner_name}. במה אפשר לעזור?' } } } as never;
+  assert.equal(renderGreeting(legacy, 'client.greeting', 'ru', values), 'Здравствуйте! Это Гоша, цифровой ассистент. Чем могу помочь?');
+  assert.equal(renderGreeting(legacy, 'client.greeting', 'he', { assistant_name: 'לאה', owner_name: 'יורי' }), 'היי! כאן לאה, עוזרת דיגיטלית. במה אפשר לעזור?');
+  assert.equal(renderGreeting({ templates: { 'client.greeting': { ru: 'Привет! Это {assistant_name}, помощник {owner_name}.' } } } as never, 'client.greeting', 'ru', values), 'Привет! Это Гоша, помощник Юрия.');
   assert.equal(renderGreeting(undefined, 'client.greeting_known', 'ru', { client_first_name: 'Марина' }), 'Здравствуйте, Марина! Чем могу помочь?');
   assert.equal(renderGreeting(undefined, 'client.greeting_known', 'ru', {}), 'Здравствуйте! Чем могу помочь?');
   assert.equal(renderGreeting(undefined, 'client.greeting_known', 'en', { client_first_name: 'Dana' }), 'Hi Dana! How can I help?');

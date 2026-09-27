@@ -1,3 +1,5 @@
+import { createEmbeddingProvider } from '../providers/embedding/index.js';
+import type { EmbeddingProvider } from '../providers/embedding/embedding-provider.interface.js';
 import { randomUUID } from 'node:crypto';
 import { supabase, type DatabaseClient } from '../db/supabase.js';
 import type { AIProvider } from '../providers/ai/ai-provider.interface.js';
@@ -123,9 +125,9 @@ export async function handleWebhookEvent(tenantId: string, body: Record<string, 
         response_language: language, inbound_id: incomingMsgId, client_phone: client.phone }, settings, client.time_zone, { ...(questions ? { questions } : {}), answered: answered ?? null, modelUnavailable: options?.modelUnavailable === true });
       return answer ? withoutRepeatedIntroduction(answer, memory.introduced) : null;
     },
-    createRequest: (language, summary, repeatReply) => createOwnerRequest(db, provider, { tenant_id: tenantId, session, conversation_id: conversation.id,
-      client_chat_id: from, client_name: pushName || client.name || formatPhone(client.phone) || '', question: text,
-      response_language: language, inbound_id: incomingMsgId, client_phone: client.phone }, settings, summary, repeatReply),
+    createRequest: (language, summary, repeatReply, clientFirstName) => createOwnerRequest(db, provider, { tenant_id: tenantId, session, conversation_id: conversation.id,
+      client_chat_id: from, client_name: clientFirstName || pushName || client.name || formatPhone(client.phone) || '', question: text,
+      response_language: language, inbound_id: incomingMsgId, client_phone: client.phone }, settings, summary, repeatReply, clientFirstName),
     openRequest: async () => (await openRequestFor(db, tenantId, conversation.id))?.question ?? null,
     loadClientProfile: () => loadClientProfile(db, tenantId, client.id),
     saveClientProfile: profile => saveClientProfile(db, tenantId, client.id, profile),
@@ -154,5 +156,9 @@ export async function handleWebhookEvent(tenantId: string, body: Record<string, 
       } } catch { console.error('usage_agent_attribution_failed'); }
     } : undefined,
   };
-  await processCustomerMessage({ db, tenantId, text, client, conversation, memory, settings, ai: rawAI, model, usageKey, optedOut, sink });
+  await processCustomerMessage({ db, tenantId, text, client, conversation, memory, settings, ai: rawAI, model, usageKey, optedOut, sink, embedder: sharedEmbedder() });
 }
+
+let embedder: EmbeddingProvider | null | undefined;
+/** One embedding client per process for the semantic repeat check (null without a model key). */
+function sharedEmbedder(): EmbeddingProvider | null { if (embedder === undefined) embedder = createEmbeddingProvider(); return embedder; }

@@ -1,5 +1,6 @@
 import { BEHAVIOR_DEFAULTS, MESSAGE_RETENTION_MIN_DAYS } from '../config/behavior.js';
 import { TEMPLATE_DEFAULTS } from '../config/templates.js';
+import { ownerTemplate } from './templates.service.js';
 import { invalidateOwnerSettings, loadOwnerSettings, type OwnerSettings } from './owner-settings.service.js';
 import type { DatabaseClient } from '../db/supabase.js';
 import { HttpError } from '../utils/http-error.js';
@@ -26,7 +27,7 @@ export async function readRuntimeSettings(db:DatabaseClient,tenantId:string){
  const plan=planCode?await db.from('plans').select('code,display_name,messages_per_month,voice_minutes_per_month,warning_percent,unlimited').eq('code',planCode).maybeSingle():{data:null,error:{}};
  if(plan.error||!plan.data){console.error('critical_tenant_plan_integrity_violation',{tenantId});try{await logSystemEvent(db,{tenantId,level:'error',event:'tenant_plan_integrity_violation'});}catch{}throw new Error('Tenant plan unavailable');}
  const config=behavior(owner);
- return { ...config,greeting_templates:Object.fromEntries(GREETING_TEMPLATE_KEYS.map(k=>[k,{...(owner.templates?.[k]??{})}])),greeting_template_defaults:Object.fromEntries(GREETING_TEMPLATE_KEYS.map(k=>[k,TEMPLATE_DEFAULTS[k]])),client_discovery_questions:discoveryQuestions(config.client_discovery_questions,tenant.data.business_sector,config.cabinet_language??config.owner_language),business_sector:tenant.data.business_sector??null,translate_owner_answer:owner.translate_owner_answer??BEHAVIOR_DEFAULTS.translate_owner_answer,
+ return { ...config,greeting_templates:Object.fromEntries(GREETING_TEMPLATE_KEYS.map(k=>[k,Object.fromEntries(['ru','he','en'].flatMap(l=>{const v=ownerTemplate(owner,k,l);return v?[[l,v]]:[];}))])),greeting_template_defaults:Object.fromEntries(GREETING_TEMPLATE_KEYS.map(k=>[k,TEMPLATE_DEFAULTS[k]])),client_discovery_questions:discoveryQuestions(config.client_discovery_questions,tenant.data.business_sector,config.cabinet_language??config.owner_language),business_sector:tenant.data.business_sector??null,translate_owner_answer:owner.translate_owner_answer??BEHAVIOR_DEFAULTS.translate_owner_answer,
  messages_per_month:data?.messages_overridden?data.messages_per_month:plan.data.messages_per_month,
  voice_minutes_per_month:data?.voice_overridden?data.voice_minutes_per_month:plan.data.voice_minutes_per_month,
  warning_percent:data?.warning_overridden?data.warning_percent:plan.data.warning_percent,plan:plan.data.code,plan_name:plan.data.display_name,unlimited:Boolean(plan.data.unlimited),
@@ -89,6 +90,10 @@ export function validateRuntimePatch(input:Record<string,unknown>) {
   else if(key==='knowledge_full_context_chars')behaviorPatch[key]=integer(key,value,0,500000);
   else if(key==='knowledge_unit_max_chars')behaviorPatch[key]=integer(key,value,200,20000);
   else if(key==='knowledge_similarity_floor'){if(typeof value!=='number'||value<0||value>1)throw new HttpError(400,'Invalid knowledge threshold');behaviorPatch[key]=value;}
+  else if(key==='semantic_repeat_threshold'){if(typeof value!=='number'||value<0.5||value>1)throw new HttpError(400,'Invalid repeat threshold');behaviorPatch[key]=value;}
+  else if(key==='repeat_window')behaviorPatch[key]=integer(key,value,1,10);
+  else if(key==='request_offer_turns')behaviorPatch[key]=integer(key,value,1,10);
+  else if(key==='cta_min_gap_turns')behaviorPatch[key]=integer(key,value,1,20);
   else if(key==='history_fetch_limit')behaviorPatch[key]=integer(key,value,0,100);
   else if(key==='history_max_characters')behaviorPatch[key]=integer(key,value,0,50000);
   else if(key==='history_timeout_seconds'||key==='lid_lookup_timeout_seconds')behaviorPatch[key]=integer(key,value,1,30);

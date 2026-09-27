@@ -11,7 +11,9 @@ import { recordUsageEvent, usageAllowsMessage } from './usage.service.js';
 import { reserveSimulatorCall } from './simulator-rate-limit.js';
 import { processCustomerMessage, type PipelineResult, type PipelineSink } from './message-pipeline.service.js';
 import { composeOwnerAnswer, escalationWaitingMessage } from './owner-workflow.service.js';
-import { languageOf, renderText } from './templates.service.js';
+import { languageOf, renderGreeting, renderText } from './templates.service.js';
+import { createEmbeddingProvider } from '../providers/embedding/index.js';
+import type { EmbeddingProvider } from '../providers/embedding/embedding-provider.interface.js';
 import { normalizeDialogState } from './dialog-state.js';
 import { clientText, withoutRepeatedIntroduction } from '../utils/assistant-text.js';
 import { HttpError } from '../utils/http-error.js';
@@ -24,7 +26,9 @@ export type SimulationResult = PipelineResult & { trace?: SimulationTrace };
  * Evaluation-only options (never exposed through the HTTP route): skip the simulator rate limit,
  * seed a WhatsApp history and a client profile for a new session, return the dialogue trace.
  */
-export interface SimulationOptions { now?: Date; root?: string; evaluation?: { history?: ConversationMemory[]; profile?: string } }
+export interface SimulationOptions { now?: Date; root?: string; evaluation?: { history?: ConversationMemory[]; profile?: string };
+  /** Embeddings for the semantic repeat check; default — the process-wide provider (null without a key). */
+  embedder?: EmbeddingProvider | null }
 type SessionState = { introduced: boolean; routed_agent: string | null; route_selected_at: string | null;
   source_label: string | null; reception_message_count: number; client_time_zone: string | null; profile_md?: string; open_request?: string | null; dialog_state?: unknown };
 
@@ -102,7 +106,7 @@ export async function simulateCustomerMessage(db: DatabaseClient, tenantId: stri
       await saveReply(reply);
       return reply;
     },
-    createRequest: async (language, summary, repeatReply) => {
+    createRequest: async (language, summary, repeatReply, clientFirstName) => {
       const tenant = await db.from('tenants').select('name').eq('id', tenantId).maybeSingle();
       const ownerName = String(tenant.data?.name ?? '');
       let reply: string;
@@ -112,7 +116,7 @@ export async function simulateCustomerMessage(db: DatabaseClient, tenantId: stri
         reply = withoutRepeatedIntroduction(repeatReply ?? renderText(settings, 'client.request_repeat', language, { owner_name: ownerName }), true);
       } else {
         state.open_request = summary.slice(0, 2000);
-        reply = withoutRepeatedIntroduction(renderText(settings, 'client.request_sent', language, { owner_name: ownerName }), memory.introduced);
+        reply = withoutRepeatedIntroduction(renderGreeting(settings, 'client.request_sent', language, { owner_name: ownerName, client_first_name: clientFirstName }), memory.introduced);
       }
       sentReply = reply;
       await saveReply(reply);
@@ -135,7 +139,7 @@ export async function simulateCustomerMessage(db: DatabaseClient, tenantId: stri
   };
   const model = meterAI(db, tenantId, ai, { simulation: true, purpose: 'simulator_reply' });
   const response = await processCustomerMessage({ db, tenantId, text, client, conversation, memory, settings, ai, model,
-    usageKey: randomUUID(), sink, now });
+    usageKey: randomUUID(), sink, now, embedder: limitOptions?.embedder === undefined ? sharedEmbedder() : limitOptions.embedder });
   const updated = await db.from('simulator_sessions').update({ introduced: memory.introduced, profile_md: state.profile_md ?? '', open_request: state.open_request ?? null, dialog_state: state.dialog_state ?? {},
     routed_agent: conversation.routed_agent, route_selected_at: now.toISOString(), source_label: conversation.source_label,
     reception_message_count: conversation.reception_message_count ?? 0, client_time_zone: client.time_zone, updated_at: now.toISOString() })
@@ -174,3 +178,7 @@ export async function simulateOwnerAnswer(db: DatabaseClient, tenantId: string, 
   if (updated.error) throw new HttpError(500, 'Could not save simulator session');
   return { reply };
 }
+
+let embedder: EmbeddingProvider | null | undefined;
+/** One embedding client per process for the semantic repeat check (null without a model key). */
+function sharedEmbedder(): EmbeddingProvider | null { if (embedder === undefined) embedder = createEmbeddingProvider(); return embedder; }

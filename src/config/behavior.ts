@@ -62,6 +62,14 @@ export const BEHAVIOR_DEFAULTS = {
   knowledge_indexing_daily_limit: 20,
   knowledge_chunk_characters: 1500,
   knowledge_chunk_overlap: 225,
+  /** Cosine similarity at or above which a reply repeats one of the last bot replies in meaning (task Q). */
+  semantic_repeat_threshold: 0.9,
+  /** How many previous bot replies a new reply is compared with. */
+  repeat_window: 3,
+  /** Client messages during which an offer to pass the request to the owner awaits an answer. */
+  request_offer_turns: 2,
+  /** The same call to action (demo, booking, passing to the owner) at most once per this many client turns. */
+  cta_min_gap_turns: 3,
 };
 // Message storage retention: floor for behavior.message_retention_days, and daily sweep cadence.
 export const MESSAGE_RETENTION_MIN_DAYS = 7;

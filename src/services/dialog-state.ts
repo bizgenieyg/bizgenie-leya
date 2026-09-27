@@ -15,7 +15,16 @@ export interface DialogState {
   /** Hashes of discovery questions already answered by facts in the profile (stable when the owner reorders the list). */
   discovery_answered: string[];
   history_analyzed?: boolean;
+  /** The assistant offered to pass a request to the owner and awaits the client's consent (task Q). */
+  pending_offer?: PendingOffer;
+  /** The client declined an offer: it is not repeated unless the client asks directly. */
+  offer_declined?: boolean;
+  /** Name the client gave in the chat ("меня зовут Аня"); preferred over the WhatsApp display name. */
+  client_name?: string;
+  /** Client turn of the last call to action (demo, booking, passing to the owner). */
+  last_cta_turn?: number;
 }
+export interface PendingOffer { summary: string; time: string | null; topic: string | null; turns_left: number }
 
 export const DISCOVERY_MAX_ASKED = 3;
 export const DISCOVERY_MIN_TURN = 2;
@@ -32,7 +41,18 @@ export function normalizeDialogState(value: unknown): DialogState {
     last_question_turn: Number.isSafeInteger(v.last_question_turn) ? Number(v.last_question_turn) : null,
     discovery_answered: Array.isArray(v.discovery_answered) ? v.discovery_answered.filter((h): h is string => typeof h === 'string').slice(0, 50) : [],
     ...(v.history_analyzed === true ? { history_analyzed: true } : {}),
+    ...(pendingOffer(v.pending_offer) ? { pending_offer: pendingOffer(v.pending_offer)! } : {}),
+    ...(v.offer_declined === true ? { offer_declined: true } : {}),
+    ...(typeof v.client_name === 'string' && v.client_name.trim() ? { client_name: v.client_name.trim().slice(0, 40) } : {}),
+    ...(Number.isSafeInteger(v.last_cta_turn) ? { last_cta_turn: Number(v.last_cta_turn) } : {}),
   };
+}
+
+function pendingOffer(value: unknown): PendingOffer | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.summary !== 'string' || !v.summary.trim() || !Number.isSafeInteger(v.turns_left) || Number(v.turns_left) < 1) return null;
+  return { summary: v.summary.slice(0, 2000), time: typeof v.time === 'string' ? v.time : null, topic: typeof v.topic === 'string' ? v.topic : null, turns_left: Number(v.turns_left) };
 }
 
 /** Identity of a discovery question by its text, so reordering the owner's list does not shift answers. */

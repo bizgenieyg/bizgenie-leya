@@ -93,14 +93,16 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
       const realClient = await pg.query<{ count: string }>("select count(*)::text as count from clients where tenant_id=$1 and whatsapp_jid=$2", [tenantId, realPayload.payload.from]);
       assert.equal(realClient.rows[0]!.count, "1");
 
+      // Distinct Hebrew replies: repeating one of the last three bot replies would be caught as a repeat (task Q).
+      let hebrew=0,russian=0;
       const multilingualAi={async generateReply(input:{systemPrompt:string}){
         if(input.systemPrompt.includes('классификатор намерений'))return{text:'{"agent":"SUPPORT","confidence":0.95}'};
-        if(input.systemPrompt.includes('Язык этого ответа: he'))return{text:'תשובה בעברית.'};
-        if(input.systemPrompt.includes('Язык этого ответа: ru'))return{text:'Ответ по-русски.'};
+        if(input.systemPrompt.includes('Язык этого ответа: he'))return{text:hebrew++?'עוד תשובה בעברית.':'תשובה בעברית.'};
+        if(input.systemPrompt.includes('Язык этого ответа: ru'))return{text:russian++?'Снова ответ по-русски.':'Ответ по-русски.'};
         return{text:'Answer in English.'};
       }};
       const languageClient='972500000006@c.us';
-      for(const [question,expected] of [['שלום, אפשר עזרה?','תשובה בעברית.'],['Нужна помощь','Ответ по-русски.'],['Can you help?','Answer in English.'],['שוב בעברית','תשובה בעברית.']] as const){
+      for(const [question,expected] of [['שלום, אפשר עזרה?','תשובה בעברית.'],['Нужна помощь','Ответ по-русски.'],['Can you help?','Answer in English.'],['שוב בעברית','עוד תשובה בעברית.']] as const){
         await handleWebhookEvent(tenantId,{...body,payload:{...body.payload,from:languageClient,body:question}},db,provider,multilingualAi as never); await settleAllOutboundQueues();
         assert.equal(sent.at(-1),expected);
       }
@@ -108,7 +110,7 @@ test("GOWS incoming FAQ gets a deterministic reply even when tenants.phone is nu
       assert.equal(observed.rows[0]!.language,'he','the card observes the latest incoming language');
       await pg.query("update clients set language='ru',language_overridden=true where tenant_id=$1 and whatsapp_jid=$2",[tenantId,languageClient]);
       await handleWebhookEvent(tenantId,{...body,payload:{...body.payload,from:languageClient,body:'עוד שאלה'}},db,provider,multilingualAi as never); await settleAllOutboundQueues();
-      assert.equal(sent.at(-1),'Ответ по-русски.','an explicit owner override remains authoritative');
+      assert.equal(sent.at(-1),'Снова ответ по-русски.','an explicit owner override remains authoritative');
 
       const groupJid='120363400030260280@c.us';
       const sentBeforeGroup=sent.length;

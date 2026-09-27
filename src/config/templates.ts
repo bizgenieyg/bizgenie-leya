@@ -70,9 +70,9 @@ export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
     "he": "{index}. ש: {question} — ת: {answer}"
   },
   "client.greeting": {
-    "ru": "Здравствуйте! Это {assistant_name}, ассистент {owner_name}. Чем могу помочь?",
-    "en": "Hi! This is {assistant_name}, {owner_name}'s assistant. How can I help?",
-    "he": "היי! כאן {assistant_name}, בשם {owner_name}. במה אפשר לעזור?"
+    "ru": "Здравствуйте{, client_first_name}! Это {assistant_name}, цифровой ассистент. Чем могу помочь?",
+    "en": "Hi{ client_first_name}! This is {assistant_name}, a digital assistant. How can I help?",
+    "he": "היי{ client_first_name}! כאן {assistant_name}, עוזרת דיגיטלית. במה אפשר לעזור?"
   },
   "client.greeting_known": {
     "ru": "Здравствуйте{, client_first_name}! Чем могу помочь?",
@@ -90,9 +90,24 @@ export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
     "he": "(העוזר לא היה זמין)"
   },
   "client.request_sent": {
-    "ru": "Передала вашу заявку — {owner_name} свяжется с вами.",
-    "he": "העברתי את הבקשה שלך — {owner_name} ייצור איתך קשר.",
-    "en": "I've passed on your request — {owner_name} will get in touch with you."
+    "ru": "Спасибо{, client_first_name}! Передала вашу заявку — {owner_name} свяжется с вами.",
+    "he": "תודה{ client_first_name}! העברתי את הבקשה שלך — {owner_name} ייצור איתך קשר.",
+    "en": "Thank you{, client_first_name}! I've passed on your request — {owner_name} will get in touch with you."
+  },
+  "client.request_offer": {
+    "ru": "Передать {owner_name}, чтобы связался с вами по поводу «{summary_short}»?",
+    "he": "להעביר ל{owner_name} שיחזור אליך בנושא «{summary_short}»?",
+    "en": "Shall I pass this to {owner_name} to get in touch with you about «{summary_short}»?"
+  },
+  "client.request_offer_generic": {
+    "ru": "Передать вашу просьбу, чтобы с вами связались по поводу «{summary_short}»?",
+    "he": "להעביר את הבקשה כדי שיחזרו אליך בנושא «{summary_short}»?",
+    "en": "Shall I pass on your request so someone gets in touch with you about «{summary_short}»?"
+  },
+  "client.ask_name": {
+    "ru": "И как к вам обращаться?",
+    "he": "ואיך לפנות אליך?",
+    "en": "And what name should I use?"
   },
   "client.request_repeat": {
     "ru": "Я уже передала вашу заявку — {owner_name} свяжется с вами.",
@@ -239,4 +254,22 @@ export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
     "en": "Time zone saved: {zone}.",
     "he": "אזור הזמן נשמר: {zone}."
   }
+};
+
+/**
+ * Former built-in defaults. A stored override equal to one of them was never really edited by the
+ * owner (older cabinets saved the default as text), so it is read as "no override" and the current
+ * default applies. Checked at read time: no data migration, owner-edited texts stay untouched.
+ */
+export const LEGACY_TEMPLATE_DEFAULTS: Record<string, string[]> = {
+  "client.greeting": [
+    "Здравствуйте! Это {assistant_name}, ассистент {owner_name}. Чем могу помочь?",
+    "Hi! This is {assistant_name}, {owner_name}'s assistant. How can I help?",
+    "היי! כאן {assistant_name}, בשם {owner_name}. במה אפשר לעזור?",
+  ],
+  "client.request_sent": [
+    "Передала вашу заявку — {owner_name} свяжется с вами.",
+    "העברתי את הבקשה שלך — {owner_name} ייצור איתך קשר.",
+    "I've passed on your request — {owner_name} will get in touch with you.",
+  ],
 };

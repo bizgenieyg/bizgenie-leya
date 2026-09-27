@@ -1,4 +1,4 @@
-import { TEMPLATE_DEFAULTS } from '../config/templates.js';
+import { LEGACY_TEMPLATE_DEFAULTS, TEMPLATE_DEFAULTS } from '../config/templates.js';
 import type { OwnerSettings } from './owner-settings.service.js';
 export const languageOf=(text:string):string=>/[א-ת]/.test(text)?'he':/[а-яё]/i.test(text)?'ru':'en';
 export type ClientLanguage='he'|'ru'|'en';
@@ -6,11 +6,17 @@ export function replyLanguage(text:string,client?:{language?:string|null;languag
   if(client?.language_overridden&&['he','ru','en'].includes(String(client.language)))return client.language as ClientLanguage;
   return languageOf(text) as ClientLanguage;
 }
+/** The owner's text for a template, or null when absent, blank or equal to a former built-in default. */
+export function ownerTemplate(settings:OwnerSettings|undefined,key:string,language:string):string|null{
+  const candidate=settings?.templates?.[key]?.[language];
+  if(typeof candidate!=='string'||!candidate.trim())return null;
+  return LEGACY_TEMPLATE_DEFAULTS[key]?.includes(candidate.trim())?null:candidate;
+}
 export function renderText(settings:OwnerSettings|undefined,key:string,language:string,values:Record<string,string|number>={}):string {
   const defaults=TEMPLATE_DEFAULTS[key];
   if(!defaults)throw new Error('Unknown template');
   const fallback=defaults[language]??defaults.ru??defaults.en!;
-  const candidate=settings?.templates?.[key]?.[language];
+  const candidate=ownerTemplate(settings,key,language);
   // Old tenants may retain the former department-choice template. It exposed
   // internal route codes through {agents}; normalize it at read time.
   const template=typeof candidate==='string'&&!(key==='client.reception_question'&&(/\{agents\}|\b(?:SALE|SUPPORT|RECEPTION|CORE)\b/.test(candidate)))?candidate:fallback;
@@ -27,8 +33,7 @@ export function renderText(settings:OwnerSettings|undefined,key:string,language:
 export function renderGreeting(settings:OwnerSettings|undefined,key:string,language:string,values:Record<string,string|null|undefined>):string {
   const defaults=TEMPLATE_DEFAULTS[key];
   if(!defaults)throw new Error('Unknown template');
-  const candidate=settings?.templates?.[key]?.[language];
-  const template=typeof candidate==='string'&&candidate.trim()?candidate:(defaults[language]??defaults.ru??defaults.en!);
+  const template=ownerTemplate(settings,key,language)??(defaults[language]??defaults.ru??defaults.en!);
   const value=(k:string)=>String(values[k]??'').replace(/[<>{}]/g,'').trim();
   const withSegments=template.replace(/\{([^a-z{}][^{}]*?)([a-z_]+)\}/g,(_all,prefix:string,k:string)=>value(k)?`${prefix}${value(k)}`:'');
   const sentences=withSegments.split(/(?<=[.!?])\s+/);

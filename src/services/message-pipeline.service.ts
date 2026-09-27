@@ -18,9 +18,12 @@ import { registry } from '../agents/index.js';
 import { discoveryQuestions, REPEAT_SIMILARITY_THRESHOLD } from '../config/discovery.js';
 import { mergeClientProfile, profileFacts } from './client-profile.service.js';
 import type { OwnerRequest, ReplyExtras } from './ai-fallback.service.js';
+import type { EmbeddingProvider } from '../providers/embedding/embedding-provider.interface.js';
+import { agreement, hasCallToAction, isDecline, isDirectRequest, usableFirstName } from './client-consent.js';
+import { isSemanticRepeat } from './semantic-repeat.service.js';
+import { recordUsageEvent } from './usage.service.js';
+import { CALL_TO_ACTION_PATTERN } from '../config/consent.js';
 
-/** First word of the WhatsApp display name when it looks like a name. */
-const firstName = (name: string | null | undefined) => { const word = (name ?? '').trim().split(/\s+/)[0] ?? ''; return /^[\p{L}][\p{L}'-]{1,30}$/u.test(word) ? word : null; };
 const normalizeReply = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 function editDistance(a: string, b: string): number {
   let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
@@ -70,7 +73,7 @@ export interface PipelineSink {
   loadDialogState(): Promise<unknown>;
   saveDialogState(state: DialogState): Promise<void>;
   /** Owner request (demo, booking, callback…): one open request per client; returns the client text sent. */
-  createRequest(responseLanguage: string, summary: string, repeatReply: string | null): Promise<string | null>;
+  createRequest(responseLanguage: string, summary: string, repeatReply: string | null, clientFirstName: string | null): Promise<string | null>;
   /** Summary of the client's open request, if any. */
   openRequest(): Promise<string | null>;
   loadClientProfile(): Promise<string>;
@@ -96,6 +99,8 @@ export interface PipelineInput {
   optedOut?: boolean;
   sink: PipelineSink;
   now?: Date;
+  /** Embeddings for the semantic repeat check; null or absent — only the textual check runs. */
+  embedder?: EmbeddingProvider | null;
 }
 
 export async function processCustomerMessage(input: PipelineInput): Promise<PipelineResult> {
@@ -147,11 +152,21 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
 
   const config = behavior(settings);
   const state = normalizeDialogState(await sink.loadDialogState());
-  const finish = async (value: PipelineResult): Promise<PipelineResult> => { await sink.saveDialogState(state); return value; };
+  // An offer to pass the request to the owner waits `request_offer_turns` client messages, then lapses.
+  const offerAtStart = state.pending_offer;
+  const finish = async (value: PipelineResult): Promise<PipelineResult> => {
+    if (offerAtStart && state.pending_offer === offerAtStart && --state.pending_offer.turns_left < 1) delete state.pending_offer;
+    await sink.saveDialogState(state);
+    return value;
+  };
   const context = await loadContext(db, tenantId);
   let clientProfile = await sink.loadClientProfile();
   const questions = discoveryQuestions(config.client_discovery_questions, context.business?.business_sector, language);
   const lastAssistant = [...memory.messages].reverse().find(item => item.fromMe)?.text ?? null;
+  const recentBot = memory.messages.filter(item => item.fromMe).slice(-config.repeat_window).map(item => item.text);
+  /** Only for the greeting template and the request confirmation; never "Мама" or a shop nickname. */
+  const clientFirstName = () => usableFirstName(state.client_name ?? client.name, context.business?.business_name);
+  const rememberName = (name: string | null | undefined) => { const usable = usableFirstName(name, context.business?.business_name); if (usable) state.client_name = usable; };
 
   // WhatsApp history on first contact: analysed once per client (intent + up to 5 facts), never quoted back.
   if (history?.messages.length && !state.history_analyzed) {
@@ -166,18 +181,41 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
   }
   const knownClient = memory.introduced || !!history?.messages.length || memory.messages.some(item => item.fromMe);
   const send = async (reply: string, stored = reply): Promise<void> => {
+    if (hasCallToAction(reply)) state.last_cta_turn = state.client_turns;
     const id = await sink.sendToClient(reply);
     await sink.persistAssistantMessage(stored, id);
     await sink.markIntroduced();
     memory.introduced = true;
   };
 
+  /** Creates (or extends) the owner request and sends the confirmation. */
+  const createRequestNow = async (req: OwnerRequest, repeatReply: string | null): Promise<PipelineResult> => {
+    delete state.pending_offer;
+    const summary = req.time ? `${req.summary}\n${renderText(settings, 'owner.request_time', config.owner_language, { time: req.time })}` : req.summary;
+    const reply = await sink.createRequest(language, summary, repeatReply ? clientReply(repeatReply) : null, clientFirstName());
+    await sink.recordUsage('request_created');
+    if (reply) memory.introduced = true;
+    state.stage = 'request';
+    return finish(result(reply, 'escalated'));
+  };
+  // Answer to "Передать владельцу…?": "да" creates the request without a model call; "нет" is remembered.
+  if (state.pending_offer) {
+    const agreed = agreement(text);
+    if (agreed) return agentContext.run({ agent: conversation.routed_agent ?? 'RECEPTION' }, async () => {
+      await sink.recordUsage('message_received', { eventKey: usageKey });
+      rememberName(agreed.rest);
+      const offer = state.pending_offer!;
+      return createRequestNow({ summary: offer.summary, time: offer.time }, null);
+    });
+    if (isDecline(text)) { delete state.pending_offer; state.offer_declined = true; }
+  }
+
   // A bare greeting is answered by the owner's template: no model call, no qualification question.
   if (isBareGreeting(text)) return agentContext.run({ agent: 'RECEPTION' }, async () => {
     await sink.recordUsage('message_received', { eventKey: usageKey });
     const reply = renderGreeting(settings, knownClient ? 'client.greeting_known' : 'client.greeting', language, {
       assistant_name: context.assistant?.assistant_name, owner_name: context.business?.owner_name,
-      business_name: context.business?.business_name, client_first_name: firstName(client.name) });
+      business_name: context.business?.business_name, client_first_name: clientFirstName() });
     await send(reply);
     state.stage = state.intent === 'unknown' ? 'intent_unknown' : 'intent_known';
     return finish(result(reply, 'answered'));
@@ -246,14 +284,46 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
     const next = mergeClientProfile(clientProfile, facts, now, settings.time_zone ?? 'Asia/Jerusalem');
     if (next !== null) { await sink.saveClientProfile(next); clientProfile = next; }
   };
-  const request = async (req: OwnerRequest, repeatReply: string | null): Promise<PipelineResult> => {
-    const summary = req.time ? `${req.summary}\n${renderText(settings, 'owner.request_time', config.owner_language, { time: req.time })}` : req.summary;
-    const reply = await sink.createRequest(language, summary, repeatReply ? clientReply(repeatReply) : null);
-    await sink.recordUsage('request_created');
-    if (reply) memory.introduced = true;
-    state.stage = 'request';
-    return finish(result(reply, 'escalated'));
+  /**
+   * The model asked for an owner request. Created only on a direct request ("хочу демо"), a "yes" to an
+   * earlier offer, or new details for an already open request; otherwise the client is asked first.
+   */
+  const request = async (req: OwnerRequest, modelReply: string | null, consent: boolean | null | undefined): Promise<PipelineResult> => {
+    if (extras.openRequest || isDirectRequest(question) || (state.pending_offer && consent === true)) {
+      state.offer_declined = false;
+      return createRequestNow(req, modelReply);
+    }
+    // No question marks left in the model's part: the offer is the single question of this message.
+    const answer = modelReply ? clientText(modelReply).split(/(?<=[.!?…])\s+/).filter(sentence => !sentence.trim().endsWith('?')).join(' ').trim() : '';
+    if (state.offer_declined) {
+      const reply = clientReply(answer || renderText(settings, 'client.reception_question', language));
+      await send(reply);
+      return finish(result(reply, 'answered'));
+    }
+    const owner = context.business?.owner_name?.trim();
+    const topic = (req.topic ?? req.summary.split('\n')[0] ?? '').replace(/[«»"]/g, '').slice(0, 60).trim();
+    const offer = renderText(settings, owner ? 'client.request_offer' : 'client.request_offer_generic', language, { owner_name: owner ?? '', summary_short: topic });
+    const reply = clientReply([answer, clientFirstName() ? offer : `${offer} ${renderText(settings, 'client.ask_name', language)}`].filter(Boolean).join('\n\n'));
+    state.pending_offer = { summary: req.summary, time: req.time, topic, turns_left: config.request_offer_turns };
+    await send(reply);
+    await sink.recordAgentAction('request_offered', question);
+    return finish(result(reply, 'answered'));
   };
+  /** "да"/"нет" to the offer recognised by the model when the dictionaries did not catch it. */
+  const consentWithoutRequest = async (consent: boolean | null | undefined): Promise<PipelineResult | null> => {
+    if (!state.pending_offer || consent == null) return null;
+    if (consent) return createRequestNow({ summary: state.pending_offer.summary, time: state.pending_offer.time }, null);
+    delete state.pending_offer; state.offer_declined = true;
+    return null;
+  };
+  /** The same call to action (demo, booking, passing to the owner) at most once per `cta_min_gap_turns`. */
+  const ctaTooSoon = (reply: string) => hasCallToAction(reply) && state.last_cta_turn !== undefined && state.client_turns - state.last_cta_turn < config.cta_min_gap_turns;
+  const withoutCallToAction = (reply: string) => reply.split(/(?<=[.!?…])\s+/).filter(sentence => !CALL_TO_ACTION_PATTERN.test(sentence)).join(' ').trim() || null;
+  /** Near-verbatim (fast) or the same in other words (embeddings) as one of the last bot replies. */
+  const textRepeat = async (reply: string) => recentBot.some(previous => isRepeat(reply, previous))
+    || (await isSemanticRepeat(reply, recentBot, input.embedder ?? null, config.semantic_repeat_threshold,
+      usage => recordUsageEvent(db, { tenantId, eventType: 'embedding_call', quantity: usage.inputTokens,
+        metadata: { purpose: 'repeat_check', model: usage.model, billable_message: false, ...(sink.mode === 'simulation' ? { simulation: true } : {}) } }))).repeat;
   /** More than one question, or a needs question while the gate is closed. */
   const questionViolation = (reply: string | null, gate: DiscoveryGate) =>
     !!reply && (replyQuestions(reply).length > 1 || (gate.mode === 'closed' && asksListedQuestion(reply, questions)));
@@ -263,11 +333,17 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
     const clarification = renderText(settings, 'client.reception_question', language);
     const closed: DiscoveryGate = { mode: 'closed' };
     let reception = await generateReceptionReply(context, question, clarification, knowledgeModel, memory.messages, memory.introduced, language, { ...extras, discovery: closed });
-    if (!reception.request && reception.reply && (isRepeat(reception.reply, lastAssistant) || questionViolation(reception.reply, closed)))
+    const repeated = !reception.failure && !reception.request && !!reception.reply && (ctaTooSoon(reception.reply) || await textRepeat(reception.reply));
+    let stillRepeated = false;
+    if (!reception.failure && !reception.request && reception.reply && (repeated || questionViolation(reception.reply, closed))) {
       reception = await generateReceptionReply(context, question, clarification, knowledgeModel, memory.messages, memory.introduced, language,
-        { ...extras, discovery: closed, limitQuestions: true, ...(isRepeat(reception.reply, lastAssistant) ? { avoidRepeat: lastAssistant } : {}) });
+        { ...extras, discovery: closed, limitQuestions: true, ...(repeated ? { avoidRepeat: recentBot } : {}) });
+      if (!reception.request && reception.reply && ctaTooSoon(reception.reply)) reception.reply = withoutCallToAction(reception.reply);
+      stillRepeated = repeated && !reception.request && !!reception.reply && await textRepeat(reception.reply);
+    }
     if (reception.failure) return escalate(undefined, null, { modelUnavailable: true });
     await updateProfile(reception.profile, reception.profileAnswers);
+    rememberName(reception.clientName);
     if (reception.intent === 'sale' || reception.intent === 'support') {
       const agentName = reception.intent === 'sale' ? 'SALE' : 'SUPPORT';
       if (registry.byName(agentName, settings)) {
@@ -276,12 +352,14 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
       }
       state.intent = reception.intent; state.stage = 'intent_known';
     } else state.stage = 'intent_unknown';
-    if (reception.request) return request(reception.request, reception.reply);
+    if (reception.request) return request(reception.request, reception.reply, reception.consent);
+    const consented = await consentWithoutRequest(reception.consent);
+    if (consented) return consented;
     if (reception.unanswered?.length) {
       for (const item of reception.unanswered) await sink.recordAgentAction('knowledge_missing', item);
       return escalate(reception.unanswered, reception.reply ? clientReply(reception.reply) : null);
     }
-    if (reception.escalate || !reception.reply || isRepeat(reception.reply, lastAssistant)) return escalate();
+    if (reception.escalate || !reception.reply || stillRepeated) return escalate();
     const reply = clientReply(questionViolation(reception.reply, closed) ? untilFirstQuestion(reception.reply) : reception.reply);
     await send(reply, reception.reply);
     await sink.incrementReceptionCounter();
@@ -301,20 +379,26 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
     let agentResult: PipelineResult | null = null;
     await agent.execute({ answerFromKnowledge: async () => {
       let answer = await generateKnowledgeReplyResult(context, question, knowledgeModel, agent.systemPrompt, memory.messages, memory.introduced, language, agentExtras);
-      // Never send the same text twice in a row, never more than one question: regenerate once.
-      const repeated = !answer.request && !answer.unanswered.length && !!answer.reply && isRepeat(answer.reply, lastAssistant);
-      if (!answer.failure && !answer.request && !answer.unanswered.length && answer.reply && (repeated || questionViolation(answer.reply, gate))) {
+      // Never repeat one of the last replies (verbatim or in meaning) or the same call to action, never more
+      // than one question: regenerate once; a reply that still repeats goes to the owner.
+      const plain = !answer.failure && !answer.request && !answer.unanswered.length && !!answer.reply;
+      const repeated = plain && (ctaTooSoon(answer.reply!) || await textRepeat(answer.reply!));
+      if (plain && (repeated || questionViolation(answer.reply, gate))) {
         answer = await generateKnowledgeReplyResult(context, question, knowledgeModel, agent.systemPrompt, memory.messages, memory.introduced, language,
-          { ...agentExtras, limitQuestions: true, ...(repeated ? { avoidRepeat: lastAssistant } : {}) });
-        if (!answer.request && answer.reply && isRepeat(answer.reply, lastAssistant)) { await updateProfile(answer.profile, answer.profileAnswers); agentResult = await escalate(); return; }
+          { ...agentExtras, limitQuestions: true, ...(repeated ? { avoidRepeat: recentBot } : {}) });
+        if (!answer.request && answer.reply && ctaTooSoon(answer.reply)) answer.reply = withoutCallToAction(answer.reply);
+        if (repeated && !answer.request && answer.reply && await textRepeat(answer.reply)) { await updateProfile(answer.profile, answer.profileAnswers); agentResult = await escalate(); return; }
       }
       if (answer.failure) { agentResult = await escalate(undefined, null, { modelUnavailable: true }); return; }
       await updateProfile(answer.profile, answer.profileAnswers);
+      rememberName(answer.clientName);
       if (gate.mode !== 'closed' && answer.askedQuestion) {
         state.discovery_asked = [...state.discovery_asked, gate.question];
         state.last_question_turn = state.client_turns;
       }
-      if (answer.request) { agentResult = await request(answer.request, answer.reply); return; }
+      if (answer.request) { agentResult = await request(answer.request, answer.reply, answer.consent); return; }
+      const consented = await consentWithoutRequest(answer.consent);
+      if (consented) { agentResult = consented; return; }
       if (answer.unanswered.length) {
         if (answer.reply) await sink.recordAgentAction('knowledge_ai_answer');
         for (const item of answer.unanswered) await sink.recordAgentAction('knowledge_missing', item);
