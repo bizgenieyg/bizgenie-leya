@@ -19,8 +19,6 @@ export interface DialogState {
   pending_offer?: PendingOffer;
   /** The client declined an offer: it is not repeated unless the client asks directly. */
   offer_declined?: boolean;
-  /** Name the client gave in the chat ("меня зовут Аня"); preferred over the WhatsApp display name. */
-  client_name?: string;
   /** Client turn of the last call to action (demo, booking, passing to the owner). */
   last_cta_turn?: number;
 }
@@ -43,7 +41,6 @@ export function normalizeDialogState(value: unknown): DialogState {
     ...(v.history_analyzed === true ? { history_analyzed: true } : {}),
     ...(pendingOffer(v.pending_offer) ? { pending_offer: pendingOffer(v.pending_offer)! } : {}),
     ...(v.offer_declined === true ? { offer_declined: true } : {}),
-    ...(typeof v.client_name === 'string' && v.client_name.trim() ? { client_name: v.client_name.trim().slice(0, 40) } : {}),
     ...(Number.isSafeInteger(v.last_cta_turn) ? { last_cta_turn: Number(v.last_cta_turn) } : {}),
   };
 }

@@ -31,6 +31,20 @@ export const DISCOVERY_DEFAULTS: Record<DiscoverySet, Record<Lang, string[]>> = 
   },
 };
 
+/** What the business sells, for wording that must not assume services only (task V). */
+export type OfferingKind = 'goods' | 'rental' | 'services';
+export const OFFERING_KEYWORDS: Record<Exclude<OfferingKind, 'services'>, RegExp> = {
+  rental: /аренд|прокат|сда[её]м|сдача|посуточн|rent|rental|hire|leasing|השכר|השכרה|להשכיר/i,
+  goods: /магазин|торгов|продаж[аи] товар|товар|интернет-магазин|бутик|одежд|обув|цвет[ыо]|shop|store|retail|boutique|e-?commerce|clothing|חנות|מכירת|מוצרים|בוטיק/i,
+};
+/** Rental before goods ("прокат товаров" is rental); no clear sign — services. */
+export function offeringKind(sector: string | null | undefined): OfferingKind {
+  const value = sector ?? '';
+  if (OFFERING_KEYWORDS.rental.test(value)) return 'rental';
+  if (OFFERING_KEYWORDS.goods.test(value)) return 'goods';
+  return 'services';
+}
+
 export const DISCOVERY_MAX_QUESTIONS = 10;
 export const DISCOVERY_MAX_CHARS = 200;
 export const CLIENT_PROFILE_MAX_CHARS = 2000;

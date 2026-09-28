@@ -1,7 +1,8 @@
 import type { DatabaseClient } from '../db/supabase.js';
 import type { EmbeddingProvider } from '../providers/embedding/embedding-provider.interface.js';
 import { HttpError } from '../utils/http-error.js';
-import { CORE_TOPICS, isKnowledgeTopic, KNOWLEDGE_TOPICS, requiredTopics, TOPIC_PROMPT_NAMES, type KnowledgeTopic } from '../config/knowledge-topics.js';
+import { CORE_TOPICS, isKnowledgeTopic, KNOWLEDGE_TOPICS, offerTopicName, requiredTopics, TOPIC_PROMPT_NAMES, type KnowledgeTopic } from '../config/knowledge-topics.js';
+import { offeringKind } from '../config/discovery.js';
 import { normalizeSpaces, type Extraction } from './fact-extraction.service.js';
 import { recordUsageEvent } from './usage.service.js';
 
@@ -154,14 +155,14 @@ export async function knowledgeProfile(db: DatabaseClient, tenantId: string) {
     const list = active.filter(f => f.topic === topic);
     return { topic, required: required.includes(topic), facts: list, updated_at: list.reduce<string | null>((m, f) => !m || f.updated_at > m ? f.updated_at : m, null) };
   });
-  return { topics, filled: topics.filter(t => t.required && t.facts.length).length, required: required.length,
+  return { topics, offering: offeringKind(tenant.data?.business_sector as string | null), filled: topics.filter(t => t.required && t.facts.length).length, required: required.length,
     drafts: rows.filter(f => f.status === 'draft'), sources: sources.data ?? [], recent_sources: recent.data ?? [] };
 }
 
 /** Markdown profile grouped by topic, for the answer prompt. */
-export const factsMarkdown = (facts: Array<{ topic: string; text: string }>) => KNOWLEDGE_TOPICS
+export const factsMarkdown = (facts: Array<{ topic: string; text: string }>, sector?: string | null) => KNOWLEDGE_TOPICS
   .map(topic => ({ topic, list: facts.filter(f => f.topic === topic) })).filter(g => g.list.length)
-  .map(g => `## ${TOPIC_PROMPT_NAMES[g.topic]}\n${g.list.map(f => `- ${f.text}`).join('\n')}`).join('\n\n');
+  .map(g => `## ${g.topic === 'services_prices' ? offerTopicName(sector) : TOPIC_PROMPT_NAMES[g.topic]}\n${g.list.map(f => `- ${f.text}`).join('\n')}`).join('\n\n');
 
 /**
  * Business profile for one answer (knowledge_mode='facts'): the whole profile when it fits
@@ -169,7 +170,9 @@ export const factsMarkdown = (facts: Array<{ topic: string; text: string }>) => 
  */
 export async function factsForReply(db: DatabaseClient, tenantId: string, query: string, fullChars: number, searchResults: number, embedder: EmbeddingProvider | null): Promise<{ markdown: string; chars: number; mode: 'full' | 'search' }> {
   const facts = await activeFacts(db, tenantId);
-  const all = factsMarkdown(facts);
+  const tenant = await db.from('tenants').select('business_sector').eq('id', tenantId).maybeSingle();
+  const sector = (tenant.data?.business_sector as string | null | undefined) ?? null;
+  const all = factsMarkdown(facts, sector);
   if (all.length <= fullChars) return { markdown: all, chars: all.length, mode: 'full' };
   const core = facts.filter(f => (CORE_TOPICS as readonly string[]).includes(f.topic));
   let found: Array<{ topic: string; text: string }> = [];
@@ -181,6 +184,6 @@ export async function factsForReply(db: DatabaseClient, tenantId: string, query:
       if (!r.error) found = ((r.data ?? []) as Array<{ topic: string; text: string }>).filter(f => !(CORE_TOPICS as readonly string[]).includes(f.topic)).slice(0, searchResults);
     } catch { console.warn('fact_search_failed', { tenantId }); }
   }
-  const markdown = factsMarkdown([...core, ...found]);
+  const markdown = factsMarkdown([...core, ...found], sector);
   return { markdown, chars: markdown.length, mode: 'search' };
 }

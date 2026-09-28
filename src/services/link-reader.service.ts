@@ -132,7 +132,7 @@ export function htmlToText(html: string): { title: string; text: string } {
   return { title, text };
 }
 
-const INNER_PAGE = /цен|прайс|услуг|контакт|о нас|about|price|pricing|service|contact|מחיר|שירות|צור קשר|אודות/i;
+const INNER_PAGE = /цен|прайс|услуг|товар|каталог|магазин|аренд|контакт|о нас|about|price|pricing|service|product|shop|catalog|store|rent|contact|מחיר|שירות|מוצרים|קטלוג|חנות|השכרה|צור קשר|אודות/i;
 /** Same-site links whose text or path look like prices, services, contacts or "about". */
 export function innerPageLinks(html: string, base: URL, max: number): string[] {
   const out: string[] = [];

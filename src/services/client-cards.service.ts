@@ -4,7 +4,7 @@ import type { DatabaseClient } from '../db/supabase.js';
 import { HttpError } from '../utils/http-error.js';
 import { isUuid } from './tenant.service.js';
 
-const CLIENT_COLUMNS='id,phone,whatsapp_jid,name,language,notes,first_seen_at,last_seen_at,auto_reply_allowed,auto_reply_opted_out_at,chat_type';
+const CLIENT_COLUMNS='id,phone,whatsapp_jid,name,language,notes,first_seen_at,last_seen_at,auto_reply_allowed,auto_reply_opted_out_at,chat_type,preferred_name,preferred_name_source';
 const fail=()=>{throw new HttpError(500,'Could not load client cards');};
 type CardStat={client_id:string;inquiry_count:number;current_conversation_id:string|null;current_status:'new'|'in_dialogue'|'waiting_owner'|'closed';current_agent:string|null};
 

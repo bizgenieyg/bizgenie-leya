@@ -43,6 +43,8 @@ export interface ClientRow {
   phone: string | null;
   whatsapp_jid?:string;
   name: string | null;
+  /** Name the client gave in the chat (062); wins over the WhatsApp display name. */
+  preferred_name?: string | null;
   language?:string|null;language_overridden?:boolean;auto_reply_allowed?:boolean;
   chat_type?:'individual'|'group';
 }
@@ -121,7 +123,7 @@ export async function findOrCreateClient(
   whatsappJid: string,
 ): Promise<ClientRow> {
   const nowIso = new Date().toISOString();
-  const columns = "id, tenant_id, phone, whatsapp_jid, name, time_zone,language,language_overridden,auto_reply_allowed,chat_type,deleted_at";
+  const columns = "id, tenant_id, phone, whatsapp_jid, name, preferred_name, time_zone,language,language_overridden,auto_reply_allowed,chat_type,deleted_at";
   const realPhone = storedPhone(phone);
   let { data: existing, error: findError } = await db.from("clients").select(columns)
     .eq("tenant_id", tenantId).eq("whatsapp_jid", whatsappJid).maybeSingle();
@@ -147,6 +149,7 @@ export async function findOrCreateClient(
       whatsapp_jid:existing.whatsapp_jid as string,
       time_zone: existing.time_zone as string | null,
       name: name ?? (existing.name as string | null) ?? null,
+      preferred_name: (existing.preferred_name as string | null) ?? null,
       language:existing.language as string|null,language_overridden:existing.language_overridden===true,auto_reply_allowed:existing.auto_reply_allowed!==false,
       chat_type:isGroupChatJid(whatsappJid)?'group':'individual',
     };

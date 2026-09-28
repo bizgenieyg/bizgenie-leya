@@ -20,8 +20,9 @@ knowledgeProfileRouter.get('/knowledge/profile', async (request, response) => {
   const tenantId = tenant(request.query.tenantId);
   const waiting = await supabase.from('escalations').select('id', { count: 'exact', head: true }).eq('tenant_id', tenantId).eq('kind', 'question').in('status', ['pending', 'reminding']);
   if (waiting.error) throw new Error('Escalations unavailable');
+  const assistant = await supabase.from('assistant_profiles').select('assistant_name').eq('tenant_id', tenantId).maybeSingle();
   response.setHeader('Cache-Control', 'no-store');
-  response.json({ ...await knowledgeProfile(supabase, tenantId), audit: await openAuditItems(supabase, tenantId), waiting_questions: waiting.count ?? 0 });
+  response.json({ ...await knowledgeProfile(supabase, tenantId), audit: await openAuditItems(supabase, tenantId), waiting_questions: waiting.count ?? 0, assistant_name: typeof assistant.data?.assistant_name === 'string' ? assistant.data.assistant_name : null });
 });
 knowledgeProfileRouter.post('/knowledge/sources/link', async (request, response) => {
   const url = objectBody(request.body).url;

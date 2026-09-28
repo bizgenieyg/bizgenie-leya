@@ -130,6 +130,10 @@ export async function handleWebhookEvent(tenantId: string, body: Record<string, 
       response_language: language, inbound_id: incomingMsgId, client_phone: client.phone }, settings, summary, repeatReply, clientFirstName),
     openRequest: async () => (await openRequestFor(db, tenantId, conversation.id))?.question ?? null,
     loadClientProfile: () => loadClientProfile(db, tenantId, client.id),
+    saveClientName: async name => {
+      const saved = await db.from('clients').update({ preferred_name: name, preferred_name_source: 'client' }).eq('tenant_id', tenantId).eq('id', client.id);
+      if (saved.error) console.warn('client_name_save_failed', { tenantId });
+    },
     saveClientProfile: profile => saveClientProfile(db, tenantId, client.id, profile),
     loadDialogState: async () => {
       const row = await db.from('conversations').select('dialog_state').eq('tenant_id', tenantId).eq('id', conversation.id).maybeSingle();

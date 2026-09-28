@@ -72,3 +72,13 @@ test('profile markdown groups facts by topic in a fixed order', () => {
   assert.equal(factsMarkdown([{ topic: 'booking', text: 'Запись в WhatsApp.' }, { topic: 'services_prices', text: 'Маникюр 150 ₪.' }]),
     '## услуги и цены\n- Маникюр 150 ₪.\n\n## как записаться или начать\n- Запись в WhatsApp.');
 });
+
+test('offer topic wording follows the sector: goods, rental, otherwise services (the key stays services_prices)', async () => {
+  const { offeringKind } = await import('../config/discovery.js');
+  const { offerTopicName } = await import('../config/knowledge-topics.js');
+  for (const [sector, kind] of [['магазин одежды', 'goods'], ['интернет-магазин', 'goods'], ['חנות פרחים', 'goods'], ['online shop', 'goods'], ['прокат автомобилей', 'rental'], ['аренда квартир посуточно', 'rental'], ['השכרת רכב', 'rental'], ['car rental', 'rental'],
+    ['маникюр', 'services'], ['автоматизация', 'services'], ['домашний повар', 'services'], [null, 'services'], ['', 'services']] as const)
+    assert.equal(offeringKind(sector), kind, String(sector));
+  assert.equal(offerTopicName('прокат автомобилей'), 'что сдаёте и цены');
+  assert.equal(factsMarkdown([{ topic: 'services_prices', text: 'Платье 300 ₪.' }], 'магазин одежды'), '## товары и цены\n- Платье 300 ₪.');
+});

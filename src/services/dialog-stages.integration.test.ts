@@ -246,7 +246,7 @@ test('"по объявлениям" is not a request: the assistant asks for con
     assert.equal(await requests(f), 1);
     assert.equal(f.toClient().at(-1)!.text, 'Спасибо, Аня! Передала вашу заявку — Юрия свяжется с вами.');
     assert.equal((await f.state()).pending_offer, undefined);
-    assert.equal((await f.state()).client_name, 'Аня');
+    assert.equal((await f.pg.query<{ preferred_name: string; preferred_name_source: string }>('select preferred_name,preferred_name_source from clients')).rows[0]!.preferred_name, 'Аня');
   } finally { await f.close(); }
 });
 
@@ -349,5 +349,39 @@ test('meaning-only repeat (no shared call to action, different words) is caught 
     const second = await run('а подробнее?');
     assert.equal(second.reply, c);
     assert.match(f.prompts.at(-1)!, /НЕ ПОВТОРЯЙСЯ[^\n]*Ассистент сам отвечает/);
+  } finally { await f.close(); }
+});
+
+test('the name the client gave lives on the client: it wins over "Мама" and survives a new conversation (062)', async () => {
+  const f = await fixture();
+  try {
+    f.reply({ reply: 'Приятно познакомиться! Подключение 1500 ₪.', unanswered: [], intent: 'sale', client_name: 'Аня' });
+    await f.send('m1', 'я Аня, сколько стоит ассистент?', 'Мама');
+    const row = (await f.pg.query<{ preferred_name: string; preferred_name_source: string }>('select preferred_name,preferred_name_source from clients')).rows[0]!;
+    assert.deepEqual([row.preferred_name, row.preferred_name_source], ['Аня', 'client']);
+    assert.equal((await f.state()).client_name, undefined, 'not kept in dialog_state');
+    // A new conversation (e.g. after the old one closed) still greets by the given name.
+    await f.pg.query("update conversations set status='closed', dialog_state='{}'::jsonb");
+    await f.send('m2', 'привет', 'Мама');
+    assert.equal(Number((await f.pg.query<{ n: string }>('select count(*)::text as n from conversations')).rows[0]!.n), 2, 'a new conversation');
+    assert.match(f.toClient().at(-1)!.text, /^Здравствуйте, Аня!/);
+    // A model "name" with digits or a link is not saved.
+    f.reply({ reply: 'Ок.', unanswered: [], intent: 'sale', client_name: 'anya.com' });
+    await f.send('m3', 'а что входит?', 'Мама');
+    assert.equal((await f.pg.query<{ preferred_name: string }>('select preferred_name from clients')).rows[0]!.preferred_name, 'Аня');
+  } finally { await f.close(); }
+});
+
+test('062 moves names kept in dialog_state to clients.preferred_name and drops them from the state', async () => {
+  const { readFileSync } = await import('node:fs');
+  const f = await fixture();
+  try {
+    await f.send('m1', 'привет', 'Мама');
+    await f.pg.query("update clients set preferred_name=null, preferred_name_source=null");
+    await f.pg.query(`update conversations set dialog_state = dialog_state || '{"client_name":"Аня"}'::jsonb`);
+    const sql = readFileSync('supabase/migrations/20260928090000_062_client_preferred_name.sql', 'utf8').replace(/^begin;|commit;$/gm, '');
+    await f.pg.exec(sql.slice(sql.indexOf('update public.clients')));
+    assert.deepEqual((await f.pg.query('select preferred_name,preferred_name_source from clients')).rows, [{ preferred_name: 'Аня', preferred_name_source: 'client' }]);
+    assert.equal((await f.state()).client_name, undefined);
   } finally { await f.close(); }
 });

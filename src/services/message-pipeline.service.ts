@@ -20,7 +20,7 @@ import { discoveryQuestions, REPEAT_SIMILARITY_THRESHOLD } from '../config/disco
 import { mergeClientProfile, profileFacts } from './client-profile.service.js';
 import type { OwnerRequest, ReplyExtras } from './ai-fallback.service.js';
 import type { EmbeddingProvider } from '../providers/embedding/embedding-provider.interface.js';
-import { agreement, hasCallToAction, isDecline, isDirectRequest, usableFirstName } from './client-consent.js';
+import { agreement, hasCallToAction, isDecline, isDirectRequest, preferredName, usableFirstName } from './client-consent.js';
 import { isSemanticRepeat } from './semantic-repeat.service.js';
 import { recordUsageEvent } from './usage.service.js';
 import { CALL_TO_ACTION_PATTERN } from '../config/consent.js';
@@ -78,6 +78,8 @@ export interface PipelineSink {
   /** Summary of the client's open request, if any. */
   openRequest(): Promise<string | null>;
   loadClientProfile(): Promise<string>;
+  /** Name the client gave in the chat: clients.preferred_name (simulator: its session). */
+  saveClientName(name: string): Promise<void>;
   saveClientProfile(profile: string): Promise<void>;
   markIntroduced(): Promise<void>;
   recordUsage(eventType: string, options?: { eventKey?: string; metadata?: Record<string, unknown> }): Promise<void>;
@@ -165,9 +167,15 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
   const questions = discoveryQuestions(config.client_discovery_questions, context.business?.business_sector, language);
   const lastAssistant = [...memory.messages].reverse().find(item => item.fromMe)?.text ?? null;
   const recentBot = memory.messages.filter(item => item.fromMe).slice(-config.repeat_window).map(item => item.text);
-  /** Only for the greeting template and the request confirmation; never "Мама" or a shop nickname. */
-  const clientFirstName = () => usableFirstName(state.client_name ?? client.name, context.business?.business_name);
-  const rememberName = (name: string | null | undefined) => { const usable = usableFirstName(name, context.business?.business_name); if (usable) state.client_name = usable; };
+  /** Only for the greeting template and the request confirmation: the name the client gave, else a usable display name. */
+  const clientFirstName = () => preferredName(client.preferred_name) ?? usableFirstName(client.name, context.business?.business_name);
+  /** Saved on the client (062), so it survives new conversations; `guessed` text (after "да, …") must look like a name. */
+  const rememberName = async (name: string | null | undefined, guessed = false) => {
+    const value = guessed ? usableFirstName(name, context.business?.business_name) : preferredName(name);
+    if (!value || value === client.preferred_name) return;
+    client.preferred_name = value;
+    await sink.saveClientName(value);
+  };
 
   // WhatsApp history on first contact: analysed once per client (intent + up to 5 facts), never quoted back.
   if (history?.messages.length && !state.history_analyzed) {
@@ -204,7 +212,7 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
     const agreed = agreement(text);
     if (agreed) return agentContext.run({ agent: conversation.routed_agent ?? 'RECEPTION' }, async () => {
       await sink.recordUsage('message_received', { eventKey: usageKey });
-      rememberName(agreed.rest);
+      await rememberName(agreed.rest, true);
       const offer = state.pending_offer!;
       return createRequestNow({ summary: offer.summary, time: offer.time }, null);
     });
@@ -350,7 +358,7 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
     }
     if (reception.failure) return escalate(undefined, null, { modelUnavailable: true });
     await updateProfile(reception.profile, reception.profileAnswers);
-    rememberName(reception.clientName);
+    await rememberName(reception.clientName);
     if (reception.intent === 'sale' || reception.intent === 'support') {
       const agentName = reception.intent === 'sale' ? 'SALE' : 'SUPPORT';
       if (registry.byName(agentName, settings)) {
@@ -398,7 +406,7 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
       }
       if (answer.failure) { agentResult = await escalate(undefined, null, { modelUnavailable: true }); return; }
       await updateProfile(answer.profile, answer.profileAnswers);
-      rememberName(answer.clientName);
+      await rememberName(answer.clientName);
       if (gate.mode !== 'closed' && answer.askedQuestion) {
         state.discovery_asked = [...state.discovery_asked, gate.question];
         state.last_question_turn = state.client_turns;

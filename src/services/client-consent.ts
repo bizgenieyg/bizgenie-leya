@@ -21,6 +21,16 @@ export function usableFirstName(name: string | null | undefined, businessName?: 
 }
 
 const clauses = (text: string) => text.split(/[.!?;,\n]+|(?<![\p{L}])(?:но|а|but|אבל)(?![\p{L}])/iu).map(c => c.trim()).filter(Boolean);
+/**
+ * A name the client gave about themselves: kept as said (no stop list — they chose it), only 1–40
+ * characters of letters, spaces, hyphens and apostrophes; no digits, links or "@". First letter upper case.
+ */
+export function preferredName(name: string | null | undefined): string | null {
+  const value = (name ?? '').trim().replace(/\s+/g, ' ');
+  if (!value || value.length > 40 || /[\d@/:.]|www/i.test(value) || !/^[\p{L}][\p{L}'’ -]*$/u.test(value)) return null;
+  return value.charAt(0).toLocaleUpperCase() + value.slice(1);
+}
+
 /** "хочу демо", "перезвоните мне" — yes; "не надо звонить", "что такое демо, не хочу" — no. */
 export function isDirectRequest(text: string): boolean {
   return clauses(text).some(clause => REQUEST_ACTION_PATTERNS.some(pattern => {

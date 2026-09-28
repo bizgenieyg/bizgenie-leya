@@ -26,7 +26,7 @@ export type SourceInput =
   | { kind: 'link'; url: string };
 export interface SourceDeps { taskAI?: AIProvider | null; embedder?: EmbeddingProvider | null; readLink?: typeof readLink; audit?: boolean }
 
-const PHOTO_PROMPT = `Перепиши весь текст с фотографии (прайс, меню, объявление) дословно, сохраняя строки, названия услуг, цены и валюту. Таблицу — строками «название — цена». Ничего не добавляй и не исправляй. Если текста нет — верни пустую строку. Верни только текст.`;
+const PHOTO_PROMPT = `Перепиши весь текст с фотографии (прайс, меню, каталог, объявление, витрина) дословно, сохраняя строки, названия услуг или товаров, цены и валюту. Таблицу — строками «название — цена». Ничего не добавляй и не исправляй. Если текста нет — верни пустую строку. Верни только текст.`;
 
 const check = (error: unknown, message: string) => { if (error) throw new Error(message); };
 async function setStatus(db: DatabaseClient, tenantId: string, id: string, patch: Record<string, unknown>) {

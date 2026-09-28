@@ -1,4 +1,4 @@
-import { discoverySet, type DiscoverySet } from './discovery.js';
+import { discoverySet, offeringKind, type DiscoverySet } from './discovery.js';
 
 /** Topics of the business profile. A code enum (no DB check): a topic is added here without a migration. */
 export const KNOWLEDGE_TOPICS = ['services_prices', 'location_hours', 'booking', 'faq', 'payment_cancel', 'why_us', 'about', 'other'] as const;
@@ -19,6 +19,10 @@ export const requiredTopics = (sector: string | null | undefined): readonly Know
 
 /** Topic names for the model prompts (the cabinet has its own translated labels). */
 export const TOPIC_PROMPT_NAMES: Record<KnowledgeTopic, string> = {
-  services_prices: 'услуги и цены', location_hours: 'адрес и часы работы', booking: 'как записаться или начать', faq: 'частые вопросы',
+  services_prices: 'что предлагает бизнес (услуги, товары или аренда) и цены', location_hours: 'адрес и часы работы', booking: 'как записаться или начать', faq: 'частые вопросы',
   payment_cancel: 'оплата и отмена', why_us: 'почему выбирают этот бизнес', about: 'о бизнесе', other: 'другое',
 };
+
+/** Heading of the offer topic for this tenant's profile: the key stays services_prices, the words follow the sector. */
+export const OFFER_TOPIC_NAMES = { services: 'услуги и цены', goods: 'товары и цены', rental: 'что сдаёте и цены' } as const;
+export const offerTopicName = (sector: string | null | undefined) => OFFER_TOPIC_NAMES[offeringKind(sector)];

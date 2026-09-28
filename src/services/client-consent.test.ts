@@ -52,3 +52,9 @@ test('prompts and defaults never introduce the assistant as "assistant of <owner
   assert.match(SHORT_REPLY_RULES, /напишите «…»/);
   assert.match(REPLY_PRINCIPLES, /Пугающие факты/);
 });
+
+test('preferredName: what the client called themselves, only length and no digits or links', async () => {
+  const { preferredName } = await import('./client-consent.js');
+  for (const [input, expected] of [['Аня', 'Аня'], ['аня', 'Аня'], ['Мама', 'Мама'], ['Анна Мария', 'Анна Мария'], ['Anna2', null], ['anya.com', null], ['@anya', null], ['a'.repeat(41), null], ['', null], [null, null]] as const)
+    assert.equal(preferredName(input), expected, String(input));
+});

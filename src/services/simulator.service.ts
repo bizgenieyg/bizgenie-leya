@@ -30,7 +30,7 @@ export interface SimulationOptions { now?: Date; root?: string; evaluation?: { h
   /** Embeddings for the semantic repeat check; default — the process-wide provider (null without a key). */
   embedder?: EmbeddingProvider | null }
 type SessionState = { introduced: boolean; routed_agent: string | null; route_selected_at: string | null;
-  source_label: string | null; reception_message_count: number; client_time_zone: string | null; profile_md?: string; open_request?: string | null; dialog_state?: unknown };
+  source_label: string | null; reception_message_count: number; client_time_zone: string | null; profile_md?: string; open_request?: string | null; dialog_state?: unknown; preferred_name?: string | null };
 
 async function sessionState(db: DatabaseClient, tenantId: string, sessionId: string): Promise<SessionState> {
   const find = () => db.from('simulator_sessions').select('*').eq('tenant_id', tenantId).eq('id', sessionId).maybeSingle();
@@ -74,7 +74,7 @@ export async function simulateCustomerMessage(db: DatabaseClient, tenantId: stri
   const conversation: ConversationRow = { id: sessionId, tenant_id: tenantId, client_id: sessionId, status: 'active',
     routed_agent: state.routed_agent, route_selected_at: state.route_selected_at, source_label: state.source_label,
     reception_message_count: state.reception_message_count, last_message_at: previous.at(-1)?.createdAt ?? null };
-  const client: ClientRow = { id: sessionId, tenant_id: tenantId, phone: '', name: null, time_zone: state.client_time_zone };
+  const client: ClientRow = { id: sessionId, tenant_id: tenantId, phone: '', name: null, preferred_name: state.preferred_name ?? null, time_zone: state.client_time_zone };
   let sentReply: string | null = null;
   const saveReply = async (reply: string): Promise<void> => {
     const saved = await db.from('simulator_messages').insert({ tenant_id: tenantId, session_id: sessionId,
@@ -124,6 +124,7 @@ export async function simulateCustomerMessage(db: DatabaseClient, tenantId: stri
     },
     openRequest: async () => state.open_request ?? null,
     loadClientProfile: async () => state.profile_md ?? '',
+    saveClientName: async name => { state.preferred_name = name; },
     saveClientProfile: async profile => { state.profile_md = profile; },
     loadDialogState: async () => state.dialog_state ?? {},
     saveDialogState: async dialog => { state.dialog_state = dialog; },
@@ -140,7 +141,7 @@ export async function simulateCustomerMessage(db: DatabaseClient, tenantId: stri
   const model = meterAI(db, tenantId, ai, { simulation: true, purpose: 'simulator_reply' });
   const response = await processCustomerMessage({ db, tenantId, text, client, conversation, memory, settings, ai, model,
     usageKey: randomUUID(), sink, now, embedder: limitOptions?.embedder === undefined ? sharedEmbedder() : limitOptions.embedder });
-  const updated = await db.from('simulator_sessions').update({ introduced: memory.introduced, profile_md: state.profile_md ?? '', open_request: state.open_request ?? null, dialog_state: state.dialog_state ?? {},
+  const updated = await db.from('simulator_sessions').update({ introduced: memory.introduced, profile_md: state.profile_md ?? '', open_request: state.open_request ?? null, preferred_name: state.preferred_name ?? null, dialog_state: state.dialog_state ?? {},
     routed_agent: conversation.routed_agent, route_selected_at: now.toISOString(), source_label: conversation.source_label,
     reception_message_count: conversation.reception_message_count ?? 0, client_time_zone: client.time_zone, updated_at: now.toISOString() })
     .eq('tenant_id', tenantId).eq('id', sessionId);
