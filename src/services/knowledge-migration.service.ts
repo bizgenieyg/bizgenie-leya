@@ -64,6 +64,8 @@ export function formatMigration(result: Pick<MigrationResult, 'parts' | 'gaps'> 
       for (const s of c.skipped) lines.push(`  пропуск (${s.reason === 'service' ? 'служебный текст' : `дубликат: «${s.duplicate_of}»`}): ${s.block.replace(/\s+/g, ' ').slice(0, 160)}`);
       for (const u of c.uncovered) lines.push(`  НЕ ПОКРЫТО: ${u.replace(/\s+/g, ' ').slice(0, 160)}`);
     }
+    for (const r of part.extraction.rewritten ?? []) lines.push(`  переписан по цитате (${r.claims.join(', ')})${r.fallback ? ' → текст цитаты' : ''}: «${r.before}» → «${r.after}»`);
+    for (const r of part.extraction.rejectedSkips ?? []) lines.push(`  «дубликат» не принят (нет в факте: ${r.missing.slice(0, 8).join(', ')}): ${r.block.replace(/\s+/g, ' ').slice(0, 120)}`);
     for (const d of part.extraction.droppedFacts ?? []) lines.push(`  отброшен: «${d.text}» — цитата «${d.quote}»${d.nearest ? `; ближайшее в источнике: «${d.nearest}»` : ''}`);
     const calls = part.extraction.calls ?? [];
     if (calls.length) {
