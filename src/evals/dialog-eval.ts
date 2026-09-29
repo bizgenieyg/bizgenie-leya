@@ -116,10 +116,16 @@ export function scriptedModel(): AIProvider {
     if (input.systemPrompt.includes('классификатор намерений')) return { text: '{"agent":"UNKNOWN","confidence":0.2}' };
     const he = input.systemPrompt.includes('Язык этого ответа: he');
     const reply = (value: Record<string, unknown>) => ({ text: JSON.stringify({ unanswered: [], intent: 'sale', ...value }) });
-    // Task Q: a client describing themselves is answered, the model still (wrongly) proposes a request — code must ask first.
-    if (/по объявлениям|интересно, расскажите|מודעות|מעניין, ספרו/.test(message)) return reply({ reply: he ? 'העוזר יענה מיד לכל מי שכותב מהמודעה, גם בלילה.' : 'Ассистент сразу ответит каждому, кто пишет по объявлению, даже ночью.',
-      request: { summary: 'Хочет автоматические ответы клиентам', topic: he ? 'מענה אוטומטי ללקוחות' : 'автоматические ответы клиентам', time: null } });
-    if (/встреч|запиш|демо|דמו|פגישה/.test(message)) return reply({ reply: null, request: { summary: 'Просит встречу', time: /четверг/.test(message) ? 'четверг' : null } });
+    const mayOffer = input.systemPrompt.includes('Можно предложить клиенту');
+    const owner = input.systemPrompt.includes('"Юрия"') ? 'Юрия' : 'Юрий';
+    // Task X: the stand-in offers only when the prompt allows it, and marks the offer like the real prompt asks.
+    if (mayOffer && /цена подключения|хочу посмотреть|כמה עולה|רוצה לראות/.test(message)) return reply({ reply: he ? `החיבור מ-1500 ₪. ${owner} יראה ב-20 דקות איך זה יעבוד אצלך — לתאם?` : `Подключение от 1500 ₪. ${owner} покажет за 20 минут, как это будет работать у вас — договориться о встрече?`, offered: { summary: 'демо на 20 минут' } });
+    if (/по объявлениям|интересно, расскажите|מודעות|מעניין, ספרו/.test(message)) return reply({ reply: he ? 'העוזר יענה מיד לכל מי שכותב מהמודעה, גם בלילה. מה הכי חשוב לך בזה?' : 'Ассистент сразу ответит каждому, кто пишет по объявлению, даже ночью. Что для вас здесь важнее всего?',
+      request: { summary: 'Хочет автоматические ответы клиентам', time: null } });
+    if (/встреч|запиш|демо|דמו|פגישה/.test(message)) return reply({ reply: he ? `מעולה! ${owner} ייצור איתך קשר לתיאום.` : `Отлично! ${owner} свяжется с вами, чтобы договориться о встрече.`, request: { summary: 'Просит встречу', time: /четверг/.test(message) ? 'четверг' : null } });
+    if (/да хочу/.test(message)) return reply({ reply: `Отлично, ${owner} свяжется с вами, чтобы согласовать встречу.`, request: { summary: 'Демо', time: null } });
+    if (input.systemPrompt.includes('хотя заявка не создана')) return reply({ reply: 'Расскажите, чем занимается ваш бизнес, — так будет понятно, чем поможет ассистент.' });
+    if (/как мне может помочь|чем вы можете помочь/.test(message)) return reply({ reply: 'Ассистент круглосуточно отвечает вашим клиентам по базе вопросов и собирает заявки. Чем занимается ваш бизнес?' });
     if (/не работает|проблем|заказ/.test(message)) return reply({ reply: 'Разберёмся: опишите, что именно не работает.', intent: 'support' });
     if (/юрий\?|ты бот|это владелец/.test(message)) return reply({ reply: 'Я цифровой ассистент BizGenie, отвечу на вопросы об услугах.', intent: 'unknown' });
     if (/эйлат|пластическ/.test(message)) return reply({ reply: null, unanswered: ['Работаете ли с клиниками в Эйлате по субботам?'] });

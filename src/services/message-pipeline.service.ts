@@ -23,7 +23,7 @@ import type { EmbeddingProvider } from '../providers/embedding/embedding-provide
 import { agreement, hasCallToAction, isDecline, isDirectRequest, preferredName, usableFirstName } from './client-consent.js';
 import { isSemanticRepeat } from './semantic-repeat.service.js';
 import { recordUsageEvent } from './usage.service.js';
-import { CALL_TO_ACTION_PATTERN } from '../config/consent.js';
+import { CALL_TO_ACTION_PATTERN, CLAIMED_PASSED_PATTERN, INTEREST_PATTERN, OFFER_QUESTION_PATTERN } from '../config/consent.js';
 
 const normalizeReply = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 function editDistance(a: string, b: string): number {
@@ -35,6 +35,14 @@ function editDistance(a: string, b: string): number {
   }
   return previous[b.length]!;
 }
+/** Fields every model answer shares for the offer/request decision (task X). */
+interface Settleable { reply: string | null; request?: OwnerRequest | null; consent?: boolean | null; offered?: { summary: string } | null; failure?: string }
+/** The last sentence is a question that offers a meeting, demo, call, calculation or passing to the owner. */
+export function isOfferQuestion(text: string): boolean {
+  const last = text.trim().split(/(?<=[.!?…])\s+/).pop() ?? '';
+  return /\?\s*$/.test(last) && OFFER_QUESTION_PATTERN.test(last);
+}
+const lastOfferSentence = (text: string) => (text.trim().split(/(?<=[.!?…])\s+/).pop() ?? text).slice(0, 200);
 /** Same as the previous bot message after normalization, or less than 15 % of characters changed. */
 export function isRepeat(reply: string, previous: string | null): boolean {
   if (!previous) return false;
@@ -74,7 +82,8 @@ export interface PipelineSink {
   loadDialogState(): Promise<unknown>;
   saveDialogState(state: DialogState): Promise<void>;
   /** Owner request (demo, booking, callback…): one open request per client; returns the client text sent. */
-  createRequest(responseLanguage: string, summary: string, repeatReply: string | null, clientFirstName: string | null): Promise<string | null>;
+  /** `confirmation`: the text for the client (model reply or template); null — the sink's own text (repeat of an open request). */
+  createRequest(responseLanguage: string, summary: string, confirmation: string | null, clientFirstName: string | null): Promise<string | null>;
   /** Summary of the client's open request, if any. */
   openRequest(): Promise<string | null>;
   loadClientProfile(): Promise<string>;
@@ -157,8 +166,11 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
   const state = normalizeDialogState(await sink.loadDialogState());
   // An offer to pass the request to the owner waits `request_offer_turns` client messages, then lapses.
   const offerAtStart = state.pending_offer;
+  let offerFromLastMessage: DialogState['pending_offer'] | undefined;
   const finish = async (value: PipelineResult): Promise<PipelineResult> => {
     if (offerAtStart && state.pending_offer === offerAtStart && --state.pending_offer.turns_left < 1) delete state.pending_offer;
+    // An offer inferred from the last bot message lives for this answer only.
+    if (offerFromLastMessage && state.pending_offer === offerFromLastMessage) delete state.pending_offer;
     await sink.saveDialogState(state);
     return value;
   };
@@ -197,24 +209,38 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
     memory.introduced = true;
   };
 
-  /** Creates (or extends) the owner request and sends the confirmation. */
-  const createRequestNow = async (req: OwnerRequest, repeatReply: string | null): Promise<PipelineResult> => {
+  const ownerName = context.business?.owner_name?.trim() || null;
+  /** Template confirmation (no model text): "Готово! Юрий свяжется с вами в четверг." + "как к вам обращаться?" when no name. */
+  const templateConfirmation = (req: OwnerRequest) => {
+    const text = renderGreeting(settings, 'client.request_sent', language, { owner_name: ownerName, client_first_name: clientFirstName(), time: req.time });
+    return clientFirstName() ? text : `${text} ${renderText(settings, 'client.ask_name', language)}`;
+  };
+  /** Creates (or extends) the owner request. The client gets the model's confirmation, else the template. */
+  const createRequestNow = async (req: OwnerRequest, modelReply: string | null, open: boolean): Promise<PipelineResult> => {
     delete state.pending_offer;
+    state.offer_declined = false;
     const summary = req.time ? `${req.summary}\n${renderText(settings, 'owner.request_time', config.owner_language, { time: req.time })}` : req.summary;
-    const reply = await sink.createRequest(language, summary, repeatReply ? clientReply(repeatReply) : null, clientFirstName());
+    // A model text that still asks "передать?" is never a confirmation.
+    const usable = modelReply && !isOfferQuestion(modelReply) ? clientReply(modelReply) : null;
+    const reply = await sink.createRequest(language, summary, usable ?? (open ? null : clientReply(templateConfirmation(req))), clientFirstName());
     await sink.recordUsage('request_created');
     if (reply) memory.introduced = true;
     state.stage = 'request';
     return finish(result(reply, 'escalated'));
   };
-  // Answer to "Передать владельцу…?": "да" creates the request without a model call; "нет" is remembered.
+  // Safety net (task X): the last bot message offered something as a question, but the flag was missed.
+  if (!state.pending_offer && lastAssistant && isOfferQuestion(lastAssistant)) {
+    offerFromLastMessage = { summary: lastOfferSentence(lastAssistant), time: null, topic: null, turns_left: 1 };
+    state.pending_offer = offerFromLastMessage;
+  }
+  // Answer to an offer: "да" / "да хочу" creates the request without a model call; "нет" is remembered.
   if (state.pending_offer) {
     const agreed = agreement(text);
     if (agreed) return agentContext.run({ agent: conversation.routed_agent ?? 'RECEPTION' }, async () => {
       await sink.recordUsage('message_received', { eventKey: usageKey });
       await rememberName(agreed.rest, true);
       const offer = state.pending_offer!;
-      return createRequestNow({ summary: offer.summary, time: offer.time }, null);
+      return createRequestNow({ summary: offer.summary, time: offer.time }, null, !!await sink.openRequest());
     });
     if (isDecline(text)) { delete state.pending_offer; state.offer_declined = true; }
   }
@@ -291,7 +317,8 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
     return finish(result(reply, 'escalated', quiet ? { active: true, until: quiet.toISOString() } : undefined));
   };
 
-  const extras: ReplyExtras = { clientProfile, openRequest: await sink.openRequest(), discoveryIndex: questions };
+  const extras: ReplyExtras = { clientProfile, openRequest: await sink.openRequest(), discoveryIndex: questions,
+    mayOffer: false, pendingOffer: state.pending_offer?.summary ?? null, needClientName: !clientFirstName(), ownerName };
   /** Facts replace the profile; the questions they answer are recorded by code for the discovery gate. */
   const updateProfile = async (facts: string[] | null | undefined, answers: number[] = []) => {
     markAnswered(state, questions, answers);
@@ -299,37 +326,40 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
     const next = mergeClientProfile(clientProfile, facts, now, settings.time_zone ?? 'Asia/Jerusalem');
     if (next !== null) { await sink.saveClientProfile(next); clientProfile = next; }
   };
+  /** Offers are allowed only after interest, or from turn 3 of a sale; never after a refusal or within cta_min_gap_turns. */
+  const interest = INTEREST_PATTERN.test(question) || (!!lastAssistant && /\?\s*$/.test(lastAssistant.trim()) && !isOfferQuestion(lastAssistant) && !/\?\s*$/.test(question.trim()));
+  const mayOffer = () => !state.offer_declined && (state.last_cta_turn === undefined || state.client_turns - state.last_cta_turn >= config.cta_min_gap_turns)
+    && (interest || (state.client_turns >= 3 && state.intent === 'sale'));
+  const offerMade = (r: Settleable) => !!r.reply && (!!r.offered || isOfferQuestion(r.reply));
+  const dropSentences = (reply: string, drop: (sentence: string) => boolean) =>
+    reply.split(/(?<=[.!?…])\s+/).filter(sentence => !drop(sentence)).join(' ').trim() || renderText(settings, 'client.reception_question', language);
   /**
-   * The model asked for an owner request. Created only on a direct request ("хочу демо"), a "yes" to an
-   * earlier offer, or new details for an already open request; otherwise the client is asked first.
+   * Task X: the model writes every text; code only decides. A request stands only on a direct request, a "yes"
+   * to the pending offer or an open request. A reply claiming "передано/свяжется" without a request, or an offer
+   * that is not allowed now, is regenerated once and then trimmed. A made offer becomes pending_offer.
    */
-  const request = async (req: OwnerRequest, modelReply: string | null, consent: boolean | null | undefined): Promise<PipelineResult> => {
-    if (extras.openRequest || isDirectRequest(question) || (state.pending_offer && consent === true)) {
-      state.offer_declined = false;
-      return createRequestNow(req, modelReply);
+  const settleOffer = async <T extends Settleable>(first: T, regenerate: (overrides: Partial<ReplyExtras>) => Promise<T>): Promise<T> => {
+    let r = first;
+    if (r.failure) return r;
+    const pending = state.pending_offer;
+    if (pending && r.consent === true && !r.request) r.request = { summary: pending.summary, time: pending.time };
+    if (pending && r.consent === false) { delete state.pending_offer; state.offer_declined = true; }
+    if (r.request) {
+      if (extras.openRequest || isDirectRequest(question) || (pending && (r.consent === true || agreement(text)))) return r;
+      r.request = null;
     }
-    // No question marks left in the model's part: the offer is the single question of this message.
-    const answer = modelReply ? clientText(modelReply).split(/(?<=[.!?…])\s+/).filter(sentence => !sentence.trim().endsWith('?')).join(' ').trim() : '';
-    if (state.offer_declined) {
-      const reply = clientReply(answer || renderText(settings, 'client.reception_question', language));
-      await send(reply);
-      return finish(result(reply, 'answered'));
+    if (r.reply && CLAIMED_PASSED_PATTERN.test(r.reply)) {
+      const again = await regenerate({ noPassedClaim: true, mayOffer: mayOffer() });
+      if (!again.failure && again.reply) { again.request = null; r = again; }
+      if (r.reply && CLAIMED_PASSED_PATTERN.test(r.reply)) r.reply = dropSentences(r.reply, sentence => CLAIMED_PASSED_PATTERN.test(sentence));
     }
-    const owner = context.business?.owner_name?.trim();
-    const topic = (req.topic ?? req.summary.split('\n')[0] ?? '').replace(/[«»"]/g, '').slice(0, 60).trim();
-    const offer = renderText(settings, owner ? 'client.request_offer' : 'client.request_offer_generic', language, { owner_name: owner ?? '', summary_short: topic });
-    const reply = clientReply([answer, clientFirstName() ? offer : `${offer} ${renderText(settings, 'client.ask_name', language)}`].filter(Boolean).join('\n\n'));
-    state.pending_offer = { summary: req.summary, time: req.time, topic, turns_left: config.request_offer_turns };
-    await send(reply);
-    await sink.recordAgentAction('request_offered', question);
-    return finish(result(reply, 'answered'));
-  };
-  /** "да"/"нет" to the offer recognised by the model when the dictionaries did not catch it. */
-  const consentWithoutRequest = async (consent: boolean | null | undefined): Promise<PipelineResult | null> => {
-    if (!state.pending_offer || consent == null) return null;
-    if (consent) return createRequestNow({ summary: state.pending_offer.summary, time: state.pending_offer.time }, null);
-    delete state.pending_offer; state.offer_declined = true;
-    return null;
+    if (offerMade(r) && !mayOffer()) {
+      const again = await regenerate({ mayOffer: false });
+      if (!again.failure && !again.request && again.reply) r = again;
+      if (offerMade(r)) { r.reply = dropSentences(r.reply!, sentence => /\?\s*$/.test(sentence) && OFFER_QUESTION_PATTERN.test(sentence)); r.offered = null; }
+    }
+    if (offerMade(r) && mayOffer()) state.pending_offer = { summary: r.offered?.summary ?? lastOfferSentence(r.reply!), time: null, topic: r.offered?.summary ?? null, turns_left: config.request_offer_turns };
+    return r;
   };
   /** The same call to action (demo, booking, passing to the owner) at most once per `cta_min_gap_turns`. */
   const ctaTooSoon = (reply: string) => hasCallToAction(reply) && state.last_cta_turn !== undefined && state.client_turns - state.last_cta_turn < config.cta_min_gap_turns;
@@ -347,6 +377,7 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
     await sink.recordUsage('message_received', { eventKey: usageKey });
     const clarification = renderText(settings, 'client.reception_question', language);
     const closed: DiscoveryGate = { mode: 'closed' };
+    extras.mayOffer = mayOffer();
     let reception = await generateReceptionReply(context, question, clarification, knowledgeModel, memory.messages, memory.introduced, language, { ...extras, discovery: closed });
     const repeated = !reception.failure && !reception.request && !!reception.reply && (ctaTooSoon(reception.reply) || await textRepeat(reception.reply));
     let stillRepeated = false;
@@ -367,9 +398,8 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
       }
       state.intent = reception.intent; state.stage = 'intent_known';
     } else state.stage = 'intent_unknown';
-    if (reception.request) return request(reception.request, reception.reply, reception.consent);
-    const consented = await consentWithoutRequest(reception.consent);
-    if (consented) return consented;
+    reception = await settleOffer(reception, overrides => generateReceptionReply(context, question, clarification, knowledgeModel, memory.messages, memory.introduced, language, { ...extras, discovery: closed, ...overrides }));
+    if (reception.request) return createRequestNow(reception.request, reception.reply, !!extras.openRequest);
     if (reception.unanswered?.length) {
       for (const item of reception.unanswered) await sink.recordAgentAction('knowledge_missing', item);
       return escalate(reception.unanswered, reception.reply ? clientReply(reception.reply) : null);
@@ -390,7 +420,7 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
     await sink.recordUsage('message_received', { eventKey: usageKey });
     await sink.attributeVoice?.(agent.name);
     const gate = discoveryGate(state, questions, true);
-    const agentExtras: ReplyExtras = { ...extras, discovery: gate };
+    const agentExtras: ReplyExtras = { ...extras, discovery: gate, mayOffer: mayOffer() };
     let agentResult: PipelineResult | null = null;
     await agent.execute({ answerFromKnowledge: async () => {
       let answer = await generateKnowledgeReplyResult(context, question, knowledgeModel, agent.systemPrompt, memory.messages, memory.introduced, language, agentExtras);
@@ -411,9 +441,8 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
         state.discovery_asked = [...state.discovery_asked, gate.question];
         state.last_question_turn = state.client_turns;
       }
-      if (answer.request) { agentResult = await request(answer.request, answer.reply, answer.consent); return; }
-      const consented = await consentWithoutRequest(answer.consent);
-      if (consented) { agentResult = consented; return; }
+      answer = await settleOffer(answer, overrides => generateKnowledgeReplyResult(context, question, knowledgeModel, agent.systemPrompt, memory.messages, memory.introduced, language, { ...agentExtras, ...overrides }));
+      if (answer.request) { agentResult = await createRequestNow(answer.request, answer.reply, !!extras.openRequest); return; }
       if (answer.unanswered.length) {
         if (answer.reply) await sink.recordAgentAction('knowledge_ai_answer');
         for (const item of answer.unanswered) await sink.recordAgentAction('knowledge_missing', item);

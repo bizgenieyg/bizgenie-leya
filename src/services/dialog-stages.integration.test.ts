@@ -228,69 +228,85 @@ test('no model key: "какие услуги?" escalates as an outage (missing_a
 // Task Q: an owner request only after a direct request or the client's "yes" to an offer.
 const requests = async (f: Awaited<ReturnType<typeof fixture>>) => Number((await f.pg.query<{ n: string }>("select count(*)::text as n from escalations where kind='request'")).rows[0]!.n);
 
-test('"по объявлениям" is not a request: the assistant asks for consent (and a name); "да" creates it without a model call', async () => {
+const both = (text: string) => /свяжется|передан/i.test(text) && /Передать/.test(text);
+
+test('29.09 simulator dialog (task X): no offer on a general question, "да хочу" without an offer is no request, one offer later, "да" → one confirmation', async () => {
   const f = await fixture();
   try {
-    f.reply({ reply: 'Ассистент сам ответит тем, кто пишет по объявлению, даже ночью. Это вам подходит?', unanswered: [], intent: 'sale',
-      request: { summary: 'Клиенты приходят по объявлениям, хочет автоматизацию', topic: 'ответы клиентам по объявлениям', time: null } });
-    await f.send('m1', 'по объявлениям', 'Мама');
-    assert.equal(await requests(f), 0, 'no request without consent');
-    const offer = f.toClient().at(-1)!.text;
-    assert.match(offer, /^Ассистент сам ответит тем, кто пишет по объявлению, даже ночью\./);
-    assert.match(offer, /Передать Юрия, чтобы связался с вами по поводу «ответы клиентам по объявлениям»\? И как к вам обращаться\?$/);
-    assert.doesNotMatch(offer, /Мама|подходит\?/, 'the model question is dropped, "Мама" is never a name');
-    assert.equal(((await f.state()).pending_offer as { turns_left: number }).turns_left, 2);
+    await f.send('m1', 'привет');
+    // General question, turn 1: the offer the model makes is not allowed yet → one regeneration without it.
+    f.reply({ reply: 'Ассистент круглосуточно отвечает клиентам по базе вопросов и собирает заявки. Хотите, Юрий покажет за 20 минут, как это будет работать у вас?', unanswered: [], intent: 'sale', offered: { summary: 'демо' } },
+      { reply: 'Ассистент круглосуточно отвечает клиентам по базе вопросов и собирает заявки. Чем занимается ваш бизнес?', unanswered: [], intent: 'sale' });
+    await f.send('m2', 'как мне может помочь Лея?');
+    assert.equal(f.toClient().at(-1)!.text, 'Ассистент круглосуточно отвечает клиентам по базе вопросов и собирает заявки. Чем занимается ваш бизнес?');
+    assert.equal((await f.state()).pending_offer, undefined);
+    // "да хочу" with nothing offered: the model's request and its "Юрий свяжется" are not sent as is.
+    f.reply({ reply: 'Отлично, Юрий свяжется с вами, чтобы согласовать встречу.', unanswered: [], intent: 'sale', request: { summary: 'Демо', time: null } },
+      { reply: 'Расскажите, пожалуйста, чем занимается ваш бизнес — так будет понятно, чем ассистент поможет.', unanswered: [], intent: 'sale' });
+    await f.send('m3', 'да хочу');
+    assert.equal(await requests(f), 0);
+    assert.doesNotMatch(f.toClient().at(-1)!.text, /свяжется|Передать/);
+    // The client describes the business and wants to see it: now one offer, worded by the model, owner in the third person.
+    f.reply({ reply: 'Для салона ассистент возьмёт на себя запись и ответы по ценам. Юрия покажет за 20 минут, как это будет работать у вас — договориться о встрече?', unanswered: [], intent: 'sale', offered: { summary: 'демо на 20 минут' } });
+    await f.send('m4', 'у меня салон красоты, хочу посмотреть, как это работает');
+    assert.equal(((await f.state()).pending_offer as { summary: string }).summary, 'демо на 20 минут');
     const calls = f.prompts.length;
-    await f.send('m2', 'да, Аня', 'Мама');
+    await f.send('m5', 'да');
     assert.equal(f.prompts.length, calls, 'consent needs no model call');
     assert.equal(await requests(f), 1);
-    assert.equal(f.toClient().at(-1)!.text, 'Спасибо, Аня! Передала вашу заявку — Юрия свяжется с вами.');
-    assert.equal((await f.state()).pending_offer, undefined);
-    assert.equal((await f.pg.query<{ preferred_name: string; preferred_name_source: string }>('select preferred_name,preferred_name_source from clients')).rows[0]!.preferred_name, 'Аня');
+    assert.equal(f.toClient().at(-1)!.text, 'Готово, Марина! Юрия свяжется с вами.');
+    for (const message of f.toClient()) { assert.ok(!both(message.text), message.text); assert.doesNotMatch(message.text, /(^|[^\p{L}])(покажу|я покажу)/iu); }
   } finally { await f.close(); }
 });
 
-test('"хочу демо" is a direct request: created at once; "не надо звонить" is not', async () => {
+test('"хочу демо" first: request at once, the model reply is the only confirmation; "не надо звонить" is not a request', async () => {
   const f = await fixture();
   try {
-    f.reply({ reply: null, unanswered: [], intent: 'sale', request: { summary: 'Не надо звонить', time: null } });
+    f.reply({ reply: 'Хорошо, напишу здесь.', unanswered: [], intent: 'sale', request: { summary: 'Не надо звонить', time: null } });
     await f.send('m1', 'не надо звонить, просто напишите');
     assert.equal(await requests(f), 0);
-    f.reply({ reply: null, unanswered: [], intent: 'sale', request: { summary: 'Хочет демо', time: null } });
+    f.reply({ reply: 'Отлично! Юрия свяжется с вами, чтобы договориться о демо.', unanswered: [], intent: 'sale', request: { summary: 'Хочет демо', time: null } });
     await f.send('m2', 'хочу демо');
     assert.equal(await requests(f), 1);
-    assert.equal(f.toClient().at(-1)!.text, 'Спасибо, Марина! Передала вашу заявку — Юрия свяжется с вами.');
+    assert.equal(f.toClient().at(-1)!.text, 'Отлично! Юрия свяжется с вами, чтобы договориться о демо.');
   } finally { await f.close(); }
 });
 
-test('"нет" to the offer: no request and no second offer; an unanswered offer lapses after two client turns', async () => {
+test('offer → "нет, спасибо": no request and no second offer; an unanswered offer lapses; the safety net catches an unflagged offer', async () => {
   const f = await fixture();
   try {
-    const wants = { reply: 'Покажу, как это выглядит у вас.', unanswered: [], intent: 'sale', request: { summary: 'Интерес к ассистенту', topic: 'ассистент', time: null } };
-    f.reply(wants);
-    await f.send('m1', 'интересно');
+    const offer = { reply: 'Подключение от 1500 ₪. Юрия покажет за 20 минут, как это будет у вас — показать?', unanswered: [], intent: 'sale', offered: { summary: 'демо' } };
+    f.reply(offer);
+    await f.send('m1', 'какая цена подключения?');
     assert.ok((await f.state()).pending_offer);
-    f.reply({ reply: 'Хорошо, если появятся вопросы — пишите.', unanswered: [], intent: 'sale' });
-    await f.send('m2', 'нет, не сейчас');
+    f.reply({ reply: 'Хорошо. Если появятся вопросы — пишите.', unanswered: [], intent: 'sale' });
+    await f.send('m2', 'нет, спасибо');
     assert.equal((await f.state()).offer_declined, true);
-    assert.equal((await f.state()).pending_offer, undefined);
-    f.reply({ ...wants, reply: 'Подключение 1500 ₪.' });
-    await f.send('m3', 'а цена какая');
-    assert.equal(f.toClient().at(-1)!.text, 'Подключение 1500 ₪.', 'no second offer after a decline');
+    f.reply(offer, { reply: 'В подключение входит настройка и база знаний.', unanswered: [], intent: 'sale' });
+    await f.send('m3', 'а что входит в цену?');
+    assert.equal(f.toClient().at(-1)!.text, 'В подключение входит настройка и база знаний.', 'no second offer after a refusal');
     assert.equal(await requests(f), 0);
 
     const g = await fixture();
     try {
-      g.reply(wants);
-      await g.send('m1', 'интересно');
+      g.reply(offer);
+      await g.send('m1', 'какая цена подключения?');
       g.reply({ reply: 'Работает в WhatsApp.', unanswered: [], intent: 'sale' }, { reply: 'Настройка за день.', unanswered: [], intent: 'sale' });
       await g.send('m2', 'а как это работает');
-      assert.equal(((await g.state()).pending_offer as { turns_left: number }).turns_left, 1);
       await g.send('m3', 'а сколько настраивать');
       assert.equal((await g.state()).pending_offer, undefined, 'lapsed after two client turns');
       await g.send('m4', 'да');
       assert.equal(await requests(g), 0, 'a late "да" is not consent');
     } finally { await g.close(); }
+
+    const h = await fixture();
+    try {
+      // Offer without the flag: the question in the last bot message is enough.
+      h.reply({ ...offer, offered: null });
+      await h.send('m1', 'какая цена подключения?');
+      await h.send('m2', 'да хочу');
+      assert.equal(await requests(h), 1);
+    } finally { await h.close(); }
   } finally { await f.close(); }
 });
 

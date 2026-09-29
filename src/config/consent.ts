@@ -20,7 +20,7 @@ export const NEGATION_PATTERN = /(?<![\p{L}])(?:не|нет|ни|не надо|�
 
 /** Short answers that accept the assistant's offer to pass the request to the owner. */
 export const AGREEMENT_WORDS: readonly string[] = [
-  'да', 'давайте', 'давай', 'ок', 'окей', 'хорошо', 'можно', 'конечно', 'го', 'ага', 'угу', 'передайте', 'передай', 'пожалуйста', '👍', '👌',
+  'да хочу', 'хочу', 'хотим', 'да', 'давайте', 'давай', 'интересно', 'ок', 'окей', 'хорошо', 'можно', 'конечно', 'го', 'ага', 'угу', 'передайте', 'передай', 'пожалуйста', '👍', '👌',
   'כן', 'יאללה', 'בטח', 'סבבה', 'אוקיי', 'אוקי', 'בסדר', 'תעביר', 'תעבירי',
   'yes', 'yeah', 'yep', 'ok', 'okay', 'sure', "let's", 'lets', 'please', 'go ahead',
 ];
@@ -33,3 +33,10 @@ export const DECLINE_WORDS: readonly string[] = [
 
 /** A reply that offers a demo, a booking or passing to the owner (a call to action). */
 export const CALL_TO_ACTION_PATTERN = /(?<![\p{L}])(?:демо|запис|созвон|встреч|передать|передам|покажу|приглаша|דמו|לקבוע|פגישה|להעביר|אעביר|demo|book|schedule|meeting|pass (?:it|this|your)|call)/iu;
+
+/** A bot question that offers a meeting, demo, call, booking or passing to the owner (task X). */
+export const OFFER_QUESTION_PATTERN = /(?<![\p{L}])(?:покаж|встреч|демо|созвон|свяж|связать|переда|рассчита|запис|להראות|אראה|פגישה|דמו|לקבוע|לתאם|להעביר|לחשב|show|meet|demo|call|book|schedule|pass|calculate)/iu;
+/** A reply that says the request is already passed or someone will contact (only true when code created it). */
+export const CLAIMED_PASSED_PATTERN = /(?<![\p{L}])(?:свяжется|свяжутся|передал|передала|передано|передам|получит[^.!?]{0,20}(?:заявк|просьб|запрос|сообщени)|ייצור|יחזור|העברתי|הועבר|will (?:contact|call|get in touch)|passed (?:it|this|your)|forwarded)/iu;
+/** The client showed interest by asking about price, terms or how to start (task X: an offer may follow). */
+export const INTEREST_PATTERN = /(?<![\p{L}])(?:цен|стоит|стоимост|сколько|срок|как начать|как подключ|подключ|когда можно|попробова|пробн|כמה עולה|מחיר|מתי|איך מתחילים|לנסות|price|cost|how much|how long|how to start|get started|trial)/iu;

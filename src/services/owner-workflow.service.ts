@@ -152,7 +152,8 @@ export async function createOwnerRequest(db:DatabaseClient,provider:WhatsAppProv
     await sendClient(db,provider,{...open,client_chat_id:input.client_chat_id,session:input.session},text,'reply',[],`request:${open.id}:repeat:${input.inbound_id??randomUUID()}`);
     return withoutRepeatedIntroduction(text,true);
   }
-  const text=renderGreeting(settings,'client.request_sent',language,{owner_name:ownerName,client_first_name:clientFirstName});
+  // Task X: the pipeline sends its confirmation (model text or template); the template here is only a fallback.
+  const text=repeatReply??renderGreeting(settings,'client.request_sent',language,{owner_name:ownerName,client_first_name:clientFirstName});
   return (await createEscalation(db,provider,{...input,question:summary},settings,null,{kind:'request',clientText:text}))??null;
 }
 export async function notifyOwner(db:DatabaseClient,provider:WhatsAppProvider,e:Escalation,settings:OwnerSettings):Promise<boolean> {

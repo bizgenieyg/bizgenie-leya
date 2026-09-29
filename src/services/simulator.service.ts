@@ -116,7 +116,7 @@ export async function simulateCustomerMessage(db: DatabaseClient, tenantId: stri
         reply = withoutRepeatedIntroduction(repeatReply ?? renderText(settings, 'client.request_repeat', language, { owner_name: ownerName }), true);
       } else {
         state.open_request = summary.slice(0, 2000);
-        reply = withoutRepeatedIntroduction(renderGreeting(settings, 'client.request_sent', language, { owner_name: ownerName, client_first_name: clientFirstName }), memory.introduced);
+        reply = withoutRepeatedIntroduction(repeatReply ?? renderGreeting(settings, 'client.request_sent', language, { owner_name: ownerName, client_first_name: clientFirstName }), memory.introduced);
       }
       sentReply = reply;
       await saveReply(reply);

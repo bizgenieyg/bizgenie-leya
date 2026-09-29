@@ -90,19 +90,9 @@ export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
     "he": "(העוזר לא היה זמין)"
   },
   "client.request_sent": {
-    "ru": "Спасибо{, client_first_name}! Передала вашу заявку — {owner_name} свяжется с вами.",
-    "he": "תודה{ client_first_name}! העברתי את הבקשה שלך — {owner_name} ייצור איתך קשר.",
-    "en": "Thank you{, client_first_name}! I've passed on your request — {owner_name} will get in touch with you."
-  },
-  "client.request_offer": {
-    "ru": "Передать {owner_name}, чтобы связался с вами по поводу «{summary_short}»?",
-    "he": "להעביר ל{owner_name} שיחזור אליך בנושא «{summary_short}»?",
-    "en": "Shall I pass this to {owner_name} to get in touch with you about «{summary_short}»?"
-  },
-  "client.request_offer_generic": {
-    "ru": "Передать вашу просьбу, чтобы с вами связались по поводу «{summary_short}»?",
-    "he": "להעביר את הבקשה כדי שיחזרו אליך בנושא «{summary_short}»?",
-    "en": "Shall I pass on your request so someone gets in touch with you about «{summary_short}»?"
+    "ru": "Готово{, client_first_name}! {owner_name} свяжется с вами{ в time}.",
+    "he": "מעולה{ client_first_name}! הפרטים אצל {owner_name}, ניצור איתך קשר{ ב־time}.",
+    "en": "Done{, client_first_name}! {owner_name} will get in touch with you{ on time}."
   },
   "client.ask_name": {
     "ru": "И как к вам обращаться?",
@@ -268,6 +258,9 @@ export const LEGACY_TEMPLATE_DEFAULTS: Record<string, string[]> = {
     "היי! כאן {assistant_name}, בשם {owner_name}. במה אפשר לעזור?",
   ],
   "client.request_sent": [
+    "Спасибо{, client_first_name}! Передала вашу заявку — {owner_name} свяжется с вами.",
+    "תודה{ client_first_name}! העברתי את הבקשה שלך — {owner_name} ייצור איתך קשר.",
+    "Thank you{, client_first_name}! I've passed on your request — {owner_name} will get in touch with you.",
     "Передала вашу заявку — {owner_name} свяжется с вами.",
     "העברתי את הבקשה שלך — {owner_name} ייצור איתך קשר.",
     "I've passed on your request — {owner_name} will get in touch with you.",
