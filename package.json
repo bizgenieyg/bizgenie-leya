@@ -15,6 +15,7 @@
     "eval:dialogs": "npm run build && node dist/scripts/eval-dialogs.js",
     "check:task-model": "npm run build && node dist/scripts/check-task-model.js",
     "knowledge:migrate": "npm run build && node dist/scripts/knowledge-migrate.js",
+    "knowledge:extract-check": "npm run build && node dist/scripts/knowledge-extract-check.js",
     "knowledge:audit": "npm run build && node dist/scripts/knowledge-audit.js"
   },
   "engines": {

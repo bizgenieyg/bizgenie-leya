@@ -78,8 +78,9 @@ export const BEHAVIOR_DEFAULTS = {
   facts_search_results: 12,
   /** Longest pasted text for "Добавить что угодно". */
   source_text_max_chars: 50_000,
-  /** Long sources are extracted in parts of about this many characters. */
-  extraction_chunk_chars: 20_000,
+  /** Long sources are extracted in parts of about this many characters (task W: one part of 6 350 chars kept ~21
+   *  facts of ~45 Q&A pairs; ~2 500 chars ≈ 15 pairs per call keeps the answer short enough to list every one). */
+  extraction_chunk_chars: 2_500,
   /** Links: download timeout, page size and how many inner pages of the same site are read. */
   link_timeout_seconds: 15,
   link_max_bytes: 2 * 1024 * 1024,

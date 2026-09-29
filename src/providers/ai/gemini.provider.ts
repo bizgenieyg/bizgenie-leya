@@ -64,7 +64,7 @@ export class GeminiProvider implements AIProvider {
       const text = candidate.content?.parts?.filter(part => !part.thought && typeof part.text === "string").map(part => part.text).join("").trim();
       if (!text) { failure = { reason: 'empty' }; throw new Error("Gemini reply empty"); }
       recordModelOutcome(true);
-      return { text, usage };
+      return { text, usage: { ...usage, finish_reason: candidate.finishReason } };
     } catch {
       // Operational codes only: never the prompt, the client's text or the key.
       console.error('model_call_failed', { model: this.model, ...failure });

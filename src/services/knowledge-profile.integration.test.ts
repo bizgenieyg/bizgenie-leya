@@ -167,9 +167,10 @@ test('knowledge:migrate --dry-run prints facts by topic and gaps and writes noth
     await f.pg.query("insert into knowledge_documents(tenant_id,file_name,media_type,size_bytes,character_count,extracted_text,status,embedding_model,embedding_dimensions) values($1,'base.md','text/markdown',100,100,$2,'ready','m',768)", [f.tenantId, PRICE]);
     const model = taskModel();
     const dry = await migrateKnowledge(f.db, f.tenantId, model.ai as never, null, true);
-    const report = formatMigration(dry.parts);
+    const report = formatMigration(dry);
     assert.match(report, /## services_prices\n- Маникюр с покрытием — 150 ₪\.\n  «Маникюр с покрытием — 150 ₪»/);
-    assert.match(report, /Пробелы: booking/);
+    assert.match(report, /Пробелы: booking, faq, payment_cancel, why_us/, 'required topics of the sector without facts, by code');
+    assert.match(report, /Блоков: \d+; покрыто: \d+/);
     assert.equal(Number((await f.pg.query<{ n: string }>('select count(*)::text as n from business_facts')).rows[0]!.n), 0);
     assert.equal(Number((await f.pg.query<{ n: string }>('select count(*)::text as n from knowledge_sources')).rows[0]!.n), 0);
     const real = await migrateKnowledge(f.db, f.tenantId, model.ai as never, null, false);

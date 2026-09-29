@@ -6,7 +6,7 @@ export interface AIReplyInput {
   images?: Array<{ mimeType: string; data: string }>;
 }
 
-export interface AIUsage { model?: string; input_tokens?: number; output_tokens?: number; total_tokens?: number; thinking_tokens?: number; cached_input_tokens?: number; }
+export interface AIUsage { model?: string; input_tokens?: number; output_tokens?: number; total_tokens?: number; thinking_tokens?: number; cached_input_tokens?: number; finish_reason?: string; }
 /** Why a model call failed: safe operational codes only (HTTP code, provider status), never prompt/key text. */
 export interface AIFailure { reason:string; httpStatus?:number; providerStatus?:string; providerMessage?:string }
 export class AIProviderError extends Error {

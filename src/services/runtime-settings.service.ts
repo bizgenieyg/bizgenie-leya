@@ -98,7 +98,7 @@ export function validateRuntimePatch(input:Record<string,unknown>) {
   else if(key==='fact_duplicate_threshold'){if(typeof value!=='number'||value<0.5||value>1)throw new HttpError(400,'Invalid duplicate threshold');behaviorPatch[key]=value;}
   else if(key==='facts_search_results')behaviorPatch[key]=integer(key,value,1,50);
   else if(key==='source_text_max_chars')behaviorPatch[key]=integer(key,value,1000,200000);
-  else if(key==='extraction_chunk_chars')behaviorPatch[key]=integer(key,value,2000,100000);
+  else if(key==='extraction_chunk_chars')behaviorPatch[key]=integer(key,value,500,100000);
   else if(key==='link_timeout_seconds')behaviorPatch[key]=integer(key,value,1,60);
   else if(key==='link_max_bytes')behaviorPatch[key]=integer(key,value,10000,20*1024*1024);
   else if(key==='link_max_pages')behaviorPatch[key]=integer(key,value,0,10);

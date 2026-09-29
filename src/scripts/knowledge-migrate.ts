@@ -13,7 +13,7 @@ async function main() {
   const tenant = resolveTenant(input, (tenants.data ?? []) as Array<{ id: string; name: string | null }>);
   const dryRun = process.argv.includes('--dry-run');
   const result = await migrateKnowledge(supabase, tenant, createTaskAIProvider(), createEmbeddingProvider(), dryRun);
-  console.log(formatMigration(result.parts));
+  console.log(formatMigration(result));
   console.log(dryRun ? 'Dry run: nothing written.' : `Saved ${result.saved} active facts; knowledge_mode=${result.saved ? 'facts' : 'unchanged'}.`);
 }
 main().catch(error => { console.error(error instanceof Error ? error.message : 'knowledge:migrate failed'); process.exitCode = 1; });

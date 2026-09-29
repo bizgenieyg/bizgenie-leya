@@ -3,7 +3,9 @@ import type { AIProvider } from '../providers/ai/ai-provider.interface.js';
 import type { EmbeddingProvider } from '../providers/embedding/embedding-provider.interface.js';
 import { behavior, saveRuntimeSettings } from './runtime-settings.service.js';
 import { loadOwnerSettings } from './owner-settings.service.js';
-import { extractFacts, type Extraction } from './fact-extraction.service.js';
+import { extractFacts, requiredGaps, type Extraction } from './fact-extraction.service.js';
+import { requiredTopics, type KnowledgeTopic } from '../config/knowledge-topics.js';
+import { TASK_PRICE_INPUT_PER_MILLION, TASK_PRICE_OUTPUT_PER_MILLION } from '../config/evals.js';
 import { activeFacts, saveExtraction } from './business-facts.service.js';
 import { meterAI } from './metered-providers.js';
 
@@ -14,8 +16,12 @@ import { meterAI } from './metered-providers.js';
  * after a successful run and 'legacy' rolls it back. A dry run writes nothing.
  */
 export interface MigrationPart { title: string; documentId: string | null; text: string; extraction: Extraction }
-export async function migrateKnowledge(db: DatabaseClient, tenantId: string, ai: AIProvider, embedder: EmbeddingProvider | null, dryRun: boolean): Promise<{ parts: MigrationPart[]; saved: number }> {
+export interface MigrationResult { parts: MigrationPart[]; saved: number; sector: string | null; required: readonly KnowledgeTopic[]; gaps: KnowledgeTopic[] }
+export async function migrateKnowledge(db: DatabaseClient, tenantId: string, ai: AIProvider, embedder: EmbeddingProvider | null, dryRun: boolean): Promise<MigrationResult> {
   const config = behavior(await loadOwnerSettings(db, tenantId));
+  const tenant = await db.from('tenants').select('business_sector').eq('id', tenantId).maybeSingle();
+  if (tenant.error) throw new Error('Tenant unavailable');
+  const sector = (tenant.data?.business_sector as string | null | undefined) ?? null, required = requiredTopics(sector);
   const items = await db.from('knowledge_items').select('question,answer').eq('tenant_id', tenantId).eq('active', true);
   if (items.error) throw new Error('Knowledge items unavailable');
   const docs = await db.from('knowledge_documents').select('id,file_name,extracted_text').eq('tenant_id', tenantId).eq('status', 'ready');
@@ -38,13 +44,33 @@ export async function migrateKnowledge(db: DatabaseClient, tenantId: string, ai:
     saved += (await saveExtraction(db, tenantId, String(source.data.id), extraction, { status: 'active', createdBy: 'migration', embedder, duplicateThreshold: config.fact_duplicate_threshold })).saved;
   }
   if (!dryRun && saved > 0) await saveRuntimeSettings(db, tenantId, { knowledge_mode: 'facts' });
-  return { parts, saved };
+  // Gaps by code (R p. 2): required topics of the sector without facts — extracted ones in a dry run, active ones after saving.
+  const topics = dryRun ? parts.flatMap(p => p.extraction.facts.map(f => f.topic)) : (await activeFacts(db, tenantId)).map(f => f.topic);
+  return { parts, saved, sector, required, gaps: requiredGaps(required, topics, parts.flatMap(p => p.extraction.gaps)) };
 }
 
-export function formatMigration(parts: MigrationPart[]): string {
-  const facts = parts.flatMap(p => p.extraction.facts);
+/** Dry-run / run report: facts by topic, gaps, coverage of source blocks, dropped quotes, model calls and cost. */
+export function formatMigration(result: Pick<MigrationResult, 'parts' | 'gaps'> & Partial<Pick<MigrationResult, 'sector' | 'required'>>): string {
+  const parts = result.parts, facts = parts.flatMap(p => p.extraction.facts);
   const topics = [...new Set(facts.map(f => f.topic))];
-  const gaps = [...new Set(parts.flatMap(p => p.extraction.gaps))].filter(t => !topics.includes(t));
-  return [...topics.map(t => `## ${t}\n${facts.filter(f => f.topic === t).map(f => `- ${f.text}\n  «${f.quote}»`).join('\n')}`),
-    `\nПробелы: ${gaps.join(', ') || 'нет'}`, `Фактов: ${facts.length}; отброшено без цитаты: ${parts.reduce((n, p) => n + p.extraction.dropped, 0)}; конфликтов: ${parts.reduce((n, p) => n + p.extraction.conflicts.length, 0)}`].join('\n');
+  const lines = topics.map(t => `## ${t}\n${facts.filter(f => f.topic === t).map(f => `- ${f.text}\n  «${f.quote}»`).join('\n')}`);
+  if (result.required) lines.push(`\nСфера: ${result.sector || 'не указана'}; обязательные темы: ${result.required.join(', ')}`);
+  lines.push(`Пробелы: ${result.gaps.join(', ') || 'нет'}`);
+  lines.push(`Фактов: ${facts.length}; отброшено без цитаты: ${parts.reduce((n, p) => n + p.extraction.dropped, 0)}; конфликтов: ${parts.reduce((n, p) => n + p.extraction.conflicts.length, 0)}`);
+  for (const part of parts) {
+    const c = part.extraction.coverage;
+    if (c) {
+      lines.push(`\n[${part.title}] Блоков: ${c.blocks}; покрыто: ${c.covered}; пропущено моделью с причиной: ${c.skipped.length}; не покрыто: ${c.uncovered.length}`);
+      for (const s of c.skipped) lines.push(`  пропуск (${s.reason === 'service' ? 'служебный текст' : `дубликат: «${s.duplicate_of}»`}): ${s.block.replace(/\s+/g, ' ').slice(0, 160)}`);
+      for (const u of c.uncovered) lines.push(`  НЕ ПОКРЫТО: ${u.replace(/\s+/g, ' ').slice(0, 160)}`);
+    }
+    for (const d of part.extraction.droppedFacts ?? []) lines.push(`  отброшен: «${d.text}» — цитата «${d.quote}»${d.nearest ? `; ближайшее в источнике: «${d.nearest}»` : ''}`);
+    const calls = part.extraction.calls ?? [];
+    if (calls.length) {
+      const sum = (k: 'input_tokens' | 'output_tokens' | 'thinking_tokens') => calls.reduce((n, c) => n + c[k], 0);
+      const cost = sum('input_tokens') / 1e6 * TASK_PRICE_INPUT_PER_MILLION + (sum('output_tokens') + sum('thinking_tokens')) / 1e6 * TASK_PRICE_OUTPUT_PER_MILLION;
+      lines.push(`  вызовов: ${calls.length} (повторных: ${calls.filter(c => c.retry).length}); finishReason: ${[...new Set(calls.map(c => c.finishReason))].join(', ')}; токены: вход ${sum('input_tokens')}, выход ${sum('output_tokens')}, рассуждения ${sum('thinking_tokens')}; ≈ $${cost.toFixed(4)}`);
+    }
+  }
+  return lines.join('\n');
 }
