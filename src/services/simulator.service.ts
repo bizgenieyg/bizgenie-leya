@@ -20,7 +20,7 @@ import { HttpError } from '../utils/http-error.js';
 import { allowedRecipient } from '../utils/incoming-policy.js';
 
 /** Dialogue trace for evaluations (stage and intent after the turn, whether a request was created). */
-export interface SimulationTrace { stage: string; intent: string; request: boolean; client_turns: number; discovery_asked: string[] }
+export interface SimulationTrace { stage: string; intent: string; request: boolean; client_turns: number; discovery_asked: string[]; labels?: string[]; requestFields?: { type: string; fields: Record<string, string> } }
 export type SimulationResult = PipelineResult & { trace?: SimulationTrace };
 /**
  * Evaluation-only options (never exposed through the HTTP route): skip the simulator rate limit,
@@ -152,7 +152,7 @@ export async function simulateCustomerMessage(db: DatabaseClient, tenantId: stri
   if (updated.error) throw new HttpError(500, 'Could not save simulator session');
   const dialog = normalizeDialogState(state.dialog_state);
   return { ...response, reply: sentReply ?? response.reply,
-    ...(evaluation ? { trace: { stage: dialog.stage, intent: dialog.intent, request: dialog.stage === 'request', client_turns: dialog.client_turns, discovery_asked: dialog.discovery_asked } } : {}) };
+    ...(evaluation ? { trace: { stage: dialog.stage, intent: dialog.intent, request: dialog.stage === 'request', client_turns: dialog.client_turns, discovery_asked: dialog.discovery_asked, ...(response.labels ? { labels: response.labels } : {}), ...(response.request ? { requestFields: response.request } : {}) } } : {}) };
 }
 
 /** Owner answers the last simulated customer question; returns exactly what the client would get. */

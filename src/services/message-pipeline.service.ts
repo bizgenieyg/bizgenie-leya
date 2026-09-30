@@ -67,6 +67,9 @@ export interface PipelineResult {
   outcome: PipelineOutcome;
   pausedNote?: true;
   quietHours?: { active: true; until: string };
+  /** Task Z (instruction path): labels that took effect this turn, and the created request. For evaluations. */
+  labels?: string[];
+  request?: { type: string; fields: Record<string, string> };
 }
 export interface PipelineSink {
   mode: 'whatsapp' | 'simulation';
@@ -237,6 +240,13 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
     }
     if (outcome) {
       const done = outcome;
+      const before = await sink.loadDemo();
+      const effective = [
+        ...(!before.key && done.demo.key ? ['DEMO_START'] : []), ...(before.key && !done.demo.key && done.demo.turns === 0 ? ['DEMO_END'] : []),
+        ...(done.offer ? ['OFFER'] : []), ...(done.dataRequest ? ['DATA_REQUEST'] : []),
+        ...(done.action.kind === 'request' ? ['REQUEST'] : done.action.kind === 'ask_owner' ? ['ASK_OWNER'] : done.action.kind === 'human' ? ['HUMAN'] : []),
+      ];
+      const traced = (value: PipelineResult): PipelineResult => ({ ...value, labels: effective, ...(done.action.kind === 'request' ? { request: done.action.request } : {}) });
       return agentContext.run({ agent: 'INSTRUCTION' }, async () => {
         await sink.recordUsage('message_received', { eventKey: usageKey });
         await sink.saveDemo(done.demo);
@@ -245,25 +255,25 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
           await sink.notifyOwner(renderText(settings, 'owner.data_request', config.owner_language, { name: clientFirstName() ?? client.name ?? '', phone: client.phone ?? '', action }), `data-request:${usageKey}`);
         }
         const a = done.action;
-        if (a.kind === 'silent') return finish(result(null, 'paused'));
+        if (a.kind === 'silent') return finish(traced(result(null, 'paused')));
         if (a.kind === 'request') {
           delete state.pending_offer;
           const reply = await sink.createRequest(language, a.summary, clientReply(a.text), clientFirstName());
           await sink.recordUsage('request_created');
           if (reply) memory.introduced = true;
           state.stage = 'request';
-          return finish(result(reply, 'escalated'));
+          return finish(traced(result(reply, 'escalated')));
         }
         if (a.kind === 'ask_owner' || a.kind === 'human') {
           const reply = await sink.createEscalation(language, a.kind === 'ask_owner' ? [a.question] : undefined, null, { clientText: clientReply(a.text) });
           await sink.recordUsage('escalation_created', { metadata: { reason: a.kind } });
           if (reply) memory.introduced = true;
-          return finish(result(reply, 'escalated'));
+          return finish(traced(result(reply, 'escalated')));
         }
         if (done.offer) state.pending_offer = { summary: done.offer.slice(0, 200), time: null, topic: done.offer.slice(0, 80), turns_left: config.request_offer_turns };
         const reply = clientReply(a.text);
         await send(reply, a.text);
-        return finish(result(reply, 'answered'));
+        return finish(traced(result(reply, 'answered')));
       });
     }
     state.client_turns -= 1;
