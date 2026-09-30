@@ -9,6 +9,8 @@ import { loadContext } from './context.service.js';
 import { findExactKnowledgeAnswer } from './knowledge.service.js';
 import { loadKnowledgeMaterials } from './knowledge-context.service.js';
 import { loadFactsContext } from './reply-context.service.js';
+import { answerByInstruction } from './instruction-engine.service.js';
+import { createAIProvider } from '../providers/ai/index.js';
 import { meterAI } from './metered-providers.js';
 import { behavior } from './runtime-settings.service.js';
 import { agentIntent, asksListedQuestion, discoveryGate, markAnswered, normalizeDialogState, replyQuestions, untilFirstQuestion, type DialogState, type DiscoveryGate } from './dialog-state.js';
@@ -78,7 +80,12 @@ export interface PipelineSink {
   /** WhatsApp only, called after admission: prior chat history for a first contact. Never persisted. */
   loadChatHistory?: (() => Promise<{ messages: ConversationMemory[]; introduced: boolean }>) | undefined;
   /** One escalation per question (default: the whole message); returns the single client text sent. */
-  createEscalation(responseLanguage: string, questions?: string[], answered?: string | null, options?: { modelUnavailable?: boolean }): Promise<string | null>;
+  createEscalation(responseLanguage: string, questions?: string[], answered?: string | null, options?: { modelUnavailable?: boolean; clientText?: string }): Promise<string | null>;
+  /** Task Z: demo mode of this conversation (conversations / simulator_sessions demo_key, demo_turns). */
+  loadDemo(): Promise<{ key: string | null; turns: number }>;
+  saveDemo(demo: { key: string | null; turns: number }): Promise<void>;
+  /** Task Z: a notice to the owner (data requests); simulator: recorded only. */
+  notifyOwner(text: string, dedupeKey: string): Promise<void>;
   loadDialogState(): Promise<unknown>;
   saveDialogState(state: DialogState): Promise<void>;
   /** Owner request (demo, booking, callback…): one open request per client; returns the client text sent. */
@@ -210,6 +217,57 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
   };
 
   const ownerName = context.business?.owner_name?.trim() || null;
+  // Task Z: a tenant on reply_engine='instruction' with an active instruction answers by it; no routing, reception,
+  // stages or gates. Without an active instruction it keeps the legacy path below.
+  if (config.reply_engine === 'instruction') {
+    state.client_turns += 1;
+    const replyModel = config.reply_model ? meterAI(db, tenantId, createAIProvider(undefined, config.reply_model), { reply_engine: 'instruction' }) : meterAI(db, tenantId, model, { reply_engine: 'instruction' });
+    let outcome: Awaited<ReturnType<typeof answerByInstruction>>;
+    try {
+      outcome = replyModel ? await answerByInstruction({ db, tenantId, text, language, settings, state, memory: memory.messages, model: replyModel,
+        business: context.business ?? null, demo: await sink.loadDemo() }) : null;
+    } catch {
+      console.warn('instruction_reply_failed', { tenantId });
+      return agentContext.run({ agent: 'RECEPTION' }, async () => {
+        await sink.recordUsage('message_received', { eventKey: usageKey });
+        const reply = await sink.createEscalation(language, undefined, null, { modelUnavailable: true });
+        await sink.recordUsage('escalation_created', { metadata: { failure_reason: 'model_unavailable' } });
+        return finish(result(reply, 'escalated'));
+      });
+    }
+    if (outcome) {
+      const done = outcome;
+      return agentContext.run({ agent: 'INSTRUCTION' }, async () => {
+        await sink.recordUsage('message_received', { eventKey: usageKey });
+        await sink.saveDemo(done.demo);
+        if (done.dataRequest) {
+          const action = renderText(settings, `owner.data_request_${done.dataRequest}`, config.owner_language);
+          await sink.notifyOwner(renderText(settings, 'owner.data_request', config.owner_language, { name: clientFirstName() ?? client.name ?? '', phone: client.phone ?? '', action }), `data-request:${usageKey}`);
+        }
+        const a = done.action;
+        if (a.kind === 'silent') return finish(result(null, 'paused'));
+        if (a.kind === 'request') {
+          delete state.pending_offer;
+          const reply = await sink.createRequest(language, a.summary, clientReply(a.text), clientFirstName());
+          await sink.recordUsage('request_created');
+          if (reply) memory.introduced = true;
+          state.stage = 'request';
+          return finish(result(reply, 'escalated'));
+        }
+        if (a.kind === 'ask_owner' || a.kind === 'human') {
+          const reply = await sink.createEscalation(language, a.kind === 'ask_owner' ? [a.question] : undefined, null, { clientText: clientReply(a.text) });
+          await sink.recordUsage('escalation_created', { metadata: { reason: a.kind } });
+          if (reply) memory.introduced = true;
+          return finish(result(reply, 'escalated'));
+        }
+        if (done.offer) state.pending_offer = { summary: done.offer.slice(0, 200), time: null, topic: done.offer.slice(0, 80), turns_left: config.request_offer_turns };
+        const reply = clientReply(a.text);
+        await send(reply, a.text);
+        return finish(result(reply, 'answered'));
+      });
+    }
+    state.client_turns -= 1;
+  }
   /** Template confirmation (no model text): "Готово! Юрий свяжется с вами в четверг." + "как к вам обращаться?" when no name. */
   const templateConfirmation = (req: OwnerRequest) => {
     const text = renderGreeting(settings, 'client.request_sent', language, { owner_name: ownerName, client_first_name: clientFirstName(), time: req.time });

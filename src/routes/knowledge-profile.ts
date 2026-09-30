@@ -6,7 +6,8 @@ import { objectBody } from '../utils/validation.js';
 import { createEmbeddingProvider } from '../providers/embedding/index.js';
 import type { EmbeddingProvider } from '../providers/embedding/embedding-provider.interface.js';
 import { archiveFact, confirmSource, knowledgeProfile, updateFact } from '../services/business-facts.service.js';
-import { createSource, sourceWithDrafts } from '../services/knowledge-sources.service.js';
+import { createSource, createVoiceSource, sourceWithDrafts } from '../services/knowledge-sources.service.js';
+import { answerOwnerQuestion, ensureInterviewJob, ownerQuestionCards, type OwnerQuestion } from '../services/owner-interview.service.js';
 import { decideAuditItem, openAuditItems } from '../services/knowledge-audit.service.js';
 
 /** "Что знает Лея" (task R). Mounted under the admin router: ADMIN_SECRET, the cabinet proxies per tenant. */
@@ -22,7 +23,7 @@ knowledgeProfileRouter.get('/knowledge/profile', async (request, response) => {
   if (waiting.error) throw new Error('Escalations unavailable');
   const assistant = await supabase.from('assistant_profiles').select('assistant_name').eq('tenant_id', tenantId).maybeSingle();
   response.setHeader('Cache-Control', 'no-store');
-  response.json({ ...await knowledgeProfile(supabase, tenantId), audit: await openAuditItems(supabase, tenantId), waiting_questions: waiting.count ?? 0, assistant_name: typeof assistant.data?.assistant_name === 'string' ? assistant.data.assistant_name : null });
+  response.json({ ...await knowledgeProfile(supabase, tenantId), audit: await openAuditItems(supabase, tenantId), waiting_questions: waiting.count ?? 0, owner_questions: await ownerQuestionCards(supabase, tenantId), assistant_name: typeof assistant.data?.assistant_name === 'string' ? assistant.data.assistant_name : null });
 });
 knowledgeProfileRouter.post('/knowledge/sources/link', async (request, response) => {
   const url = objectBody(request.body).url;
@@ -59,4 +60,25 @@ knowledgeProfileRouter.delete('/knowledge/facts/:id', async (request, response) 
 knowledgeProfileRouter.post('/knowledge/audit/:id', async (request, response) => {
   const body = objectBody(request.body);
   response.json(await decideAuditItem(supabase, tenant(request.query.tenantId), id(request.params.id), body.action, body.text, sharedEmbedder()));
+});
+
+/** Task Z: a voice note ("Голос" tab or "Рассказать" on a topic): raw audio, transcribed, then like text. */
+knowledgeProfileRouter.post('/knowledge/sources/voice', express.raw({ type: 'application/octet-stream', limit: '10mb' }), async (request, response) => {
+  const tenantId = tenant(request.query.tenantId), type = request.header('x-file-type') ?? '';
+  const topic = typeof request.query.topic === 'string' ? request.query.topic.slice(0, 40) : null;
+  if (!Buffer.isBuffer(request.body) || !request.body.length) throw new HttpError(400, 'Invalid audio', { code: 'voice_type' });
+  const { id: sourceId } = await createVoiceSource(supabase, tenantId, { type, data: request.body }, topic);
+  response.status(202).json({ id: sourceId, status: 'processing' });
+});
+/** Task Z: an owner-interview card answered or skipped in the cabinet (closes the WhatsApp question too). */
+knowledgeProfileRouter.post('/knowledge/owner-questions/:id', async (request, response) => {
+  const tenantId = tenant(request.query.tenantId), body = objectBody(request.body);
+  const row = await supabase.from('owner_questions').select('id,question,priority,source,topic,status,postponed_count,next_at,sent_at,owner_message_ids').eq('tenant_id', tenantId).eq('id', id(request.params.id)).maybeSingle();
+  if (row.error) throw new Error('Owner question unavailable');
+  if (!row.data || !['open', 'sent', 'cabinet_only'].includes(String(row.data.status))) throw new HttpError(404, 'Question not found', { code: 'question_not_found' });
+  const text = body.action === 'skip' ? 'skip' : typeof body.text === 'string' ? body.text.trim().slice(0, 5000) : '';
+  if (!text) throw new HttpError(400, 'Empty answer', { code: 'source_empty' });
+  const result = await answerOwnerQuestion(supabase, tenantId, row.data as unknown as OwnerQuestion, text, 'cabinet');
+  await ensureInterviewJob(supabase, tenantId);
+  response.json(result);
 });

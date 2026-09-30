@@ -9,7 +9,7 @@ export interface ScheduledJob {
   status: string;
 }
 
-const JOB_TYPES = ['owner_escalation', 'escalation_timeout', 'owner_summary', 'retention_sweep'];
+const JOB_TYPES = ['owner_escalation', 'escalation_timeout', 'owner_summary', 'retention_sweep', 'owner_interview'];
 const MAX_TIMEOUT_MS = 2_147_000_000;
 const LEASE_MS = 5 * 60_000;
 const RETRY_MS = 60_000;

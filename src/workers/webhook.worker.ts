@@ -1,3 +1,5 @@
+import { allowedRecipient } from '../utils/incoming-policy.js';
+import { ownerDestination } from '../services/owner-settings.service.js';
 import { createEmbeddingProvider } from '../providers/embedding/index.js';
 import type { EmbeddingProvider } from '../providers/embedding/embedding-provider.interface.js';
 import { randomUUID } from 'node:crypto';
@@ -122,13 +124,27 @@ export async function handleWebhookEvent(tenantId: string, body: Record<string, 
     createEscalation: async (language, questions, answered, options) => {
       const answer = await createEscalation(db, provider, { tenant_id: tenantId, session, conversation_id: conversation.id,
         client_chat_id: from, client_name: pushName || client.name || formatPhone(client.phone) || '', question: text,
-        response_language: language, inbound_id: incomingMsgId, client_phone: client.phone }, settings, client.time_zone, { ...(questions ? { questions } : {}), answered: answered ?? null, modelUnavailable: options?.modelUnavailable === true });
+        response_language: language, inbound_id: incomingMsgId, client_phone: client.phone }, settings, client.time_zone, { ...(questions ? { questions } : {}), answered: answered ?? null, modelUnavailable: options?.modelUnavailable === true, ...(options?.clientText ? { clientText: options.clientText } : {}) });
       return answer ? withoutRepeatedIntroduction(answer, memory.introduced) : null;
     },
     createRequest: (language, summary, repeatReply, clientFirstName) => createOwnerRequest(db, provider, { tenant_id: tenantId, session, conversation_id: conversation.id,
       client_chat_id: from, client_name: clientFirstName || pushName || client.name || formatPhone(client.phone) || '', question: text,
       response_language: language, inbound_id: incomingMsgId, client_phone: client.phone }, settings, summary, repeatReply, clientFirstName),
     openRequest: async () => (await openRequestFor(db, tenantId, conversation.id))?.question ?? null,
+    loadDemo: async () => {
+      const row = await db.from('conversations').select('demo_key,demo_turns').eq('tenant_id', tenantId).eq('id', conversation.id).maybeSingle();
+      if (row.error) throw new Error('Demo state unavailable');
+      return { key: typeof row.data?.demo_key === 'string' ? row.data.demo_key : null, turns: Number(row.data?.demo_turns ?? 0) };
+    },
+    saveDemo: async demo => {
+      const saved = await db.from('conversations').update({ demo_key: demo.key, demo_turns: demo.turns }).eq('tenant_id', tenantId).eq('id', conversation.id);
+      if (saved.error) throw new Error('Demo state save failed');
+    },
+    notifyOwner: async (text, dedupeKey) => {
+      const destination = ownerDestination(settings);
+      if (!destination || !allowedRecipient(destination)) { console.warn('owner_notice_skipped', { tenantId, reason: 'missing_owner_phone' }); return; }
+      await enqueueMessage(db, tenantId, provider, { session, chatId: destination, text }, { kind: 'owner_notice', dedupeKey });
+    },
     loadClientProfile: () => loadClientProfile(db, tenantId, client.id),
     saveClientName: async name => {
       const saved = await db.from('clients').update({ preferred_name: name, preferred_name_source: 'client' }).eq('tenant_id', tenantId).eq('id', client.id);

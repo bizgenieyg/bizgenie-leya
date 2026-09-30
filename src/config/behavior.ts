@@ -5,7 +5,8 @@ export const BEHAVIOR_DEFAULTS = {
   client_discovery_questions: [] as string[],
   escalation_remind_minutes: 120,
   escalation_close_minutes: 1440,
-  auto_resume_hours: 4,
+  /** Task Z: the assistant comes back 1 hour after the owner's last message in the chat (owners do not type commands). */
+  auto_resume_hours: 1,
   deferred_max_age_hours: 12,
   context_message_count: 10,
   context_retention_hours: 48,
@@ -87,6 +88,21 @@ export const BEHAVIOR_DEFAULTS = {
   link_max_pages: 5,
   /** Open improvement cards per tenant. */
   audit_max_open_cards: 10,
+  /** Task Z: 'legacy' — the rules/JSON path; 'instruction' — core + business instruction + facts, text with labels. */
+  reply_engine: 'legacy' as 'legacy' | 'instruction',
+  /** Answer model for the instruction path; empty — the current reply model (GEMINI_MODEL). */
+  reply_model: '',
+  /** Fields a request of each type must carry before it is created. */
+  request_required_fields: { meeting: ['topic'], consultation: ['city', 'when'], procedure: ['service', 'city', 'when', 'allergy'] } as Record<string, string[]>,
+  /** Demo mode ("покажу на примере") closes after this many client turns. */
+  demo_max_turns: 6,
+  /** Owner interview: questions on the first day, then per day. */
+  owner_interview_first_batch: 12,
+  owner_interview_daily_limit: 2,
+  /** Voice notes in "Добавить знания": longest note and service limits per tenant. */
+  knowledge_voice_max_seconds: 180,
+  knowledge_voice_hourly_limit: 5,
+  knowledge_voice_daily_limit: 20,
 };
 // Message storage retention: floor for behavior.message_retention_days, and daily sweep cadence.
 export const MESSAGE_RETENTION_MIN_DAYS = 7;

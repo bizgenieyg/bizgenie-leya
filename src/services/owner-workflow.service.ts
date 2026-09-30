@@ -252,6 +252,9 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
     if(!paused&&result.data?.length) await rescheduleTenantEscalationTimeouts(db,tenantId,settings,new Date());
     await send(db,tenantId,provider,session,from,result.data?.length?(paused?renderText(settings,'owner.owner_reply_12',behavior(settings).owner_language):renderText(settings,'owner.short_1',behavior(settings).owner_language)):renderText(settings,'owner.short_2',behavior(settings).owner_language));return true;
   }
+  // Task Z: an answer to an owner-interview question (by quote, or the only question out when no client waits).
+  const {handleInterviewReply}=await import('./owner-interview.service.js');
+  if(await handleInterviewReply(db,provider,tenantId,session,from,text,quoted,settings))return true;
   if(!quoted) {await send(db,tenantId,provider,session,from,renderText(settings,'owner.owner_reply_15',behavior(settings).owner_language));return true;}
   // Stored ids are outbound queue row ids (legacy rows: WhatsApp ids); a quote carries the WhatsApp id.
   const outboundIds=await outboundIdsForProviderId(db,tenantId,quoted);

@@ -401,3 +401,20 @@ test('062 moves names kept in dialog_state to clients.preferred_name and drops t
     assert.equal((await f.state()).client_name, undefined);
   } finally { await f.close(); }
 });
+
+test('task Z over WhatsApp: [[DATA_REQUEST: delete]] notifies the owner; the client sees no label', async () => {
+  const f = await fixture();
+  try {
+    const { uploadInstruction, activateInstruction } = await import('./instructions.service.js');
+    await saveRuntimeSettings(f.db, f.tenantId, { reply_engine: 'instruction' });
+    await uploadInstruction(f.db, { kind: 'business', tenantId: f.tenantId }, 'Инструкция {business_name}');
+    await activateInstruction(f.db, { kind: 'business', tenantId: f.tenantId }, 1);
+    const ai = f.ai as unknown as { generateReply: (i: { systemPrompt: string }) => Promise<{ text: string }> };
+    const original = ai.generateReply;
+    ai.generateReply = async () => ({ text: 'Хорошо, просьба передана Юрию.\n[[DATA_REQUEST: delete]]' });
+    await f.send('m1', 'удалите мои данные');
+    ai.generateReply = original;
+    assert.equal(f.toClient().at(-1)!.text, 'Хорошо, просьба передана Юрию.');
+    assert.match(f.toOwner().at(-1)!.text, /^🔐 Клиент .* просит удалить свои данные/);
+  } finally { await f.close(); }
+});

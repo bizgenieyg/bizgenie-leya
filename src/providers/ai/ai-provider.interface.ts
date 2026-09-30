@@ -4,6 +4,8 @@ export interface AIReplyInput {
   userMessage: string;
   /** Inline images (price-list photos) for vision-capable task models; base64 without the data: prefix. */
   images?: Array<{ mimeType: string; data: string }>;
+  /** Task Z: the conversation as chat turns before `userMessage` (the latest client message). */
+  history?: Array<{ role: 'user' | 'assistant'; text: string }>;
 }
 
 export interface AIUsage { model?: string; input_tokens?: number; output_tokens?: number; total_tokens?: number; thinking_tokens?: number; cached_input_tokens?: number; finish_reason?: string; }

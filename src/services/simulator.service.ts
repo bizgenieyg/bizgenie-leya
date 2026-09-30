@@ -30,7 +30,7 @@ export interface SimulationOptions { now?: Date; root?: string; evaluation?: { h
   /** Embeddings for the semantic repeat check; default — the process-wide provider (null without a key). */
   embedder?: EmbeddingProvider | null }
 type SessionState = { introduced: boolean; routed_agent: string | null; route_selected_at: string | null;
-  source_label: string | null; reception_message_count: number; client_time_zone: string | null; profile_md?: string; open_request?: string | null; dialog_state?: unknown; preferred_name?: string | null };
+  source_label: string | null; reception_message_count: number; client_time_zone: string | null; profile_md?: string; open_request?: string | null; dialog_state?: unknown; preferred_name?: string | null; demo_key?: string | null; demo_turns?: number };
 
 async function sessionState(db: DatabaseClient, tenantId: string, sessionId: string): Promise<SessionState> {
   const find = () => db.from('simulator_sessions').select('*').eq('tenant_id', tenantId).eq('id', sessionId).maybeSingle();
@@ -96,9 +96,10 @@ export async function simulateCustomerMessage(db: DatabaseClient, tenantId: stri
     afterAdmission: async () => {},
     sendToClient: async reply => { sentReply = reply; return null; },
     persistAssistantMessage: async answer => { await saveReply(answer); },
-    createEscalation: async (language, _questions, answered) => {
+    createEscalation: async (language, _questions, answered, options) => {
       const destination = ownerDestination(settings);
       if (!destination || !allowedRecipient(destination)) return null;
+      if (options?.clientText) { sentReply = options.clientText; await saveReply(options.clientText); return options.clientText; }
       const waiting = escalationWaitingMessage(text, settings, client.time_zone, language, now);
       const reply = answered ? `${clientText(answered)}\n\n${withoutRepeatedIntroduction(waiting.text, true)}` : withoutRepeatedIntroduction(waiting.text, memory.introduced);
       sentReply = reply;
@@ -124,6 +125,9 @@ export async function simulateCustomerMessage(db: DatabaseClient, tenantId: stri
     },
     openRequest: async () => state.open_request ?? null,
     loadClientProfile: async () => state.profile_md ?? '',
+    loadDemo: async () => ({ key: state.demo_key ?? null, turns: Number(state.demo_turns ?? 0) }),
+    saveDemo: async demo => { state.demo_key = demo.key; state.demo_turns = demo.turns; },
+    notifyOwner: async () => {},
     saveClientName: async name => { state.preferred_name = name; },
     saveClientProfile: async profile => { state.profile_md = profile; },
     loadDialogState: async () => state.dialog_state ?? {},
@@ -141,7 +145,7 @@ export async function simulateCustomerMessage(db: DatabaseClient, tenantId: stri
   const model = meterAI(db, tenantId, ai, { simulation: true, purpose: 'simulator_reply' });
   const response = await processCustomerMessage({ db, tenantId, text, client, conversation, memory, settings, ai, model,
     usageKey: randomUUID(), sink, now, embedder: limitOptions?.embedder === undefined ? sharedEmbedder() : limitOptions.embedder });
-  const updated = await db.from('simulator_sessions').update({ introduced: memory.introduced, profile_md: state.profile_md ?? '', open_request: state.open_request ?? null, preferred_name: state.preferred_name ?? null, dialog_state: state.dialog_state ?? {},
+  const updated = await db.from('simulator_sessions').update({ introduced: memory.introduced, profile_md: state.profile_md ?? '', open_request: state.open_request ?? null, preferred_name: state.preferred_name ?? null, demo_key: state.demo_key ?? null, demo_turns: state.demo_turns ?? 0, dialog_state: state.dialog_state ?? {},
     routed_agent: conversation.routed_agent, route_selected_at: now.toISOString(), source_label: conversation.source_label,
     reception_message_count: conversation.reception_message_count ?? 0, client_time_zone: client.time_zone, updated_at: now.toISOString() })
     .eq('tenant_id', tenantId).eq('id', sessionId);

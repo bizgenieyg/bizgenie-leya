@@ -35,7 +35,10 @@ export class GeminiProvider implements AIProvider {
             signal: AbortSignal.any([overall, AbortSignal.timeout(this.options.attemptTimeoutMs ?? 9_000)]),
             body: JSON.stringify({
               systemInstruction: { parts: [{ text: input.systemPrompt }] },
-              contents: [{ role: "user", parts: [{ text: input.userMessage }, ...(input.images ?? []).map(image => ({ inlineData: { mimeType: image.mimeType, data: image.data } }))] }],
+              contents: [
+                ...(input.history ?? []).filter(turn => turn.text.trim()).map(turn => ({ role: turn.role === 'assistant' ? 'model' : 'user', parts: [{ text: turn.text }] })),
+                { role: "user", parts: [{ text: input.userMessage }, ...(input.images ?? []).map(image => ({ inlineData: { mimeType: image.mimeType, data: image.data } }))] },
+              ],
               generationConfig: { maxOutputTokens: this.options.maxOutputTokens ?? 1024 },
             }),
           });

@@ -77,6 +77,7 @@ const MIGRATIONS_IN_APPLICATION_ORDER = [
   '20260926090000_060_dialog_state_model_unavailable.sql',
   '20260927120000_061_business_knowledge_profile.sql',
   '20260928090000_062_client_preferred_name.sql',
+  '20260930090000_063_instructions_owner_interview.sql',
 ];
 
 /** PGlite has no real `auth` schema/GoTrue; stub just enough for RLS-authoring
@@ -156,7 +157,10 @@ class PgliteQueryBuilder {
 
   constructor(private pg: PGlite, private table: string) {}
 
-  select(columns = '*'): this { if (this.mode === 'select') this.columns = columns; else this.columns = columns; return this; }
+  private countRequested = false;
+  private headOnly = false;
+  /** `{ count: 'exact', head: true }` like PostgREST: the row count, and no rows with head. */
+  select(columns = '*', options: { count?: string; head?: boolean } = {}): this { this.columns = columns; this.countRequested = !!options.count; this.headOnly = options.head === true; return this; }
   eq(column: string, value: unknown): this { this.filters.push({ kind: 'eq', column, value }); return this; }
   neq(column: string, value: unknown): this { this.filters.push({ kind: 'neq', column, value }); return this; }
   like(column: string, value: string): this { this.filters.push({ kind: 'like', column, value }); return this; }
@@ -287,9 +291,10 @@ class PgliteQueryBuilder {
     return ' where ' + clauses.join(' and ');
   }
 
-  private shapeResult(input: Record<string, unknown>[]): { data: unknown; error: unknown } {
+  private shapeResult(input: Record<string, unknown>[]): { data: unknown; error: unknown; count?: number } {
     // PostgREST serializes timestamps as ISO strings over JSON; PGlite hands back Date objects.
     const rows = input.map(row => Object.fromEntries(Object.entries(row).map(([key, value]) => [key, value instanceof Date ? value.toISOString() : value])));
+    if (this.countRequested) return { data: this.headOnly ? null : rows, error: null, count: rows.length };
     if (this.wantSingle === 'maybe') return { data: rows[0] ?? null, error: null };
     if (this.wantSingle === 'strict') {
       if (rows.length !== 1) return { data: null, error: { message: `Expected exactly 1 row, got ${rows.length}` } };

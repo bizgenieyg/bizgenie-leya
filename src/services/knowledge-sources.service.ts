@@ -6,7 +6,8 @@ import { createEmbeddingProvider } from '../providers/embedding/index.js';
 import { HttpError } from '../utils/http-error.js';
 import { behavior } from './runtime-settings.service.js';
 import { loadOwnerSettings } from './owner-settings.service.js';
-import { reserveKnowledgeIndex } from './knowledge-index-rate-limit.js';
+import { reserveKnowledgeIndex, reserveKnowledgeVoice } from './knowledge-index-rate-limit.js';
+import { recordUsageEvent } from './usage.service.js';
 import { DOCUMENT_TYPES, clean, extract } from './knowledge-documents.service.js';
 import { readLink, type LinkLimits } from './link-reader.service.js';
 import { extractFacts, type Extraction } from './fact-extraction.service.js';
@@ -22,6 +23,8 @@ import { runAudit } from './knowledge-audit.service.js';
 export const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif']);
 export type SourceInput =
   | { kind: 'text'; text: string; topic?: string | null }
+  /** Task Z: a voice note already transcribed (the audio is gone); stored as kind 'voice'. */
+  | { kind: 'voice'; text: string; topic?: string | null }
   | { kind: 'file'; name: string; type: string; data: Buffer }
   | { kind: 'link'; url: string };
 export interface SourceDeps { taskAI?: AIProvider | null; embedder?: EmbeddingProvider | null; readLink?: typeof readLink; audit?: boolean }
@@ -36,11 +39,11 @@ async function setStatus(db: DatabaseClient, tenantId: string, id: string, patch
 export async function createSource(db: DatabaseClient, tenantId: string, input: SourceInput, deps: SourceDeps = {}): Promise<{ id: string; done: Promise<void> }> {
   const config = behavior(await loadOwnerSettings(db, tenantId));
   let row: Record<string, unknown>;
-  if (input.kind === 'text') {
+  if (input.kind === 'text' || input.kind === 'voice') {
     const text = clean(String(input.text ?? ''));
-    if (!text) throw new HttpError(400, 'Empty text', { code: 'source_empty' });
+    if (!text) throw new HttpError(400, 'Empty text', { code: input.kind === 'voice' ? 'voice_empty' : 'source_empty' });
     if (text.length > config.source_text_max_chars) throw new HttpError(413, 'Text too long', { code: 'source_text_too_long' });
-    row = { kind: 'text', title: input.topic ?? null, original_text: text };
+    row = { kind: input.kind, title: input.topic ?? null, original_text: text };
   } else if (input.kind === 'file') {
     const image = IMAGE_TYPES.has(input.type);
     if (!image && !DOCUMENT_TYPES.has(input.type)) throw new HttpError(400, 'Unsupported file type', { code: 'knowledge_file_type' });
@@ -68,7 +71,7 @@ export async function processSource(db: DatabaseClient, tenantId: string, id: st
   try {
     if (!taskAI) throw new HttpError(503, 'Model unavailable', { code: 'source_model_unavailable' });
     let text = '', title: string | null = null;
-    if (input.kind === 'text') text = clean(input.text);
+    if (input.kind === 'text' || input.kind === 'voice') text = clean(input.text);
     else if (input.kind === 'file' && IMAGE_TYPES.has(input.type)) {
       const photo = await meterAI(db, tenantId, taskAI, { purpose: 'knowledge_photo' })!.generateReply({ systemPrompt: PHOTO_PROMPT, userMessage: 'Фото прикреплено.', images: [{ mimeType: input.type, data: input.data.toString('base64') }] });
       text = clean(photo.text); title = input.name;
@@ -86,6 +89,9 @@ export async function processSource(db: DatabaseClient, tenantId: string, id: st
     const extraction = await extractFacts(taskAI, text, existing, config.extraction_chunk_chars, title);
     await saveExtraction(db, tenantId, id, extraction, { status: 'draft', createdBy: 'extract', embedder, duplicateThreshold: config.fact_duplicate_threshold });
     await setStatus(db, tenantId, id, { status: 'ready', error: null });
+    // Task Z: after knowledge is loaded, ask the owner about what is still missing.
+    try { const { syncGapQuestions, ensureInterviewJob } = await import('./owner-interview.service.js'); await syncGapQuestions(db, tenantId); await ensureInterviewJob(db, tenantId); }
+    catch { console.warn('owner_interview_schedule_failed', { tenantId }); }
     if (deps.audit !== false) {
       try { await runAudit(db, tenantId, { sourceId: id, taskAI: deps.taskAI, embedder }); }
       catch { console.warn('knowledge_audit_failed', { tenantId }); }
@@ -110,4 +116,33 @@ export async function sourceWithDrafts(db: DatabaseClient, tenantId: string, id:
   const conflicts = await db.from('knowledge_audit_items').select('id,topic,before_text,suggested_text').eq('tenant_id', tenantId).eq('check_type', 'conflict').eq('status', 'open');
   check(conflicts.error, 'Conflicts unavailable');
   return { ...source.data, drafts: facts.data ?? [], conflicts: conflicts.data ?? [] };
+}
+
+/**
+ * Task Z: a voice note from the cabinet → STT → a 'voice' source, then the same path as text. Service limits
+ * (knowledge_voice_*); the audio buffer is wiped right after recognition and never stored.
+ */
+export async function createVoiceSource(db: DatabaseClient, tenantId: string, audio: { type: string; data: Buffer }, topic: string | null,
+  deps: SourceDeps & { stt?: import('../providers/stt/stt-provider.interface.js').STTProvider | null } = {}): Promise<{ id: string; done: Promise<void> }> {
+  const config = behavior(await loadOwnerSettings(db, tenantId));
+  const mime = audio.type.split(';')[0]!.trim().toLowerCase();
+  try {
+    if (!/^audio\/(webm|ogg|mp4|mpeg|m4a|x-m4a|aac|wav|x-wav|mp3)$/.test(mime)) throw new HttpError(400, 'Unsupported audio', { code: 'voice_type' });
+    if (!audio.data.length || audio.data.length > config.media_max_bytes) throw new HttpError(413, 'Audio too large', { code: 'voice_too_long' });
+    const { parseBuffer } = await import('music-metadata');
+    const duration = (await parseBuffer(audio.data, { mimeType: mime }, { duration: true })).format.duration;
+    if (duration !== undefined && Number.isFinite(duration) && duration > config.knowledge_voice_max_seconds) throw new HttpError(413, 'Voice note too long', { code: 'voice_too_long' });
+    const reservation = await reserveKnowledgeVoice(tenantId, config.knowledge_voice_hourly_limit, config.knowledge_voice_daily_limit);
+    if (!reservation.allowed) throw new HttpError(429, 'Voice limit reached', { code: 'voice_limit' });
+    const stt = deps.stt === undefined ? (await import('../providers/stt/index.js')).createSTTProvider() : deps.stt;
+    if (!stt) throw new HttpError(503, 'Voice unavailable', { code: 'voice_unavailable' });
+    let text = '';
+    try {
+      const result = await stt.transcribe(audio.data, mime, config.stt_timeout_seconds);
+      await recordUsageEvent(db, { tenantId, eventType: 'stt_call', metadata: { status: 'success', purpose: 'knowledge_voice', billable_message: false, ...result.usage } });
+      text = result.text.trim();
+    } catch { await recordUsageEvent(db, { tenantId, eventType: 'stt_call', metadata: { status: 'failed', purpose: 'knowledge_voice', billable_message: false } }); throw new HttpError(502, 'Voice not recognised', { code: 'voice_failed' }); }
+    if (!text) throw new HttpError(422, 'Nothing recognised', { code: 'voice_empty' });
+    return await createSource(db, tenantId, { kind: 'voice', text, topic }, deps);
+  } finally { audio.data.fill(0); }
 }

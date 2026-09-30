@@ -18,6 +18,7 @@ import { withoutRepeatedIntroduction } from '../utils/assistant-text.js';
 import { conversationPaused } from './owner-workflow.service.js';
 import { resolveClientPhone } from './client-phone.service.js';
 import { sessionIdentity } from './session-identity.service.js';
+import { reserveKnowledgeVoice } from './knowledge-index-rate-limit.js';
 const object=(value:unknown):Record<string,unknown>=>value!==null&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:{};
 export function voiceUsage(body:Record<string,unknown>):{from:string;seconds:number|null;id:string|null;mime:string;url:string}|null {
  const decision=filterIncoming(body);
@@ -34,7 +35,7 @@ export async function handleVoiceUsage(db:DatabaseClient,routing:TenantRouting,b
  let me=readSessionIdentity(body.me);
  try{me={...me,...await sessionIdentity(provider,session)};}catch{return;}
  if(!me.id||ownerIdentityField(voice.from,me))return;
- const settings=await loadOwnerSettings(db,tenantId);if(isBusinessOwner(voice.from,settings))return;
+ const settings=await loadOwnerSettings(db,tenantId);if(isBusinessOwner(voice.from,settings)){await handleOwnerVoice(db,tenantId,session,body,voice,settings,provider,stt,media);return;}
  const key=voice.id??randomUUID(),config=behavior(settings);
  const client=await db.from('clients').select('id,language,language_overridden,auto_reply_allowed').eq('tenant_id',tenantId).eq('whatsapp_jid',voice.from).maybeSingle();if(client.error)return;
  if(client.data?.auto_reply_allowed===false){await recordUsageEvent(db,{tenantId,eventType:'message_observed',eventKey:key,metadata:{reason:'client_opt_out',billable:false,media:'voice'}});return;}
@@ -84,4 +85,30 @@ export async function handleVoiceUsage(db:DatabaseClient,routing:TenantRouting,b
   }catch{console.error('voice_processing_unavailable',{tenantId});await explain('client.voice_unavailable');}
   finally{bytes?.fill(0);}
  });
+}
+
+/**
+ * Task Z: a voice note from the owner (answer to an interview question or to a client question) is transcribed
+ * and handled as the owner's text with the same quote. Service limits (knowledge_voice_*), never the client
+ * monthly limit; the audio is wiped right after recognition and never stored.
+ */
+async function handleOwnerVoice(db:DatabaseClient,tenantId:string,session:string,body:Record<string,unknown>,voice:NonNullable<ReturnType<typeof voiceUsage>>,settings:Awaited<ReturnType<typeof loadOwnerSettings>>,provider:WhatsAppProvider,stt:STTProvider|null,media:MediaProvider):Promise<void>{
+ const config=behavior(settings),language=config.owner_language;
+ const tell=async(template:string)=>{await enqueueMessage(db,tenantId,provider,{session,chatId:voice.from,text:renderText(settings,template,language)},{kind:'owner_notice',dedupeKey:`owner-voice:${voice.id??randomUUID()}:${template}`});};
+ if(!stt){console.warn('stt_disabled_missing_key');await tell('owner.interview_not_understood');return;}
+ if(voice.seconds!==null&&voice.seconds>config.knowledge_voice_max_seconds){await tell('owner.interview_not_understood');return;}
+ const reservation=await reserveKnowledgeVoice(tenantId,config.knowledge_voice_hourly_limit,config.knowledge_voice_daily_limit);
+ if(!reservation.allowed){await tell('owner.interview_not_understood');return;}
+ let bytes:Buffer|undefined;
+ try{
+  bytes=await media.download(voice.url,session,config.media_max_bytes,config.stt_timeout_seconds);
+  const result=await stt.transcribe(bytes,voice.mime,config.stt_timeout_seconds);
+  await recordUsageEvent(db,{tenantId,eventType:'stt_call',eventKey:randomUUID(),metadata:{status:'success',purpose:'owner_voice',billable_message:false,...result.usage}});
+  if(!result.text.trim()||result.ambiguous){await tell('owner.interview_not_understood');return;}
+  const payload=object(body.payload),raw=object(payload._data);
+  const textBody={...body,payload:{...payload,body:result.text,hasMedia:false,media:null,mediaUrl:null,_data:{...raw,Message:{conversation:result.text}}}};
+  const {handleWebhookEvent}=await import('../workers/webhook.worker.js');
+  await handleWebhookEvent(tenantId,textBody,db,provider);
+ }catch{console.error('owner_voice_unavailable',{tenantId});await recordUsageEvent(db,{tenantId,eventType:'stt_call',eventKey:randomUUID(),metadata:{status:'failed',purpose:'owner_voice',billable_message:false}});await tell('owner.interview_not_understood');}
+ finally{bytes?.fill(0);bytes=undefined;}
 }

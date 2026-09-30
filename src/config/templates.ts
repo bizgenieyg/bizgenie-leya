@@ -94,6 +94,43 @@ export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
     "he": "מעולה{ client_first_name}! הפרטים אצל {owner_name}, ניצור איתך קשר{ ב־time}.",
     "en": "Done{, client_first_name}! {owner_name} will get in touch with you{ on time}."
   },
+  "client.instruction_fallback": {
+    "ru": "Подскажите, пожалуйста, что для вас сейчас самое важное?",
+    "he": "מה הכי חשוב לך כרגע?",
+    "en": "What matters most to you right now?"
+  },
+  "client.ask_owner_fallback": {
+    "ru": "Уточню: {owner_name} ответит, и я сразу вернусь к вам.",
+    "he": "אבדוק עם {owner_name} ואחזור עם תשובה.",
+    "en": "I'll check with {owner_name} and get back to you."
+  },
+  "owner.data_request": {
+    "ru": "🔐 Клиент {name} ({phone}) просит {action} свои данные. Ответьте ему напрямую.",
+    "he": "🔐 הלקוח {name} ({phone}) מבקש {action} את המידע שלו. כדאי לענות לו ישירות.",
+    "en": "🔐 Client {name} ({phone}) asks to {action} their data. Please reply to them directly."
+  },
+  "owner.data_request_delete": { "ru": "удалить", "he": "למחוק", "en": "delete" },
+  "owner.data_request_access": { "ru": "показать", "he": "לראות", "en": "see" },
+  "owner.interview_question": {
+    "ru": "📝 Вопрос для базы знаний ({left}):\n{question}\n\nОтветьте реплеем — текстом или голосовым. «Пропустить» — спрошу позже.",
+    "he": "📝 שאלה למאגר הידע ({left}):\n{question}\n\nאפשר לענות בציטוט — בטקסט או בהודעה קולית. «לדלג» — אשאל מאוחר יותר.",
+    "en": "📝 A question for the knowledge base ({left}):\n{question}\n\nReply to this message — text or voice. «Skip» — I'll ask later."
+  },
+  "owner.interview_recorded": {
+    "ru": "Записала: {facts}\nЕсли что-то не так — ответьте реплеем с исправлением.",
+    "he": "רשמתי: {facts}\nאם משהו לא מדויק — אפשר לענות בציטוט עם תיקון.",
+    "en": "Saved: {facts}\nIf something is wrong, reply to this message with a correction."
+  },
+  "owner.interview_postponed": {
+    "ru": "Хорошо, спрошу позже.",
+    "he": "בסדר, אשאל מאוחר יותר.",
+    "en": "OK, I'll ask later."
+  },
+  "owner.interview_not_understood": {
+    "ru": "Не получилось разобрать ответ. Попробуйте ещё раз текстом или «Пропустить».",
+    "he": "לא הצלחתי להבין את התשובה. אפשר לנסות שוב בטקסט או לכתוב «לדלג».",
+    "en": "I couldn't make out the answer. Try again in text, or «Skip»."
+  },
   "client.ask_name": {
     "ru": "И как к вам обращаться?",
     "he": "ואיך לפנות אליך?",

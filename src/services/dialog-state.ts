@@ -21,6 +21,10 @@ export interface DialogState {
   offer_declined?: boolean;
   /** Client turn of the last call to action (demo, booking, passing to the owner). */
   last_cta_turn?: number;
+  /** Task Z: client turn of the last direct request (a REQUEST collected over several messages still counts). */
+  direct_request_turn?: number;
+  /** Task Z: in demo mode the "для примера" note has been said. */
+  demo_marked?: boolean;
 }
 export interface PendingOffer { summary: string; time: string | null; topic: string | null; turns_left: number }
 
@@ -42,6 +46,8 @@ export function normalizeDialogState(value: unknown): DialogState {
     ...(pendingOffer(v.pending_offer) ? { pending_offer: pendingOffer(v.pending_offer)! } : {}),
     ...(v.offer_declined === true ? { offer_declined: true } : {}),
     ...(Number.isSafeInteger(v.last_cta_turn) ? { last_cta_turn: Number(v.last_cta_turn) } : {}),
+    ...(Number.isSafeInteger(v.direct_request_turn) ? { direct_request_turn: Number(v.direct_request_turn) } : {}),
+    ...(v.demo_marked === true ? { demo_marked: true } : {}),
   };
 }
 

@@ -125,4 +125,17 @@ export async function runEventJob(db: DatabaseClient, job: ScheduledJob): Promis
   }
   if (job.job_type === 'escalation_timeout') return runTimeout(db, job, now);
   if (job.job_type === 'owner_summary') return runSummary(db, job, now);
+  if (job.job_type === 'owner_interview') return runInterview(db, job, now);
+}
+
+/** Task Z: one interview question at a time; the job moves itself to the next run or ends. */
+async function runInterview(db: DatabaseClient, job: ScheduledJob, now: Date): Promise<void> {
+  if (!job.tenant_id) return;
+  const { runOwnerInterview } = await import('../services/owner-interview.service.js');
+  const { next } = await runOwnerInterview(db, job.tenant_id, createWhatsAppProvider(), now);
+  const updated = next
+    ? await db.from('scheduled_jobs').update({ status: 'pending', scheduled_at: next.toISOString() }).eq('id', job.id)
+    : await db.from('scheduled_jobs').update({ status: 'cancelled', executed_at: now.toISOString() }).eq('id', job.id);
+  check(updated.error);
+  if (next) scheduleWake(next);
 }

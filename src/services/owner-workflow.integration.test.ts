@@ -153,12 +153,15 @@ test('manual fromMe send pauses dialogue and closes pending escalation; API send
   assert.equal(await observeOwnerOutgoing(h.db, h.tenant, { ...body, payload: { ...body.payload, id: 'api-1', source: 'api' } }, new Date()), false); await settleAllOutboundQueues();
 });
 
-test('owner takeover pauses the chat and Leya resumes after the default 4 hours or the configured inactivity', async () => {
+test('owner takeover pauses the chat; Leya resumes 1 hour (task Z default) after the owner\'s LAST message, or the configured inactivity', async () => {
   const h = await pgHarness();
   await h.pg.query("update conversations set bot_paused=true,owner_last_activity_at='2026-09-08T10:00:00Z' where id=$1", [h.conversationId]);
-  assert.equal(await conversationPaused(h.db, h.tenant, h.conversationId, h.settings, new Date('2026-09-08T13:59:00Z')), true);
+  assert.equal(await conversationPaused(h.db, h.tenant, h.conversationId, h.settings, new Date('2026-09-08T10:59:00Z')), true);
+  // The owner writes again at 10:40: the hour counts from that message, not from the takeover.
+  await h.pg.query("update conversations set owner_last_activity_at='2026-09-08T10:40:00Z' where id=$1", [h.conversationId]);
+  assert.equal(await conversationPaused(h.db, h.tenant, h.conversationId, h.settings, new Date('2026-09-08T11:20:00Z')), true);
   assert.equal(await conversationPaused(h.db, h.tenant, h.conversationId, { ...h.settings, behavior: { auto_resume_hours: 12 } }, new Date('2026-09-08T21:00:00Z')), true);
-  assert.equal(await conversationPaused(h.db, h.tenant, h.conversationId, { ...h.settings, behavior: { auto_resume_hours: 12 } }, new Date('2026-09-09T10:00:00Z')), false);
+  assert.equal(await conversationPaused(h.db, h.tenant, h.conversationId, h.settings, new Date('2026-09-08T11:40:00Z')), false);
   assert.equal((await h.conversation()).bot_paused, false);
 });
 
@@ -537,4 +540,82 @@ test('echo of our own send before messages.waha_msg_id is stamped never pauses t
   // A genuinely manual message with different text still means owner takeover.
   assert.equal(await observeOwnerOutgoing(h.db, h.tenant, echo('MANUAL3', 'Я сам отвечу')), true);
   assert.equal((await h.conversation()).bot_paused, true);
+});
+
+// ---- Task Z: owner interview ------------------------------------------------------------------------------
+async function interviewHarness() {
+  const h = await pgHarness();
+  await h.pg.query("insert into whatsapp_instances(tenant_id,waha_url,session_name,status) values($1,'http://waha','session','WORKING') on conflict (tenant_id) do update set session_name='session'", [h.tenant]);
+  const { importOwnerQuestions, runOwnerInterview } = await import('./owner-interview.service.js');
+  await importOwnerQuestions(h.db, h.tenant, '# Вопросы\n- [normal] Как вас называть?\n- [launch] В какие дни вы принимаете?\n- [launch] Нужна ли предоплата?');
+  const run = async (at: string) => { const r = await runOwnerInterview(h.db, h.tenant, h.provider, new Date(at)); await settleAllOutboundQueues(); return r; };
+  const question = async (text: string) => (await h.pg.query('select * from owner_questions where question=$1', [text])).rows[0] as { status: string; postponed_count: number; answer_source_id: string | null };
+  return { ...h, run, question };
+}
+
+test('owner interview: launch questions first, one at a time; a quoted answer → fact with its source → "Записала" → next question', async () => {
+  const h = await interviewHarness();
+  await h.run('2026-09-30T09:00:00Z');
+  assert.equal(h.sent.length, 1);
+  assert.match(h.sent[0]!.text, /В какие дни вы принимаете\?/, 'launch before normal');
+  assert.equal(h.sent[0]!.chatId, owner);
+  assert.equal((await h.run('2026-09-30T09:05:00Z')).sent, null, 'the next one waits for the answer');
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'Вс–чт с 10 до 19, пятница до 14', h.sent[0]!.id, h.settings); await settleAllOutboundQueues();
+  const answered = await h.question('В какие дни вы принимаете?');
+  assert.equal(answered.status, 'answered');
+  const source = (await h.pg.query<{ kind: string; title: string; original_text: string }>('select kind,title,original_text from knowledge_sources where id=$1', [answered.answer_source_id])).rows[0]!;
+  assert.equal(source.kind, 'owner_answer'); assert.match(source.title, /^Ответ владельца в WhatsApp, \d{4}-\d{2}-\d{2}$/);
+  const facts = (await h.pg.query<{ text: string; status: string; created_by: string }>("select text,status,created_by from business_facts where tenant_id=$1", [h.tenant])).rows;
+  assert.deepEqual(facts.map(f => [f.text, f.status]), [['Вс–чт с 10 до 19, пятница до 14', 'active']], 'no key in tests: the answer itself becomes the fact');
+  assert.match(h.sent.find(m => /^Записала:/.test(m.text))!.text, /Вс–чт с 10 до 19/);
+  await h.run('2026-09-30T09:10:00Z');
+  assert.match(h.sent.at(-1)!.text, /Нужна ли предоплата\?/);
+  // Without a quote: the only question out, no client waiting → it is the answer.
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'Предоплата не нужна', null, h.settings); await settleAllOutboundQueues();
+  assert.equal((await h.question('Нужна ли предоплата?')).status, 'answered');
+});
+
+test('owner interview: "пропустить" twice → cabinet only; limits per day; quiet hours; a waiting client goes first', async () => {
+  const h = await interviewHarness();
+  await h.pg.query("update notification_settings set behavior=$2 where tenant_id=$1", [h.tenant, JSON.stringify({ owner_interview_first_batch: 1, owner_interview_daily_limit: 1 })]);
+  invalidateOwnerSettings(h.db, h.tenant);
+  await h.run('2026-09-30T09:00:00Z');
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'пропустить', h.sent[0]!.id, h.settings); await settleAllOutboundQueues();
+  assert.equal(h.sent.at(-1)!.text, 'Хорошо, спрошу позже.');
+  assert.equal((await h.question('В какие дни вы принимаете?')).status, 'open');
+  assert.equal((await h.run('2026-09-30T10:00:00Z')).sent, null, 'first-day limit (1) used');
+  const nextDay = await h.run('2026-10-01T09:00:00Z');
+  assert.ok(nextDay.sent);
+  const out = h.sent.at(-1)!;
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'потом', out.id, h.settings); await settleAllOutboundQueues();
+  const skipped = await h.pg.query<{ status: string; postponed_count: number }>("select status,postponed_count from owner_questions where postponed_count>0 order by postponed_count desc");
+  assert.ok(skipped.rows.length >= 1);
+  // The same question postponed twice goes to the cabinet only.
+  await h.pg.query("update owner_questions set status='sent',postponed_count=1 where question='Нужна ли предоплата?'");
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'не знаю', null, h.settings); await settleAllOutboundQueues();
+  assert.equal((await h.question('Нужна ли предоплата?')).status, 'cabinet_only');
+  // Quiet hours and a waiting client.
+  await h.pg.query("update notification_settings set quiet_hours_start='20:00:00',quiet_hours_end='09:00:00' where tenant_id=$1", [h.tenant]);
+  invalidateOwnerSettings(h.db, h.tenant);
+  assert.equal((await h.run('2026-10-02T20:30:00Z')).sent, null);
+  await seedEscalation(h);
+  assert.equal((await h.run('2026-10-02T09:30:00Z')).sent, null, 'client escalations go first');
+});
+
+test('owner interview: a voice answer is transcribed (service limits, audio wiped) and recorded like text', async () => {
+  const { handleVoiceUsage } = await import('./voice-usage.service.js');
+  const h = await interviewHarness();
+  await h.run('2026-09-30T09:00:00Z');
+  const body = JSON.parse(readFileSync('src/services/fixtures/gows-incoming-lid.json', 'utf8'));
+  body.payload.from = owner; body.payload._data.Info.Chat = owner; body.payload._data.Info.Sender = owner; body.payload.body = null; body.payload.hasMedia = true;
+  body.payload.media = { mimetype: 'audio/wav', url: 'http://internal/api/files/session/id.wav' };
+  body.payload.replyTo = { id: h.sent[0]!.id };
+  const bytes = wav();
+  await handleVoiceUsage(h.db, voiceRouting(h), body, h.provider, { async transcribe() { return { text: 'Принимаю по вторникам и четвергам', confidence: 0.99, ambiguous: false, language: 'ru' }; } }, { async download() { return bytes; } });
+  await settleAllOutboundQueues();
+  assert.ok(bytes.every(b => b === 0), 'audio wiped');
+  assert.equal((await h.question('В какие дни вы принимаете?')).status, 'answered');
+  assert.equal(await h.admissions(), 0, 'not the client monthly limit');
+  const stt = (await h.pg.query<{ metadata: Record<string, unknown> }>("select metadata from usage_events where event_type='stt_call'")).rows[0]!;
+  assert.equal(stt.metadata.purpose, 'owner_voice');
 });
