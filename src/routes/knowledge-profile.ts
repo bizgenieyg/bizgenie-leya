@@ -3,6 +3,8 @@ import { supabase } from '../db/supabase.js';
 import { HttpError } from '../utils/http-error.js';
 import { isUuid } from '../services/tenant.service.js';
 import { objectBody } from '../utils/validation.js';
+import { behavior } from '../services/runtime-settings.service.js';
+import { loadOwnerSettings } from '../services/owner-settings.service.js';
 import { createEmbeddingProvider } from '../providers/embedding/index.js';
 import type { EmbeddingProvider } from '../providers/embedding/embedding-provider.interface.js';
 import { archiveFact, confirmSource, knowledgeProfile, updateFact } from '../services/business-facts.service.js';
@@ -23,7 +25,7 @@ knowledgeProfileRouter.get('/knowledge/profile', async (request, response) => {
   if (waiting.error) throw new Error('Escalations unavailable');
   const assistant = await supabase.from('assistant_profiles').select('assistant_name').eq('tenant_id', tenantId).maybeSingle();
   response.setHeader('Cache-Control', 'no-store');
-  response.json({ ...await knowledgeProfile(supabase, tenantId), audit: await openAuditItems(supabase, tenantId), waiting_questions: waiting.count ?? 0, owner_questions: await ownerQuestionCards(supabase, tenantId), assistant_name: typeof assistant.data?.assistant_name === 'string' ? assistant.data.assistant_name : null });
+  response.json({ ...await knowledgeProfile(supabase, tenantId), audit: await openAuditItems(supabase, tenantId), waiting_questions: waiting.count ?? 0, owner_questions: await ownerQuestionCards(supabase, tenantId), voice_max_seconds: behavior(await loadOwnerSettings(supabase, tenantId)).knowledge_voice_max_seconds, assistant_name: typeof assistant.data?.assistant_name === 'string' ? assistant.data.assistant_name : null });
 });
 knowledgeProfileRouter.post('/knowledge/sources/link', async (request, response) => {
   const url = objectBody(request.body).url;
