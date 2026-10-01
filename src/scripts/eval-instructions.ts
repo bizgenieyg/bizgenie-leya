@@ -24,7 +24,7 @@ export function parseFactsMarkdown(markdown: string): Array<{ topic: string; tex
 }
 
 /**
- * npm run eval:instructions -- --tenant=bizgenie|ira|all --model=<id>[,<id>] [--runs=3] [--out=docs/evals/…md]
+ * npm run eval:instructions -- --tenant=bizgenie|ira|all --model=<id>[,<id>] [--runs=3] [--facts-model=<id>] [--out=docs/evals/…md]
  * npm run eval:instructions -- --check   (no model: validates the scenarios and fixtures)
  */
 async function main() {
@@ -52,17 +52,20 @@ async function main() {
   const results: Array<{ model: string; runs: ScenarioRun[]; stats: ModelStats; cost: number }> = [];
   // Facts do not depend on the reply model: extracted once per tenant, before the models. A failed call is
   // retried with smaller chunks (a long chunk can run the task model out of output tokens).
+  // --facts-model: the extraction model, when the task model cannot extract this fixture (reported).
+  const factsAI = arg('facts-model') ? createTaskAIProvider(undefined, arg('facts-model')) : judgeAI;
   const factsByTenant = new Map<string, Array<{ topic: string; text: string }>>();
   for (const t of tenants) {
     const spec = TENANTS[t]!, source = readFileSync(`${DIR}/${spec.facts.file}`, 'utf8');
     if (spec.facts.kind === 'markdown') { factsByTenant.set(t, parseFactsMarkdown(source)); continue; }
     let facts: Array<{ topic: string; text: string }> | null = null, reason = '';
     for (const chunk of [2500, 1200, 600]) {
-      try { facts = (await extractFacts(judgeAI, source, [], chunk, spec.facts.file)).facts; break; }
+      try { facts = (await extractFacts(factsAI, source, [], chunk, spec.facts.file)).facts; break; }
       catch (error) { reason = failureReason(error); console.warn(`${t}: facts extraction failed (${reason}), chunk ${chunk}`); }
     }
-    if (!facts) throw new Error(`eval:instructions: facts extraction for ${t} failed (${reason}); task model ${process.env.GEMINI_TASK_MODEL || 'default'}`);
+    if (!facts) throw new Error(`eval:instructions: facts extraction for ${t} failed (${reason}); model ${arg('facts-model') ?? (process.env.GEMINI_TASK_MODEL || 'default')}`);
     factsByTenant.set(t, facts);
+    console.log(`${t}: ${facts.length} facts extracted by ${arg('facts-model') ?? (process.env.GEMINI_TASK_MODEL || 'default task model')}`);
   }
   for (const model of models) {
     const stats: ModelStats = { calls: 0, latencyMs: 0, input: 0, output: 0, thinking: 0 };
