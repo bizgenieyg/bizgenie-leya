@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { codeChecks, loadInstructionScenarios, tenantScenarios } from './instruction-eval.js';
+import { codeChecks, formatInstructionReport, loadInstructionScenarios, tenantScenarios } from './instruction-eval.js';
 
 test('scenarios: 5 traps + 10 own per tenant, variables and owner name filled', () => {
   const file = loadInstructionScenarios(readFileSync('evals/instructions/scenarios.yaml', 'utf8'));
@@ -18,4 +18,13 @@ test('code checks: labels of the last turn or turnN, forbidden anywhere, request
   assert.deepEqual(codeChecks({ id: 'x', turns: [], checks: [], labels_expect: { turn1: ['DEMO_START'], turn3: ['DEMO_END'] } }, turns).map(c => c.pass), [true, true]);
   assert.deepEqual(codeChecks({ id: 'x', turns: [], checks: [], labels_expect: ['REQUEST'], request_fields: { type: 'consultation', city: 'Ашдод', when: 'среда' } }, turns).map(c => c.pass), [true, true, true, true]);
   assert.deepEqual(codeChecks({ id: 'x', turns: [], checks: [], labels_forbid: ['DEMO_START'] }, turns).map(c => c.pass), [false]);
+});
+
+test('a failed model call fails only its scenario, with the operational reason in the code checks and report', () => {
+  const turns = [{ client: 'a', reply: null, labels: [], latencyMs: 1, error: 'incomplete_max_tokens' }];
+  const code = codeChecks({ id: 'x', turns: [], checks: [], labels_forbid: ['REQUEST'] }, turns);
+  assert.deepEqual(code, [{ check: 'model call (incomplete_max_tokens)', pass: false }, { check: 'no REQUEST', pass: true }]);
+  const report = formatInstructionReport('t', [{ model: 'm', runs: [{ id: 'x', run: 1, turns, code, judge: [] }], stats: { calls: 0, latencyMs: 0, input: 0, output: 0, thinking: 0 }, cost: 0 }]);
+  assert.match(report, /\| x \| 0\/1 \| 50\.0 % \| — \| model call \(incomplete_max_tokens\) \|/);
+  assert.match(report, /ошибка модели: incomplete_max_tokens/);
 });

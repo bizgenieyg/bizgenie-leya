@@ -1,5 +1,5 @@
 import { parse } from 'yaml';
-import type { AIProvider, AIUsage } from '../providers/ai/ai-provider.interface.js';
+import { failureReason, type AIProvider, type AIUsage } from '../providers/ai/ai-provider.interface.js';
 import type { DatabaseClient } from '../db/supabase.js';
 import { simulateCustomerMessage, type SimulationResult } from '../services/simulator.service.js';
 
@@ -27,12 +27,14 @@ export function tenantScenarios(file: ScenarioFile, tenant: string, ownerName: s
   return [...traps, ...spec.scenarios];
 }
 
-export interface TurnLog { client: string; reply: string | null; labels: string[]; request?: { type: string; fields: Record<string, string> }; latencyMs: number }
+export interface TurnLog { client: string; reply: string | null; labels: string[]; request?: { type: string; fields: Record<string, string> }; latencyMs: number; error?: string }
 export interface ScenarioRun { id: string; run: number; turns: TurnLog[]; code: Array<{ check: string; pass: boolean }>; judge: Array<{ check: string; pass: boolean }> }
 
 /** Code checks: expected / forbidden labels (last turn, or turnN) and request fields. */
 export function codeChecks(scenario: InstructionScenario, turns: TurnLog[]): Array<{ check: string; pass: boolean }> {
   const out: Array<{ check: string; pass: boolean }> = [];
+  const failed = turns.find(t => t.error);
+  if (failed) out.push({ check: `model call (${failed.error})`, pass: false });
   const last = turns.at(-1)!;
   const expect = scenario.labels_expect;
   if (Array.isArray(expect)) for (const label of expect) out.push({ check: `label ${label}`, pass: last.labels.includes(label) });
@@ -81,7 +83,13 @@ export async function runScenario(db: DatabaseClient, tenantId: string, scenario
   try {
     for (const [index, client] of scenario.turns.entries()) {
       const started = Date.now();
-      const r: SimulationResult = await simulateCustomerMessage(db, tenantId, session, client, ai, { evaluation: {}, embedder: null, now: new Date(Date.now() + index * 60_000) });
+      let r: SimulationResult;
+      try { r = await simulateCustomerMessage(db, tenantId, session, client, ai, { evaluation: {}, embedder: null, now: new Date(Date.now() + index * 60_000) }); }
+      catch (error) {
+        // A failed model call is a result of this scenario (FAIL with the reason), not the end of the whole run.
+        turns.push({ client, reply: null, labels: [], latencyMs: Date.now() - started, error: failureReason(error) });
+        break;
+      }
       turns.push({ client, reply: r.reply, labels: r.trace?.labels ?? [], ...(r.trace?.requestFields ? { request: r.trace.requestFields } : {}), latencyMs: Date.now() - started });
     }
   } finally {
@@ -100,11 +108,20 @@ export function formatInstructionReport(title: string, models: Array<{ model: st
     lines.push(`| ${m.model} | ${passed}/${m.runs.length} (${pct(passed, m.runs.length)}) | ${pct(code.filter(c => c.pass).length, code.length)} | ${pct(judged.filter(c => c.pass).length, judged.length)} | ${m.stats.calls ? Math.round(m.stats.latencyMs / m.stats.calls) : 0} мс | ${m.stats.input} / ${m.stats.output} / ${m.stats.thinking} | $${m.cost.toFixed(4)} |`);
   }
   for (const m of models) {
+    lines.push('', `## ${m.model} — по сценариям`, '', '| Сценарий | Прогонов PASS | Код | Судья | Провалы |', '|---|---|---|---|---|');
+    for (const id of [...new Set(m.runs.map(r => r.id))]) {
+      const runs = m.runs.filter(r => r.id === id), code = runs.flatMap(r => r.code), judged = runs.flatMap(r => r.judge);
+      const passed = runs.filter(r => r.code.every(c => c.pass) && r.judge.every(c => c.pass)).length;
+      const fails = [...new Set([...code, ...judged].filter(c => !c.pass).map(c => c.check))].join('; ').replace(/\|/g, '/');
+      lines.push(`| ${id} | ${passed}/${runs.length} | ${pct(code.filter(c => c.pass).length, code.length)} | ${pct(judged.filter(c => c.pass).length, judged.length)} | ${fails || '—'} |`);
+    }
+  }
+  for (const m of models) {
     lines.push('', `## ${m.model}`);
     for (const r of m.runs) {
       const ok = r.code.every(c => c.pass) && r.judge.every(c => c.pass);
       lines.push('', `### ${r.id} · прогон ${r.run} — ${ok ? 'PASS' : 'FAIL'}`);
-      for (const t of r.turns) lines.push(`- **Клиент:** ${t.client}`, `- **Лея:** ${(t.reply ?? '(нет ответа)').replace(/\n/g, ' ')}${t.labels.length ? ` \`[${t.labels.join(', ')}]\`` : ''}${t.request ? ` \`${JSON.stringify(t.request)}\`` : ''}`);
+      for (const t of r.turns) lines.push(`- **Клиент:** ${t.client}`, `- **Лея:** ${(t.reply ?? '(нет ответа)').replace(/\n/g, ' ')}${t.labels.length ? ` \`[${t.labels.join(', ')}]\`` : ''}${t.request ? ` \`${JSON.stringify(t.request)}\`` : ''}${t.error ? ` — ошибка модели: ${t.error}` : ''}`);
       for (const c of [...r.code, ...r.judge]) if (!c.pass) lines.push(`  - ✗ ${c.check}`);
     }
   }
