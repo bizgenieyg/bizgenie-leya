@@ -3,6 +3,7 @@ import { dirname } from 'node:path';
 import { formatInstructionReport, loadInstructionScenarios, measured, runScenario, tenantScenarios, type ModelStats, type ScenarioRun } from '../evals/instruction-eval.js';
 import { EVAL_PRICE_INPUT_PER_MILLION, EVAL_PRICE_OUTPUT_PER_MILLION } from '../config/evals.js';
 import { isKnowledgeTopic } from '../config/knowledge-topics.js';
+import { failureReason } from '../providers/ai/ai-provider.interface.js';
 
 const arg = (name: string) => process.argv.find(a => a.startsWith(`--${name}=`))?.slice(name.length + 3);
 const DIR = 'evals/instructions';
@@ -49,6 +50,20 @@ async function main() {
   const { extractFacts } = await import('../services/fact-extraction.service.js');
   const judgeAI = createTaskAIProvider();
   const results: Array<{ model: string; runs: ScenarioRun[]; stats: ModelStats; cost: number }> = [];
+  // Facts do not depend on the reply model: extracted once per tenant, before the models. A failed call is
+  // retried with smaller chunks (a long chunk can run the task model out of output tokens).
+  const factsByTenant = new Map<string, Array<{ topic: string; text: string }>>();
+  for (const t of tenants) {
+    const spec = TENANTS[t]!, source = readFileSync(`${DIR}/${spec.facts.file}`, 'utf8');
+    if (spec.facts.kind === 'markdown') { factsByTenant.set(t, parseFactsMarkdown(source)); continue; }
+    let facts: Array<{ topic: string; text: string }> | null = null, reason = '';
+    for (const chunk of [2500, 1200, 600]) {
+      try { facts = (await extractFacts(judgeAI, source, [], chunk, spec.facts.file)).facts; break; }
+      catch (error) { reason = failureReason(error); console.warn(`${t}: facts extraction failed (${reason}), chunk ${chunk}`); }
+    }
+    if (!facts) throw new Error(`eval:instructions: facts extraction for ${t} failed (${reason}); task model ${process.env.GEMINI_TASK_MODEL || 'default'}`);
+    factsByTenant.set(t, facts);
+  }
   for (const model of models) {
     const stats: ModelStats = { calls: 0, latencyMs: 0, input: 0, output: 0, thinking: 0 };
     const ai = measured(createAIProvider(undefined, model), stats);
@@ -64,8 +79,7 @@ async function main() {
       await saveRuntimeSettings(db, tenantId, { reply_engine: 'instruction' });
       await uploadInstruction(db, { kind: 'business', tenantId }, readFileSync(`${DIR}/${file.tenants[t]!.instruction}`, 'utf8'));
       await activateInstruction(db, { kind: 'business', tenantId }, 1);
-      const facts = spec.facts.kind === 'markdown' ? parseFactsMarkdown(readFileSync(`${DIR}/${spec.facts.file}`, 'utf8'))
-        : (await extractFacts(judgeAI, readFileSync(`${DIR}/${spec.facts.file}`, 'utf8'), [], 2500, spec.facts.file)).facts;
+      const facts = factsByTenant.get(t)!;
       for (const fact of facts) await pg.query("insert into business_facts(tenant_id,topic,text,status,created_by) values($1,$2,$3,'active','migration')", [tenantId, fact.topic, fact.text]);
       console.log(`${model} · ${t}: ${facts.length} facts`);
       for (let run = 1; run <= runs; run++) for (const scenario of tenantScenarios(file, t, spec.owner)) {

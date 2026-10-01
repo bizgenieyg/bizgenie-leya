@@ -61,7 +61,11 @@ export async function judge(ai: AIProvider, scenario: InstructionScenario, turns
     const result = await ai.generateReply({ systemPrompt: JUDGE_PROMPT, userMessage: JSON.stringify({ dialog, checks: scenario.checks }) });
     const parsed = JSON.parse(result.text.trim().replace(/^```(?:json)?\s*|\s*```$/g, '')) as { results?: unknown[] };
     return scenario.checks.map((check, i) => ({ check, pass: parsed.results?.[i] === true }));
-  } catch { return scenario.checks.map(check => ({ check, pass: false })); }
+  } catch (error) {
+    // The judge failing is not the reply failing: the report shows the reason next to every item.
+    const reason = error instanceof SyntaxError ? 'judge_bad_json' : `judge_${failureReason(error)}`;
+    return scenario.checks.map(check => ({ check: `${check} [${reason}]`, pass: false }));
+  }
 }
 
 export interface ModelStats { calls: number; latencyMs: number; input: number; output: number; thinking: number }
