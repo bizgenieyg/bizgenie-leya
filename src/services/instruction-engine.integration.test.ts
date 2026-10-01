@@ -4,6 +4,7 @@ import { createTestDatabase, pgliteDatabaseClient } from './test-support/pglite-
 import { simulateCustomerMessage } from './simulator.service.js';
 import { saveRuntimeSettings } from './runtime-settings.service.js';
 import { activateInstruction, uploadInstruction } from './instructions.service.js';
+import { AIProviderError } from '../providers/ai/ai-provider.interface.js';
 
 process.env.GEMINI_API_KEY = '';
 process.env.SUPABASE_URL = 'https://database.invalid';
@@ -25,7 +26,9 @@ async function fixture(options: { owner?: string; engine?: 'instruction' | 'lega
   let replies: string[] = [];
   const ai = { async generateReply(input: { systemPrompt: string; userMessage: string; history?: unknown[] }) {
     prompts.push({ system: input.systemPrompt, user: input.userMessage, history: input.history?.length ?? -1 });
-    return { text: replies.shift() ?? 'Хорошо.' };
+    const text = replies.shift() ?? 'Хорошо.';
+    if (text.startsWith('THROW:')) throw new AIProviderError('Gemini reply unavailable', undefined, { reason: text.slice(6) });
+    return { text };
   } };
   const session = crypto.randomUUID();
   const say = (text: string) => simulateCustomerMessage(db, tenantId, session, text, ai as never, { evaluation: {}, embedder: null });
@@ -195,5 +198,15 @@ test('operator endpoints logic: versions, one active, core override; operator se
     f.reply('Здравствуйте!');
     await f.say('привет');
     assert.match(f.prompts.at(-1)!.system, /^Ядро оператора для BizGenie\. Юрий\.\n\n=== ИНСТРУКЦИЯ БИЗНЕСА ===\nВерсия 2 для BizGenie/);
+  } finally { await f.pg.close(); }
+});
+
+test('Z1: a failed reply model gives the fallback and reports the operational reason for evaluations', async () => {
+  const f = await fixture();
+  try {
+    f.reply('THROW:incomplete_max_tokens');
+    const r = await f.say('сколько стоит?');
+    assert.equal(r.modelFailure, 'incomplete_max_tokens');
+    assert.ok(r.reply && !/incomplete|max_tokens/.test(r.reply), 'the client never sees the reason');
   } finally { await f.pg.close(); }
 });

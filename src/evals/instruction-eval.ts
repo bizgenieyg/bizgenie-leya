@@ -94,7 +94,7 @@ export async function runScenario(db: DatabaseClient, tenantId: string, scenario
         turns.push({ client, reply: null, labels: [], latencyMs: Date.now() - started, error: failureReason(error) });
         break;
       }
-      turns.push({ client, reply: r.reply, labels: r.trace?.labels ?? [], ...(r.trace?.requestFields ? { request: r.trace.requestFields } : {}), latencyMs: Date.now() - started });
+      turns.push({ client, reply: r.reply, labels: r.trace?.labels ?? [], ...(r.trace?.requestFields ? { request: r.trace.requestFields } : {}), latencyMs: Date.now() - started, ...(r.modelFailure ? { error: r.modelFailure } : {}) });
     }
   } finally {
     await db.from('simulator_messages').delete().eq('tenant_id', tenantId).eq('session_id', session);

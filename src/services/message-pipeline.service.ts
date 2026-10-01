@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { agentContext } from '../agents/index.js';
 import type { DatabaseClient } from '../db/supabase.js';
-import type { AIProvider } from '../providers/ai/ai-provider.interface.js';
+import { failureReason, type AIProvider } from '../providers/ai/ai-provider.interface.js';
 import type { ClientRow, ConversationRow } from './tenant.service.js';
 import type { ConversationMemory } from './context.service.js';
 import type { OwnerSettings } from './owner-settings.service.js';
@@ -69,6 +69,8 @@ export interface PipelineResult {
   quietHours?: { active: true; until: string };
   /** Task Z (instruction path): labels that took effect this turn, and the created request. For evaluations. */
   labels?: string[];
+  /** Instruction path: the reply model failed and the client got the fallback; operational reason only. */
+  modelFailure?: string;
   request?: { type: string; fields: Record<string, string> };
 }
 export interface PipelineSink {
@@ -229,13 +231,14 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
     try {
       outcome = replyModel ? await answerByInstruction({ db, tenantId, text, language, settings, state, memory: memory.messages, model: replyModel,
         business: context.business ?? null, demo: await sink.loadDemo() }) : null;
-    } catch {
-      console.warn('instruction_reply_failed', { tenantId });
+    } catch (error) {
+      const failure = failureReason(error);
+      console.warn('instruction_reply_failed', { tenantId, reason: failure });
       return agentContext.run({ agent: 'RECEPTION' }, async () => {
         await sink.recordUsage('message_received', { eventKey: usageKey });
         const reply = await sink.createEscalation(language, undefined, null, { modelUnavailable: true });
         await sink.recordUsage('escalation_created', { metadata: { failure_reason: 'model_unavailable' } });
-        return finish(result(reply, 'escalated'));
+        return finish({ ...result(reply, 'escalated'), modelFailure: failure });
       });
     }
     if (outcome) {
