@@ -234,14 +234,24 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
     } catch (error) {
       const failure = failureReason(error);
       console.warn('instruction_reply_failed', { tenantId, reason: failure });
+      const repeat = state.model_fallback === true;
+      state.model_fallback = true;
       return agentContext.run({ agent: 'RECEPTION' }, async () => {
         await sink.recordUsage('message_received', { eventKey: usageKey });
-        const reply = await sink.createEscalation(language, undefined, null, { modelUnavailable: true });
+        // Z2: two failure templates in a row are not sent — the second is the short "I remember", the escalation stays one.
+        if (repeat) {
+          const reply = renderText(settings, 'client.model_fallback_repeat', language);
+          await send(reply);
+          return finish({ ...result(reply, 'answered'), modelFailure: failure });
+        }
+        const fallback = ownerName ? renderText(settings, 'client.model_fallback', language, { owner_name: ownerName }) : renderText(settings, 'client.model_fallback_no_name', language);
+        const reply = await sink.createEscalation(language, undefined, null, { modelUnavailable: true, clientText: fallback });
         await sink.recordUsage('escalation_created', { metadata: { failure_reason: 'model_unavailable' } });
         return finish({ ...result(reply, 'escalated'), modelFailure: failure });
       });
     }
     if (outcome) {
+      delete state.model_fallback;
       const done = outcome;
       const before = await sink.loadDemo();
       const effective = [

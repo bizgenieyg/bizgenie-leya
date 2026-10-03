@@ -1,4 +1,4 @@
-import { BEHAVIOR_DEFAULTS, MESSAGE_RETENTION_MIN_DAYS } from '../config/behavior.js';
+import { BEHAVIOR_DEFAULTS, MESSAGE_RETENTION_MIN_DAYS, THINKING_LEVELS } from '../config/behavior.js';
 import { TEMPLATE_DEFAULTS } from '../config/templates.js';
 import { ownerTemplate } from './templates.service.js';
 import { invalidateOwnerSettings, loadOwnerSettings, type OwnerSettings } from './owner-settings.service.js';
@@ -105,6 +105,11 @@ export function validateRuntimePatch(input:Record<string,unknown>) {
   else if(key==='audit_max_open_cards')behaviorPatch[key]=integer(key,value,1,50);
   else if(key==='reply_engine'){if(value!=='legacy'&&value!=='instruction')throw new HttpError(400,'Invalid reply engine');behaviorPatch[key]=value;}
   else if(key==='reply_model'){if(typeof value!=='string'||value.length>80||!/^[a-z0-9._-]*$/i.test(value))throw new HttpError(400,'Invalid reply model');behaviorPatch[key]=value;}
+  else if(key==='reply_max_output_tokens'||key==='reply_retry_max_output_tokens')behaviorPatch[key]=integer(key,value,256,65536);
+  else if(key==='reply_thinking_levels'){
+   if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).length>10||Object.entries(value).some(([m,l])=>m.length>80||!/^[a-z0-9._-]+$/i.test(m)||!(THINKING_LEVELS as readonly unknown[]).includes(l)))throw new HttpError(400,'Invalid thinking levels');
+   behaviorPatch[key]=value;
+  }
   else if(key==='request_required_fields'){
    if(!value||typeof value!=='object'||Array.isArray(value)||Object.entries(value).some(([k,v])=>!/^[a-z_]{1,30}$/.test(k)||!Array.isArray(v)||v.length>10||v.some(f=>typeof f!=='string'||!/^[a-z_]{1,30}$/.test(f))))throw new HttpError(400,'Invalid request fields');
    behaviorPatch[key]=value;

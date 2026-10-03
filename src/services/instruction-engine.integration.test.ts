@@ -11,14 +11,14 @@ process.env.SUPABASE_URL = 'https://database.invalid';
 process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-only';
 
 const INSTRUCTION = 'ИНСТРУКЦИЯ БИЗНЕСА: {business_name}. Юрия зовут {owner_name}. Встреча: [[REQUEST: meeting | topic=…]].';
-async function fixture(options: { owner?: string; engine?: 'instruction' | 'legacy'; instruction?: string | null } = {}) {
+async function fixture(options: { owner?: string; engine?: 'instruction' | 'legacy'; instruction?: string | null; languages?: string[] } = {}) {
   const pg = await createTestDatabase();
   const db = pgliteDatabaseClient(pg);
   const tenantId = ((await db.from('tenants').insert({ name: options.owner ?? 'Юрий', business_name: 'BizGenie', language: 'ru', tier: 'basic', status: 'active', business_sector: 'автоматизация бизнеса' }).select('id').single()).data as { id: string }).id;
   await pg.query("insert into notification_settings(tenant_id,owner_phone,owner_chat_id,mode,time_zone,auto_replies_paused) values($1,'972500000002','972500000002@c.us','mute_all','Asia/Jerusalem',false)", [tenantId]);
   await pg.query("insert into plans(code,display_name,messages_per_month,voice_minutes_per_month,warning_percent,unlimited) values('basic','Базовый',500,60,80,false) on conflict(code) do nothing");
   await pg.query("insert into tenant_usage_limits(tenant_id,plan,messages_per_month,voice_minutes_per_month,warning_percent,messages_overridden,voice_overridden,warning_overridden) values($1,'basic',500,60,80,false,false,false)", [tenantId]);
-  await pg.query("insert into assistant_profiles(tenant_id,assistant_name,allowed_languages,tone) values($1,'Лея',array['ru'],'friendly_professional')", [tenantId]);
+  await pg.query("insert into assistant_profiles(tenant_id,assistant_name,allowed_languages,tone) values($1,'Лея',$2::text[],'friendly_professional')", [tenantId, options.languages ?? ['ru']]);
   await pg.query("insert into business_facts(tenant_id,topic,text,status,created_by) values($1,'services_prices','Базовый ассистент — от 249 ₪ в месяц, установка от 500 ₪.','active','migration')", [tenantId]);
   await saveRuntimeSettings(db, tenantId, { reply_engine: options.engine ?? 'instruction' });
   if (options.instruction !== null) { await uploadInstruction(db, { kind: 'business', tenantId }, options.instruction ?? INSTRUCTION); await activateInstruction(db, { kind: 'business', tenantId }, 1); }
@@ -208,5 +208,71 @@ test('Z1: a failed reply model gives the fallback and reports the operational re
     const r = await f.say('сколько стоит?');
     assert.equal(r.modelFailure, 'incomplete_max_tokens');
     assert.ok(r.reply && !/incomplete|max_tokens/.test(r.reply), 'the client never sees the reason');
+  } finally { await f.pg.close(); }
+});
+
+test('Z2: Hebrew message answered in Russian → one regeneration naming the language; still Russian → Hebrew template + ASK_OWNER', async () => {
+  const f = await fixture({ languages: ['ru', 'he', 'en'] });
+  try {
+    f.reply('Здравствуйте! Чем занимается ваш бизнес?');
+    await f.say('привет');
+    f.reply('Ассистент запишет клиентов на стрижку.', 'האסיסטנט ירשום לקוחות לתספורת.');
+    const fixed = await f.say('יש לי מספרה, איך זה יעזור לי?');
+    assert.equal(fixed.reply, 'האסיסטנט ירשום לקוחות לתספורת.');
+    assert.match(f.prompts.at(-2)!.system, /=== ЯЗЫК ОТВЕТА ===\nПоследнее сообщение клиента — иврит\./);
+    assert.match(f.prompts.at(-1)!.system, /Ответ не на том языке: последнее сообщение клиента — иврит/);
+    f.reply('Ассистент запишет клиентов.', 'Ассистент запишет клиентов.');
+    const failed = await f.say('כמה זה עולה?');
+    assert.match(failed.reply ?? '', /[\u0590-\u05FF]/);
+    assert.equal(failed.reply, 'אבדוק עם Юрий ואחזור עם תשובה.', 'the Hebrew template; the owner name is as stored');
+    assert.deepEqual(failed.labels, ['ASK_OWNER']);
+  } finally { await f.pg.close(); }
+});
+
+test('Z2: DEMO_START without a valid demo key does not switch the mode on and logs the label', async () => {
+  const f = await fixture();
+  const warnings: unknown[][] = [], warn = console.warn;
+  console.warn = (...a: unknown[]) => { warnings.push(a); };
+  try {
+    f.reply('Напишите, как вам обычно пишет клиент.\n[[DEMO_START]]');
+    const bare = await f.say('покажите на примере');
+    f.reply('Напишите, как вам обычно пишет клиент.\n[[DEMO_START: car_rental]]');
+    const unknown = await f.say('покажите на примере');
+    f.reply('Напишите, как вам обычно пишет клиент.\n[[DEMO_START: home_cook]]');
+    const known = await f.say('покажите на примере');
+    assert.deepEqual(bare.labels, []); assert.deepEqual(unknown.labels, []);
+    assert.deepEqual(known.labels, ['DEMO_START']);
+    assert.deepEqual(warnings.filter(w => w[0] === 'instruction_demo_unknown_key').map(w => (w[1] as { label: string; key: string | null })).map(w => [w.label, w.key]), [['DEMO_START', null], ['DEMO_START', 'car_rental']]);
+  } finally { console.warn = warn; await f.pg.close(); }
+});
+
+test('Z2: model failure → template with the owner name in nominative; a second one in a row is the short repeat, one escalation', async () => {
+  const f = await fixture();
+  try {
+    f.reply('THROW:incomplete_max_tokens');
+    const first = await f.say('сколько стоит?');
+    assert.equal(first.reply, 'Уточню этот вопрос — Юрий ответит, и я вернусь к вам.');
+    f.reply('THROW:incomplete_max_tokens');
+    const second = await f.say('а установка?');
+    assert.equal(second.reply, 'Я помню ваш вопрос и вернусь с ответом.');
+    f.reply('Установка — от 500 ₪.');
+    assert.equal((await f.say('а установка?')).reply, 'Установка — от 500 ₪.');
+    f.reply('THROW:http_500');
+    assert.equal((await f.say('ещё вопрос')).reply, 'Уточню этот вопрос — Юрий ответит, и я вернусь к вам.', 'a normal reply resets the repeat');
+  } finally { await f.pg.close(); }
+});
+
+test('Z2: reply model limits reach the model call; the new settings are validated', async () => {
+  const f = await fixture();
+  try {
+    const calls: unknown[] = [];
+    const ai = { async generateReply(input: { generation?: unknown }) { calls.push(input.generation); return { text: 'Хорошо.' }; } };
+    await simulateCustomerMessage(f.db, f.tenantId, crypto.randomUUID(), 'привет', ai as never, { evaluation: {}, embedder: null });
+    assert.deepEqual(calls[0], { maxOutputTokens: 2048, retryMaxOutputTokens: 4096, thinkingLevels: { 'gemini-3.8-flash': 'low' } });
+    await saveRuntimeSettings(f.db, f.tenantId, { reply_max_output_tokens: 3000, reply_thinking_levels: { 'gemini-3.8-flash': 'minimal' } });
+    await simulateCustomerMessage(f.db, f.tenantId, crypto.randomUUID(), 'привет', ai as never, { evaluation: {}, embedder: null });
+    assert.deepEqual(calls[1], { maxOutputTokens: 3000, retryMaxOutputTokens: 4096, thinkingLevels: { 'gemini-3.8-flash': 'minimal' } });
+    await assert.rejects(saveRuntimeSettings(f.db, f.tenantId, { reply_thinking_levels: { 'gemini-3.8-flash': 'max' } }), /Invalid thinking levels/);
+    await assert.rejects(saveRuntimeSettings(f.db, f.tenantId, { reply_max_output_tokens: 10 }), /Invalid setting/);
   } finally { await f.pg.close(); }
 });

@@ -10,7 +10,6 @@ import { checkedNumbers, hasLabel, labelValue, missingFields, parseLabels, parse
 import { agreement, isDirectRequest } from './client-consent.js';
 import { CLAIMED_PASSED_PATTERN } from '../config/consent.js';
 import { DEMO_EXAMPLE_MARKERS, REQUEST_INTENT_TURNS } from '../config/instructions.js';
-import { DEMO_INSTRUCTION_DEFAULTS } from '../config/instruction-defaults.js';
 import { renderText } from './templates.service.js';
 
 /**
@@ -33,7 +32,17 @@ export type InstructionAction =
 export interface InstructionOutcome { action: InstructionAction; dataRequest: 'delete' | 'access' | null; demo: { key: string | null; turns: number }; offer: string | null; attempts: number; issues: string[] }
 
 const isMarked = (text: string) => DEMO_EXAMPLE_MARKERS.some(marker => text.toLowerCase().includes(marker));
-const knownDemo = (key: string | null) => !!key && Object.hasOwn(DEMO_INSTRUCTION_DEFAULTS, key);
+/** Language of the client's last message, as the prompt names it (ru names: the core is Russian). */
+const LANGUAGE_NAMES: Record<string, string> = { he: 'иврит', ru: 'русский', en: 'английский' };
+/** The reply is written in another script than the client's last message (task Z2; the rule is "language of the
+ *  incoming message"). Hebrew needs Hebrew letters, Russian Cyrillic, English Latin without Cyrillic/Hebrew. */
+export function wrongLanguage(reply: string, language: string): boolean {
+  const he = /[\u0590-\u05FF]/.test(reply), ru = /[\u0400-\u04FF]/.test(reply), latin = /[A-Za-z]/.test(reply);
+  if (language === 'he') return !he;
+  if (language === 'ru') return !ru;
+  if (language === 'en') return !latin || ((he || ru) && !/[A-Za-z]{3,}/.test(reply.replace(/https?:\/\/\S+/g, '')));
+  return false;
+}
 
 export async function answerByInstruction(turn: InstructionTurn): Promise<InstructionOutcome | null> {
   const { db, tenantId, text, language, settings, state } = turn;
@@ -52,16 +61,25 @@ export async function answerByInstruction(turn: InstructionTurn): Promise<Instru
   const demoText = async (key: string | null) => key ? fillPlaceholders(await activeDemoInstruction(db, key) ?? '', values).text : null;
   const facts = factsMarkdown(await activeFacts(db, tenantId), turn.business?.business_sector ?? null);
   const currentDemo = await demoText(demo.key);
+  /** A demo key is valid only when a demo text exists for it (active demo instruction or a system default). */
+  const demoKeys = new Map<string, boolean>();
+  const knownDemo = async (key: string | null) => {
+    if (!key || !/^[a-z][a-z0-9_]{1,39}$/.test(key)) return false;
+    if (!demoKeys.has(key)) demoKeys.set(key, (await activeDemoInstruction(db, key)) !== null);
+    return demoKeys.get(key)!;
+  };
   if (isDirectRequest(text)) state.direct_request_turn = state.client_turns;
 
   const system = (notes: string[]) => [
     core.text, `=== ИНСТРУКЦИЯ БИЗНЕСА ===\n${instruction.text}`, `=== ФАКТЫ ===\n${facts || '(фактов пока нет)'}`,
     ...(demo.key && currentDemo ? [`=== РЕЖИМ ПОКАЗА (${demo.key}) ===\n${currentDemo}`] : []),
+    ...(LANGUAGE_NAMES[language] ? [`=== ЯЗЫК ОТВЕТА ===\nПоследнее сообщение клиента — ${LANGUAGE_NAMES[language]}. Весь ответ — на этом языке.`] : []),
     ...(notes.length ? [`=== ИСПРАВЬ ПРОШЛЫЙ ВАРИАНТ ОТВЕТА ===\n${notes.map(n => `- ${n}`).join('\n')}`] : []),
   ].join('\n\n');
   const history = turn.memory.slice(0, -1).map(m => ({ role: m.fromMe ? 'assistant' as const : 'user' as const, text: m.text }));
   const ask = async (notes: string[]): Promise<ParsedReply> => {
-    const result = await turn.model.generateReply({ systemPrompt: system(notes), userMessage: text, history });
+    const result = await turn.model.generateReply({ systemPrompt: system(notes), userMessage: text, history,
+      generation: { maxOutputTokens: config.reply_max_output_tokens, retryMaxOutputTokens: config.reply_retry_max_output_tokens, thinkingLevels: config.reply_thinking_levels } });
     const parsed = parseLabels(result.text);
     if (parsed.unknown.length) console.warn('instruction_unknown_labels', { tenantId, labels: parsed.unknown });
     return parsed;
@@ -70,6 +88,7 @@ export async function answerByInstruction(turn: InstructionTurn): Promise<Instru
   /** Issues of one variant; each has a note for the regeneration. */
   const review = async (parsed: ParsedReply) => {
     const issues: Array<{ code: string; note: string }> = [];
+    if (parsed.text.trim() && wrongLanguage(parsed.text, language)) issues.push({ code: 'language', note: `Ответ не на том языке: последнее сообщение клиента — ${LANGUAGE_NAMES[language]}. Напиши весь ответ на этом языке.` });
     if (unsafeClientText(parsed.text)) issues.push({ code: 'unsafe', note: 'В тексте клиенту остались служебные символы или пустой ответ: напиши обычный текст, метки только в конце.' });
     const request = hasLabel(parsed, 'REQUEST') ? parseRequestValue(labelValue(parsed, 'REQUEST')) : null;
     if (hasLabel(parsed, 'REQUEST')) {
@@ -80,10 +99,11 @@ export async function answerByInstruction(turn: InstructionTurn): Promise<Instru
       else if (missing.length) issues.push({ code: 'request_fields', note: `Для заявки не хватает данных: ${missing.join(', ')}. Спроси их у клиента (по одному), заявку пока не ставь и не пиши, что передала.` });
     }
     const newDemo = labelValue(parsed, 'DEMO_START');
-    const corpus = demo.key || knownDemo(newDemo) ? (currentDemo ?? await demoText(newDemo) ?? '') : `${facts}\n${instruction.text}`;
+    const newDemoKnown = await knownDemo(newDemo);
+    const corpus = demo.key || newDemoKnown ? (currentDemo ?? await demoText(newDemo) ?? '') : `${facts}\n${instruction.text}`;
     const bad = unbackedNumbers(parsed.text, corpus);
     if (bad.length) issues.push({ code: 'numbers', note: `Этих чисел нет в Фактах и инструкции: ${bad.join(', ')}. Не называй их; если нужного нет — скажи, что уточнишь, и поставь [[ASK_OWNER: вопрос]].` });
-    if ((demo.key || knownDemo(newDemo)) && checkedNumbers(parsed.text).length && !state.demo_marked && !isMarked(parsed.text))
+    if ((demo.key || newDemoKnown) && checkedNumbers(parsed.text).length && !state.demo_marked && !isMarked(parsed.text))
       issues.push({ code: 'demo_marker', note: 'В показе при первой цифре скажи, что цены здесь для примера.' });
     return { issues, request };
   };
@@ -93,7 +113,8 @@ export async function answerByInstruction(turn: InstructionTurn): Promise<Instru
   let attempts = 1;
   if (checked.issues.length) { parsed = await ask(checked.issues.map(i => i.note)); checked = await review(parsed); attempts = 2; }
   const left = new Set(checked.issues.map(i => i.code));
-  const ownerName = turn.business?.owner_name ?? '';
+  const ownerName = turn.business?.owner_name?.trim() ?? '';
+  const askOwnerText = () => ownerName ? renderText(settings, 'client.ask_owner_fallback', language, { owner_name: ownerName }) : renderText(settings, 'client.model_fallback_no_name', language);
   let clientText = parsed.text;
   let request = checked.request;
   if (left.has('unsafe')) clientText = renderText(settings, 'client.instruction_fallback', language);
@@ -101,14 +122,20 @@ export async function answerByInstruction(turn: InstructionTurn): Promise<Instru
     request = null;
     if (CLAIMED_PASSED_PATTERN.test(clientText)) clientText = renderText(settings, 'client.instruction_fallback', language);
   }
-  if (left.has('numbers')) {
-    return finishOutcome({ kind: 'ask_owner', text: renderText(settings, 'client.ask_owner_fallback', language, { owner_name: ownerName }), question: text.slice(0, 1000) }, parsed, demo, attempts, [...left]);
+  // Wrong numbers or still the wrong language after the regeneration: the template in the client's language + ASK_OWNER.
+  if (left.has('numbers') || left.has('language')) {
+    if (left.has('language')) console.warn('instruction_wrong_language', { tenantId, language });
+    return finishOutcome({ kind: 'ask_owner', text: askOwnerText(), question: text.slice(0, 1000) }, parsed, demo, attempts, [...left]);
   }
   if (left.has('demo_marker')) clientText = `${language === 'he' ? 'לדוגמה' : language === 'en' ? 'For example' : 'Для примера'}: ${clientText}`;
 
   // Labels → actions on the existing mechanisms.
   const start = labelValue(parsed, 'DEMO_START');
-  if (knownDemo(start)) demo = { key: start, turns: 0 };
+  if (hasLabel(parsed, 'DEMO_START')) {
+    // Without a valid demo key the mode is not switched on (Z2): only the label name and the key shape are logged.
+    if (await knownDemo(start)) demo = { key: start, turns: 0 };
+    else console.warn('instruction_demo_unknown_key', { tenantId, label: 'DEMO_START', key: start && /^[a-z0-9_]{1,40}$/.test(start) ? start : null });
+  }
   if (hasLabel(parsed, 'DEMO_END')) demo = { key: null, turns: 0 };
   if (demo.key && (isMarked(clientText) || left.has('demo_marker'))) state.demo_marked = true;
   if (!demo.key) delete state.demo_marked;

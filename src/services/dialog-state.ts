@@ -25,6 +25,8 @@ export interface DialogState {
   direct_request_turn?: number;
   /** Task Z: in demo mode the "для примера" note has been said. */
   demo_marked?: boolean;
+  /** Z2: the last reply was the model-failure template; a second one in a row is the short repeat, no escalation. */
+  model_fallback?: boolean;
 }
 export interface PendingOffer { summary: string; time: string | null; topic: string | null; turns_left: number }
 
@@ -48,6 +50,7 @@ export function normalizeDialogState(value: unknown): DialogState {
     ...(Number.isSafeInteger(v.last_cta_turn) ? { last_cta_turn: Number(v.last_cta_turn) } : {}),
     ...(Number.isSafeInteger(v.direct_request_turn) ? { direct_request_turn: Number(v.direct_request_turn) } : {}),
     ...(v.demo_marked === true ? { demo_marked: true } : {}),
+    ...(v.model_fallback === true ? { model_fallback: true } : {}),
   };
 }
 

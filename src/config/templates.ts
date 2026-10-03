@@ -99,6 +99,21 @@ export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
     "he": "מה הכי חשוב לך כרגע?",
     "en": "What matters most to you right now?"
   },
+  "client.model_fallback": {
+    "ru": "Уточню этот вопрос — {owner_name} ответит, и я вернусь к вам.",
+    "he": "אבדוק את השאלה — {owner_name} יענה, ואחזור אליך.",
+    "en": "I'll check this — {owner_name} will answer, and I'll get back to you."
+  },
+  "client.model_fallback_no_name": {
+    "ru": "Уточню этот вопрос и вернусь к вам.",
+    "he": "אבדוק את השאלה ואחזור אליך.",
+    "en": "I'll check this and get back to you."
+  },
+  "client.model_fallback_repeat": {
+    "ru": "Я помню ваш вопрос и вернусь с ответом.",
+    "he": "אני זוכרת את השאלה שלך ואחזור עם תשובה.",
+    "en": "I remember your question and will get back with an answer."
+  },
   "client.ask_owner_fallback": {
     "ru": "Уточню: {owner_name} ответит, и я сразу вернусь к вам.",
     "he": "אבדוק עם {owner_name} ואחזור עם תשובה.",

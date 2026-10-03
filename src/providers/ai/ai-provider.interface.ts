@@ -6,6 +6,8 @@ export interface AIReplyInput {
   images?: Array<{ mimeType: string; data: string }>;
   /** Task Z: the conversation as chat turns before `userMessage` (the latest client message). */
   history?: Array<{ role: 'user' | 'assistant'; text: string }>;
+  /** Per-call output cap and thinking (Gemini: see GeminiOptions); overrides the provider's own options. */
+  generation?: { maxOutputTokens?: number; retryMaxOutputTokens?: number; thinkingLevels?: Record<string, string> };
 }
 
 export interface AIUsage { model?: string; input_tokens?: number; output_tokens?: number; total_tokens?: number; thinking_tokens?: number; cached_input_tokens?: number; finish_reason?: string; }

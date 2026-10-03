@@ -18,7 +18,9 @@ async function main() {
   const { createTaskAIProvider, modelKeyConfigured } = await import('../providers/ai/index.js');
   if (!modelKeyConfigured()) throw new Error('GEMINI_API_KEY is not configured');
   const text = readFileSync(file, 'utf8'), sector = arg('sector') ?? 'автоматизация', required = requiredTopics(sector);
+  const started = Date.now();
   const extraction = await extractFacts(createTaskAIProvider(), text, [], Number(arg('chunk') ?? BEHAVIOR_DEFAULTS.extraction_chunk_chars), file);
+  const seconds = ((Date.now() - started) / 1000).toFixed(1);
   const gaps = requiredGaps(required, extraction.facts.map(f => f.topic), extraction.gaps);
   console.log(formatMigration({ parts: [{ title: file, documentId: null, text, extraction }], gaps, sector, required }));
   const all = extraction.facts.map(f => `${f.text} ${f.quote}`).join('\n').toLowerCase();
@@ -26,6 +28,7 @@ async function main() {
   const missing = expected.filter(k => !all.includes(k.toLowerCase()));
   const c = extraction.coverage!, share = c.blocks ? (c.covered + c.skipped.length) / c.blocks : 1;
   console.log(`\nКлючевые слова: ${expected.length - missing.length}/${expected.length}${missing.length ? ` — нет: ${missing.join(', ')}` : ''}`);
+  console.log(`Фактов: ${extraction.facts.length}, время: ${seconds} с, модель: ${process.env.GEMINI_TASK_MODEL || 'по умолчанию'}, вызовов: ${extraction.calls?.length ?? 0}`);
   console.log(`Покрытие блоков (с пропусками по причине): ${(share * 100).toFixed(1)} % (порог 95 %)`);
   if (missing.length || share < 0.95) process.exitCode = 1;
 }

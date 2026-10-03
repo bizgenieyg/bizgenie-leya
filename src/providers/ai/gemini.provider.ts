@@ -5,12 +5,30 @@ import type { AIProvider, AIReplyInput, AIReplyResult } from "./ai-provider.inte
 export const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite";
 /** One-off tasks (fact extraction, audit, classification): a stronger model, longer output and time. */
 export const DEFAULT_GEMINI_TASK_MODEL = "gemini-3.8-flash";
-export interface GeminiOptions { maxOutputTokens?: number; timeoutMs?: number; attemptTimeoutMs?: number }
+/**
+ * maxOutputTokens is one cap for thinking and text together (Gemini 3.x). thinkingLevels: model → thinkingLevel
+ * ('minimal'|'low'|'medium'|'high', generationConfig.thinkingConfig); a model not listed gets no thinkingConfig
+ * (its own default). retryMaxOutputTokens: one more attempt with this cap after 'incomplete_max_tokens'.
+ */
+export interface GeminiOptions { maxOutputTokens?: number; retryMaxOutputTokens?: number; thinkingLevels?: Record<string, string>; timeoutMs?: number; attemptTimeoutMs?: number }
 
 export class GeminiProvider implements AIProvider {
   constructor(private readonly apiKey: string, private readonly model = DEFAULT_GEMINI_MODEL, private readonly options: GeminiOptions = {}) {}
 
   async generateReply(input: AIReplyInput): Promise<AIReplyResult> {
+    const limits = { ...this.options, ...input.generation };
+    const cap = limits.maxOutputTokens ?? 1024, retry = limits.retryMaxOutputTokens;
+    const thinkingLevel = limits.thinkingLevels?.[this.model];
+    if (!retry || retry <= cap) return this.request(input, cap, thinkingLevel, true);
+    try { return await this.request(input, cap, thinkingLevel, false); }
+    catch (error) {
+      if (!(error instanceof AIProviderError) || error.failure.reason !== 'incomplete_max_tokens') throw error;
+      console.warn('model_retry_max_tokens', { model: this.model, from: cap, to: retry });
+      return this.request(input, retry, thinkingLevel, true);
+    }
+  }
+
+  private async request(input: AIReplyInput, maxOutputTokens: number, thinkingLevel: string | undefined, final: boolean): Promise<AIReplyResult> {
     let usage: AIUsage = { model: this.model };
     let failure: AIFailure = { reason: 'unavailable' };
     const fail = async (response: Response, reason: string) => {
@@ -39,7 +57,7 @@ export class GeminiProvider implements AIProvider {
                 ...(input.history ?? []).filter(turn => turn.text.trim()).map(turn => ({ role: turn.role === 'assistant' ? 'model' : 'user', parts: [{ text: turn.text }] })),
                 { role: "user", parts: [{ text: input.userMessage }, ...(input.images ?? []).map(image => ({ inlineData: { mimeType: image.mimeType, data: image.data } }))] },
               ],
-              generationConfig: { maxOutputTokens: this.options.maxOutputTokens ?? 1024 },
+              generationConfig: { maxOutputTokens, ...(thinkingLevel ? { thinkingConfig: { thinkingLevel } } : {}) },
             }),
           });
         } catch {
@@ -69,6 +87,8 @@ export class GeminiProvider implements AIProvider {
       recordModelOutcome(true);
       return { text, usage: { ...usage, finish_reason: candidate.finishReason } };
     } catch {
+      // A capped first attempt that will be retried is not an outage: neither logged as a failure nor counted.
+      if (!final && failure.reason === 'incomplete_max_tokens') throw new AIProviderError("Gemini reply incomplete", usage, failure);
       // Operational codes only: never the prompt, the client's text or the key.
       console.error('model_call_failed', { model: this.model, ...failure });
       recordModelOutcome(false, failure);
