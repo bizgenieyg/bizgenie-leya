@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { DatabaseClient } from '../db/supabase.js';
 import { HttpError } from '../utils/http-error.js';
 import { CORE_INSTRUCTION_DEFAULT, DEMO_INSTRUCTION_DEFAULTS } from '../config/instruction-defaults.js';
@@ -77,5 +78,6 @@ export async function activateInstruction(db: DatabaseClient, target: Target, ve
 export async function listInstructions(db: DatabaseClient, target: Target) {
   const r = await scope(db, target).order('version', { ascending: false });
   check(r.error, 'Instructions unavailable');
-  return (r.data ?? []).map(({ content, ...row }) => ({ ...row, chars: String(content).length }));
+  // Content stays on the server; the hash lets a publisher see that a text is already uploaded (Z3).
+  return (r.data ?? []).map(({ content, ...row }) => ({ ...row, chars: String(content).length, sha256: createHash('sha256').update(String(content)).digest('hex') }));
 }

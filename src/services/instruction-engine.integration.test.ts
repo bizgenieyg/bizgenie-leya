@@ -276,3 +276,32 @@ test('Z2: reply model limits reach the model call; the new settings are validate
     await assert.rejects(saveRuntimeSettings(f.db, f.tenantId, { reply_max_output_tokens: 10 }), /Invalid setting/);
   } finally { await f.pg.close(); }
 });
+
+test('Z3: numbers of the answer that starts a demo are checked against the demo text; DEMO_END — against the tenant facts', async () => {
+  const f = await fixture();
+  try {
+    f.reply('Давайте на примере домашнего повара. Напишите, как вам обычно пишет клиент.');
+    await f.say('покажите на примере');
+    f.reply('Пельмени — 100 ₪ за кг (цены здесь для примера). На завтра не получится.\n[[DEMO_START: home_cook]]');
+    const start = await f.say('сколько стоят пельмени? можно на завтра?');
+    assert.deepEqual(start.labels, ['DEMO_START']);
+    assert.match(start.reply ?? '', /100 ₪/);
+    f.reply('Установка — от 500 ₪, а пельмени были для примера.\n[[DEMO_END]]');
+    const end = await f.say('понятно, а у вас сколько стоит?');
+    assert.deepEqual(end.labels, ['DEMO_END']);
+    assert.match(end.reply ?? '', /500 ₪/, 'the tenant price passes after DEMO_END');
+
+    const g = await fixture();
+    try {
+      g.reply('Напишите, как вам обычно пишет клиент.');
+      await g.say('покажите на примере');
+      g.reply('Пельмени — 70 ₪ за кг (для примера).\n[[DEMO_START: home_cook]]', 'Пельмени — 70 ₪ за кг (для примера).\n[[DEMO_START: home_cook]]');
+      const wrong = await g.say('сколько стоят пельмени?');
+      assert.equal(wrong.reply, 'Уточню: Юрий ответит, и я сразу вернусь к вам.', 'a price not in the demo text is not sent');
+      assert.match(g.prompts.at(-1)!.system, /Этих чисел нет в Фактах и инструкции: 70/);
+      g.reply('Пельмени — 100 ₪ за кг.\n[[DEMO_START: home_cook]]', 'Пельмени — 100 ₪ за кг.\n[[DEMO_START: home_cook]]');
+      const unmarked = await g.say('сколько стоят пельмени?');
+      assert.match(unmarked.reply ?? '', /^Для примера: Пельмени — 100 ₪/, 'the first demo price is marked even in the starting answer');
+    } finally { await g.pg.close(); }
+  } finally { await f.pg.close(); }
+});

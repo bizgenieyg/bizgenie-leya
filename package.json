@@ -16,6 +16,7 @@
     "check:task-model": "npm run build && node dist/scripts/check-task-model.js",
     "knowledge:migrate": "npm run build && node dist/scripts/knowledge-migrate.js",
     "eval:instructions": "npm run build && node dist/scripts/eval-instructions.js",
+    "instructions:publish": "npm run build && node dist/scripts/instructions-publish.js",
     "knowledge:extract-check": "npm run build && node dist/scripts/knowledge-extract-check.js",
     "knowledge:audit": "npm run build && node dist/scripts/knowledge-audit.js"
   },

@@ -104,10 +104,14 @@ export async function answerByInstruction(turn: InstructionTurn): Promise<Instru
     }
     const newDemo = labelValue(parsed, 'DEMO_START');
     const newDemoKnown = await knownDemo(newDemo);
-    const corpus = demo.key || newDemoKnown ? (currentDemo ?? await demoText(newDemo) ?? '') : `${facts}\n${instruction.text}`;
+    // Z3: the numbers of this answer belong to the business it speaks for. [[DEMO_END]] — back to the tenant's facts;
+    // a valid [[DEMO_START: key]] — that demo's text, already in the answer that starts the role; else the open demo.
+    const ending = hasLabel(parsed, 'DEMO_END');
+    const demoCorpus = ending ? null : newDemoKnown ? await demoText(newDemo) : demo.key ? currentDemo : null;
+    const corpus = demoCorpus ?? `${facts}\n${instruction.text}`;
     const bad = unbackedNumbers(parsed.text, corpus);
     if (bad.length) issues.push({ code: 'numbers', note: `Этих чисел нет в Фактах и инструкции: ${bad.join(', ')}. Не называй их; если нужного нет — скажи, что уточнишь, и поставь [[ASK_OWNER: вопрос]].` });
-    if ((demo.key || newDemoKnown) && checkedNumbers(parsed.text).length && !state.demo_marked && !isMarked(parsed.text))
+    if (demoCorpus !== null && checkedNumbers(parsed.text).length && !(demo.key && state.demo_marked) && !isMarked(parsed.text))
       issues.push({ code: 'demo_marker', note: 'В показе при первой цифре скажи, что цены здесь для примера.' });
     return { issues, request };
   };
