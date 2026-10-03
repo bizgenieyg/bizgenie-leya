@@ -74,9 +74,11 @@ export async function answerByInstruction(turn: InstructionTurn): Promise<Instru
   };
   if (isDirectRequest(text)) state.direct_request_turn = state.client_turns;
 
+  /** The demo whose text the next variant sees: the open one, or the one the previous variant started (Z3). */
+  let promptDemo: { key: string; text: string } | null = demo.key && currentDemo ? { key: demo.key, text: currentDemo } : null;
   const system = (notes: string[]) => [
     core.text, `=== ИНСТРУКЦИЯ БИЗНЕСА ===\n${instruction.text}`, `=== ФАКТЫ ===\n${facts || '(фактов пока нет)'}`,
-    ...(demo.key && currentDemo ? [`=== РЕЖИМ ПОКАЗА (${demo.key}) ===\n${currentDemo}`] : []),
+    ...(promptDemo ? [`=== РЕЖИМ ПОКАЗА (${promptDemo.key}) ===\n${promptDemo.text}`] : []),
     ...(LANGUAGE_NAMES[language] ? [`=== ЯЗЫК ОТВЕТА ===\nПоследнее сообщение клиента — ${LANGUAGE_NAMES[language]}. Весь ответ — на этом языке.`] : []),
     ...(notes.length ? [`=== ИСПРАВЬ ПРОШЛЫЙ ВАРИАНТ ОТВЕТА ===\n${notes.map(n => `- ${n}`).join('\n')}`] : []),
   ].join('\n\n');
@@ -119,7 +121,16 @@ export async function answerByInstruction(turn: InstructionTurn): Promise<Instru
   let parsed = await ask([]);
   let checked = await review(parsed);
   let attempts = 1;
-  if (checked.issues.length) { parsed = await ask(checked.issues.map(i => i.note)); checked = await review(parsed); attempts = 2; }
+  if (checked.issues.length) {
+    // The answer that starts a demo was written without the demo text (the mode was not on yet): the regeneration
+    // gets it, so prices and rules come from the demo business instead of being invented.
+    const started = labelValue(parsed, 'DEMO_START');
+    if (!promptDemo && !hasLabel(parsed, 'DEMO_END') && await knownDemo(started)) {
+      const text = await demoText(started);
+      if (text) promptDemo = { key: started!, text };
+    }
+    parsed = await ask(checked.issues.map(i => i.note)); checked = await review(parsed); attempts = 2;
+  }
   const left = new Set(checked.issues.map(i => i.code));
   const ownerName = turn.business?.owner_name?.trim() ?? '';
   const askOwnerText = () => ownerName ? renderText(settings, 'client.ask_owner_fallback', language, { owner_name: ownerName }) : renderText(settings, 'client.model_fallback_no_name', language);

@@ -299,6 +299,8 @@ test('Z3: numbers of the answer that starts a demo are checked against the demo 
       const wrong = await g.say('сколько стоят пельмени?');
       assert.equal(wrong.reply, 'Уточню: Юрий ответит, и я сразу вернусь к вам.', 'a price not in the demo text is not sent');
       assert.match(g.prompts.at(-1)!.system, /Этих чисел нет в Фактах и инструкции: 70/);
+      assert.doesNotMatch(g.prompts.at(-2)!.system, /=== РЕЖИМ ПОКАЗА/, 'the first variant was written before the demo was on');
+      assert.match(g.prompts.at(-1)!.system, /=== РЕЖИМ ПОКАЗА \(home_cook\) ===\nДЕМО-БИЗНЕС: домашний повар/, 'the regeneration sees the demo price list');
       g.reply('Пельмени — 100 ₪ за кг.\n[[DEMO_START: home_cook]]', 'Пельмени — 100 ₪ за кг.\n[[DEMO_START: home_cook]]');
       const unmarked = await g.say('сколько стоят пельмени?');
       assert.match(unmarked.reply ?? '', /^Для примера: Пельмени — 100 ₪/, 'the first demo price is marked even in the starting answer');
