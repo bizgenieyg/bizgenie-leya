@@ -38,3 +38,14 @@ test('config defaults are the instruction files verbatim', () => {
   assert.equal(DEMO_INSTRUCTION_DEFAULTS.home_cook, readFileSync('evals/instructions/demo-home-cook.md', 'utf8'));
   assert.equal(DEMO_INSTRUCTION_DEFAULTS.cosmetologist, readFileSync('evals/instructions/demo-cosmetologist.md', 'utf8'));
 });
+
+test('Z2: wrong language — the client script must dominate; Latin brand names do not count against ru/he', async () => {
+  const { wrongLanguage } = await import('./instruction-engine.service.js');
+  assert.equal(wrongLanguage('אссистент в WhatsApp возьмет на себя ответы на вопросы клиентов.', 'he'), true, 'one Hebrew letter is not a Hebrew reply');
+  assert.equal(wrongLanguage('האסיסטנט ב-WhatsApp יענה ללקוחות.', 'he'), false);
+  assert.equal(wrongLanguage('Ассистент в WhatsApp ответит клиентам: https://leya.bizgenie.site/login', 'ru'), false);
+  assert.equal(wrongLanguage('הסייען יענה', 'ru'), true);
+  assert.equal(wrongLanguage('The assistant answers in WhatsApp.', 'en'), false);
+  assert.equal(wrongLanguage('Ассистент ответит.', 'en'), true);
+  assert.equal(wrongLanguage('500 ₪', 'he'), true);
+});

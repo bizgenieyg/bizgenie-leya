@@ -35,13 +35,17 @@ const isMarked = (text: string) => DEMO_EXAMPLE_MARKERS.some(marker => text.toLo
 /** Language of the client's last message, as the prompt names it (ru names: the core is Russian). */
 const LANGUAGE_NAMES: Record<string, string> = { he: 'иврит', ru: 'русский', en: 'английский' };
 /** The reply is written in another script than the client's last message (task Z2; the rule is "language of the
- *  incoming message"). Hebrew needs Hebrew letters, Russian Cyrillic, English Latin without Cyrillic/Hebrew. */
+ *  incoming message"): the letters of the client's script must outnumber each other script (links not counted),
+ *  so one Hebrew letter in a Russian sentence ("אссистент в WhatsApp…") is still a Russian reply. */
 export function wrongLanguage(reply: string, language: string): boolean {
-  const he = /[\u0590-\u05FF]/.test(reply), ru = /[\u0400-\u04FF]/.test(reply), latin = /[A-Za-z]/.test(reply);
-  if (language === 'he') return !he;
-  if (language === 'ru') return !ru;
-  if (language === 'en') return !latin || ((he || ru) && !/[A-Za-z]{3,}/.test(reply.replace(/https?:\/\/\S+/g, '')));
-  return false;
+  const text = reply.replace(/https?:\/\/\S+/g, '');
+  const count = (re: RegExp) => text.match(re)?.length ?? 0;
+  const letters: Record<string, number> = { he: count(/[\u05D0-\u05EA]/g), ru: count(/[\u0400-\u04FF]/g), en: count(/[A-Za-z]/g) };
+  if (!(language in letters)) return false;
+  const own = letters[language]!;
+  // English replies may name Hebrew/Russian things; Russian and Hebrew ones often carry Latin brand names (WhatsApp).
+  const rivals = language === 'en' ? [letters.he!, letters.ru!] : [language === 'he' ? letters.ru! : letters.he!];
+  return own === 0 || rivals.some(n => n >= own);
 }
 
 export async function answerByInstruction(turn: InstructionTurn): Promise<InstructionOutcome | null> {

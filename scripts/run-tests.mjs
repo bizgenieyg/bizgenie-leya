@@ -15,5 +15,6 @@ for(const folder of folders){
     .map(name=>fileURLToPath(new URL(`../dist/${folder}/${name.replace(/\.ts$/,'.js')}`,import.meta.url))));
 }
 if(!files.length){console.error('No tests found. Run npm run build first.');process.exit(1)}
-const child=spawn(process.execPath,['--test',...files],{stdio:'inherit'});
+// Tests never call paid models: a real key in .env (dotenv does not override a set variable) is blanked.
+const child=spawn(process.execPath,['--test',...files],{stdio:'inherit',env:{...process.env,GEMINI_API_KEY:'',STT_API_KEY:''}});
 child.on('exit',(code,signal)=>{if(signal)process.kill(process.pid,signal);else process.exitCode=code??1});
