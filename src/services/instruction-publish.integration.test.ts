@@ -3,7 +3,7 @@ import test from 'node:test';
 import { createTestDatabase, pgliteDatabaseClient } from './test-support/pglite-harness.js';
 import { activateInstruction, instructionTarget, listInstructions, uploadInstruction } from './instructions.service.js';
 import { readRuntimeSettings, saveRuntimeSettings } from './runtime-settings.service.js';
-import { publishInstruction, rollbackInstruction, type OperatorApi, type PublishTarget } from './instruction-publish.js';
+import { describeSteps, publishInstruction, rollbackInstruction, type OperatorApi, type PublishTarget } from './instruction-publish.js';
 
 process.env.GEMINI_API_KEY = '';
 process.env.SUPABASE_URL = 'https://database.invalid';
@@ -57,5 +57,42 @@ test('Z3 instructions:publish — publish, the same text again creates no versio
     await publishInstruction(api, { target: { demoKey: 'home_cook' }, content: 'Демо повара' });
     assert.deepEqual(await publishInstruction(api, { target: { demoKey: 'home_cook' }, content: 'Демо повара' }), [{ action: 'unchanged', version: 1 }]);
     await assert.rejects(publishInstruction(api, { target: { demoKey: 'home_cook' }, content: 'x', engine: 'instruction' }), /apply to a tenant/);
+  } finally { await pg.close(); }
+});
+
+test('Z5 instructions:publish --fallback-model: set, shown in dry-run, cleared by "", kept by rollback; bad prefix / no key refused before changes', async () => {
+  const pg = await createTestDatabase(), db = pgliteDatabaseClient(pg);
+  try {
+    const tenantId = ((await db.from('tenants').insert({ name: 'Юрий', business_name: 'BizGenie', language: 'ru', tier: 'basic', status: 'active' }).select('id').single()).data as { id: string }).id;
+    await pg.query("insert into notification_settings(tenant_id,owner_phone,mode,time_zone) values($1,'972500000002','mute_all','Asia/Jerusalem')", [tenantId]);
+    await pg.query("insert into plans(code,display_name,messages_per_month,voice_minutes_per_month,warning_percent,unlimited) values('basic','Базовый',500,60,80,false) on conflict(code) do nothing");
+    await pg.query("insert into tenant_usage_limits(tenant_id,plan,messages_per_month,voice_minutes_per_month,warning_percent) values($1,'basic',500,60,80)", [tenantId]);
+    const api = serviceApi(db), target = { tenantId }, keys = { gemini: true, anthropic: false, openai: true };
+    const versions = async () => Number((await pg.query<{ n: string }>("select count(*)::text n from assistant_instructions where tenant_id=$1", [tenantId])).rows[0]!.n);
+    const fallback = async () => (await readRuntimeSettings(db, tenantId)).reply_fallback_model;
+
+    const plan = await publishInstruction(api, { target, content: 'v1', engine: 'instruction', replyModel: 'gemini-3.8-flash', fallbackModel: 'gpt-6.1-sol', keys, dryRun: true });
+    assert.deepEqual(plan.at(-1), { action: 'settings', patch: { reply_engine: 'instruction', reply_model: 'gemini-3.8-flash', reply_fallback_model: 'gpt-6.1-sol' } });
+    assert.deepEqual(describeSteps(plan).at(-1), 'Настройки: reply_engine="instruction", reply_model="gemini-3.8-flash", reply_fallback_model="gpt-6.1-sol"');
+    assert.equal(await fallback(), '', 'dry-run changes nothing');
+
+    await publishInstruction(api, { target, content: 'v1', engine: 'instruction', replyModel: 'gemini-3.8-flash', fallbackModel: 'gpt-6.1-sol', keys });
+    assert.equal(await fallback(), 'gpt-6.1-sol');
+    assert.deepEqual(await publishInstruction(api, { target, content: 'v1', fallbackModel: 'gpt-6.1-sol', keys }), [{ action: 'unchanged', version: 1 }], 'same value — nothing to change');
+
+    await rollbackInstruction(api, tenantId);
+    assert.equal((await readRuntimeSettings(db, tenantId)).reply_engine, 'legacy');
+    assert.equal(await fallback(), 'gpt-6.1-sol', 'rollback keeps the fallback model');
+
+    for (const [model, error] of [['claude-haiku-5-5', /ANTHROPIC_API_KEY is not set/], ['mistral-large', /unknown model prefix/], ['gpt 6; drop', /invalid model id/]] as const) {
+      await assert.rejects(publishInstruction(api, { target, content: 'v2', fallbackModel: model, keys }), error);
+      await assert.rejects(publishInstruction(api, { target, content: 'v2', replyModel: model, keys }), error);
+    }
+    assert.equal(await versions(), 1, 'refused before any upload');
+    assert.equal(await fallback(), 'gpt-6.1-sol');
+
+    await publishInstruction(api, { target, content: 'v1', fallbackModel: '', keys });
+    assert.equal(await fallback(), '', 'an empty value clears it');
+    await assert.rejects(publishInstruction(api, { target: { demoKey: 'home_cook' }, content: 'x', fallbackModel: 'gpt-6.1-sol', keys }), /apply to a tenant/);
   } finally { await pg.close(); }
 });

@@ -14,13 +14,29 @@ export interface OperatorApi {
   settings(tenantId: string): Promise<Record<string, unknown>>;
   saveSettings(tenantId: string, patch: Record<string, unknown>): Promise<void>;
 }
-export interface PublishOptions { target: PublishTarget; content: string; engine?: 'instruction' | 'legacy'; replyModel?: string; dryRun?: boolean }
+export interface PublishOptions { target: PublishTarget; content: string; engine?: 'instruction' | 'legacy'; replyModel?: string; fallbackModel?: string; dryRun?: boolean;
+  /** Provider keys present in the server env (Z5): a model whose provider has no key is refused before any change. */
+  keys?: ProviderKeys }
+export interface ProviderKeys { gemini: boolean; anthropic: boolean; openai: boolean }
+const PROVIDERS: Array<{ prefix: string; key: keyof ProviderKeys; env: string }> = [
+  { prefix: 'gemini-', key: 'gemini', env: 'GEMINI_API_KEY' }, { prefix: 'claude-', key: 'anthropic', env: 'ANTHROPIC_API_KEY' }, { prefix: 'gpt-', key: 'openai', env: 'OPENAI_API_KEY' },
+];
+/** Z5: a reply/fallback model id must name a known provider whose key the server has; '' (clear) is always fine. */
+export function checkModel(flag: string, model: string, keys: ProviderKeys | undefined): void {
+  if (!model) return;
+  if (!/^[a-z0-9._-]{1,80}$/i.test(model)) throw new Error(`${flag}: invalid model id`);
+  const provider = PROVIDERS.find(p => model.startsWith(p.prefix));
+  if (!provider) throw new Error(`${flag}: unknown model prefix (expected ${PROVIDERS.map(p => p.prefix).join(' / ')})`);
+  if (keys && !keys[provider.key]) throw new Error(`${flag}: ${provider.env} is not set in the server env`);
+}
 export type Step = { action: 'upload' } | { action: 'activate'; version: number | 'new' } | { action: 'unchanged'; version: number } | { action: 'settings'; patch: Record<string, unknown> };
 
 export const sha256 = (text: string) => createHash('sha256').update(text).digest('hex');
 
 /** What publishing would do (also the --dry-run output). */
 export async function publishPlan(api: OperatorApi, options: PublishOptions): Promise<Step[]> {
+  if (options.replyModel !== undefined) checkModel('--reply-model', options.replyModel, options.keys);
+  if (options.fallbackModel !== undefined) checkModel('--fallback-model', options.fallbackModel, options.keys);
   const rows = await api.list(options.target), hash = sha256(options.content);
   const same = rows.filter(r => r.sha256 === hash).sort((a, b) => b.version - a.version)[0];
   const steps: Step[] = same ? (same.status === 'active' ? [{ action: 'unchanged', version: same.version }] : [{ action: 'activate', version: same.version }])
@@ -29,8 +45,9 @@ export async function publishPlan(api: OperatorApi, options: PublishOptions): Pr
     const current = await api.settings(options.target.tenantId), patch: Record<string, unknown> = {};
     if (options.engine && current.reply_engine !== options.engine) patch.reply_engine = options.engine;
     if (options.replyModel !== undefined && current.reply_model !== options.replyModel) patch.reply_model = options.replyModel;
+    if (options.fallbackModel !== undefined && current.reply_fallback_model !== options.fallbackModel) patch.reply_fallback_model = options.fallbackModel;
     if (Object.keys(patch).length) steps.push({ action: 'settings', patch });
-  } else if (options.engine || options.replyModel !== undefined) throw new Error('--engine and --reply-model apply to a tenant, not to a demo');
+  } else if (options.engine || options.replyModel !== undefined || options.fallbackModel !== undefined) throw new Error('--engine, --reply-model and --fallback-model apply to a tenant, not to a demo');
   return steps;
 }
 
@@ -47,7 +64,8 @@ export async function publishInstruction(api: OperatorApi, options: PublishOptio
   return steps;
 }
 
-/** Rollback: the tenant answers by the legacy path again; instruction versions stay as they are. */
+/** Rollback: the tenant answers by the legacy path again; instruction versions, reply_model and
+ *  reply_fallback_model stay as they are (Z5). */
 export async function rollbackInstruction(api: OperatorApi, tenantId: string, dryRun = false): Promise<Step[]> {
   const current = await api.settings(tenantId);
   const steps: Step[] = current.reply_engine === 'legacy' ? [] : [{ action: 'settings', patch: { reply_engine: 'legacy' } }];

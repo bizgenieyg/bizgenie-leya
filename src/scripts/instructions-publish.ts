@@ -26,7 +26,7 @@ function httpApi(base: string, secret: string): OperatorApi {
 }
 
 /**
- * npm run instructions:publish -- --tenant=<uuid> --file=<md> [--engine=instruction|legacy] [--reply-model=<id>] [--dry-run]
+ * npm run instructions:publish -- --tenant=<uuid> --file=<md> [--engine=instruction|legacy] [--reply-model=<id>] [--fallback-model=<id>|--fallback-model=] [--dry-run]
  * npm run instructions:publish -- --demo=home_cook|cosmetologist --file=<md> [--dry-run]
  * npm run instructions:publish -- --rollback --tenant=<uuid> [--dry-run]
  * [--api=http://127.0.0.1:<PORT>] — the leya-api base URL; ADMIN_SECRET from the environment.
@@ -48,7 +48,9 @@ async function main() {
   const engine = arg('engine');
   if (engine !== undefined && engine !== 'instruction' && engine !== 'legacy') throw new Error('--engine must be instruction or legacy');
   const steps = await publishInstruction(api, { target: tenant ? { tenantId: tenant } : { demoKey: demo! }, content: readFileSync(file, 'utf8'),
-    ...(engine ? { engine } : {}), ...(arg('reply-model') !== undefined ? { replyModel: arg('reply-model')! } : {}), dryRun });
+    ...(engine ? { engine } : {}), ...(arg('reply-model') !== undefined ? { replyModel: arg('reply-model')! } : {}),
+    ...(arg('fallback-model') !== undefined ? { fallbackModel: arg('fallback-model')! } : {}), dryRun,
+    keys: { gemini: !!env.geminiApiKey?.trim(), anthropic: !!env.anthropicApiKey?.trim(), openai: !!env.openaiApiKey?.trim() } });
   console.log([dryRun ? 'План (dry-run):' : 'Сделано:', ...describeSteps(steps)].join('\n'));
 }
 main().catch(error => { console.error(error instanceof Error ? error.message : 'instructions:publish failed'); process.exitCode = 1; });
