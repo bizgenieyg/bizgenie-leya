@@ -2,6 +2,7 @@ import { parse } from 'yaml';
 import { failureReason, type AIProvider, type AIUsage } from '../providers/ai/ai-provider.interface.js';
 import type { DatabaseClient } from '../db/supabase.js';
 import { simulateCustomerMessage, type SimulationResult } from '../services/simulator.service.js';
+import { callCost } from '../config/model-prices.js';
 
 /**
  * Task Z: scenarios of evals/instructions/scenarios.yaml — 5 traps per tenant (with its variables) + its own
@@ -68,15 +69,19 @@ export async function judge(ai: AIProvider, scenario: InstructionScenario, turns
   }
 }
 
-export interface ModelStats { calls: number; latencyMs: number; input: number; output: number; thinking: number }
-/** Wraps the reply model: counts calls, latency and tokens. */
-export function measured(ai: AIProvider, stats: ModelStats): AIProvider {
+export interface ModelStats { calls: number; latencyMs: number; input: number; output: number; thinking: number; cacheRead: number; cacheWrite: number; cost: number; unpriced: number }
+export const emptyStats = (): ModelStats => ({ calls: 0, latencyMs: 0, input: 0, output: 0, thinking: 0, cacheRead: 0, cacheWrite: 0, cost: 0, unpriced: 0 });
+/** Wraps the reply model: counts calls, latency, tokens and the real price of every call (Z4: tier by date and prompt). */
+export function measured(ai: AIProvider, stats: ModelStats, model: string, now: () => Date = () => new Date()): AIProvider {
   return { async generateReply(input) {
     const started = Date.now();
     const result = await ai.generateReply(input);
     const usage: AIUsage = result.usage ?? {};
+    const tokens = { input: usage.input_tokens ?? 0, output: usage.output_tokens ?? 0, thinking: usage.thinking_tokens ?? 0, cacheRead: usage.cached_input_tokens ?? 0, cacheWrite: usage.cache_write_tokens ?? 0 };
     stats.calls++; stats.latencyMs += Date.now() - started;
-    stats.input += usage.input_tokens ?? 0; stats.output += usage.output_tokens ?? 0; stats.thinking += usage.thinking_tokens ?? 0;
+    stats.input += tokens.input; stats.output += tokens.output; stats.thinking += tokens.thinking; stats.cacheRead += tokens.cacheRead; stats.cacheWrite += tokens.cacheWrite;
+    const cost = callCost(usage.model ?? model, now(), tokens);
+    if (cost === null) stats.unpriced++; else stats.cost += cost;
     return result;
   } };
 }
@@ -103,13 +108,22 @@ export async function runScenario(db: DatabaseClient, tenantId: string, scenario
   return { id: scenario.id, run, turns, code: codeChecks(scenario, turns), judge: await judge(judgeAI, scenario, turns) };
 }
 
-export function formatInstructionReport(title: string, models: Array<{ model: string; runs: ScenarioRun[]; stats: ModelStats; cost: number }>): string {
+/** 95th percentile (nearest rank). */
+export const percentile95 = (values: number[]) => { if (!values.length) return 0; const sorted = [...values].sort((x, y) => x - y); return sorted[Math.ceil(sorted.length * 0.95) - 1]!; };
+export interface ReportOptions { failuresOnly?: boolean }
+/** Price cell: real cost, or «цена не задана» when any call of the model has no price (never a stub price). */
+export const costCell = (stats: ModelStats, value: number) => stats.unpriced ? 'цена не задана' : `$${value.toFixed(4)}`;
+
+export function formatInstructionReport(title: string, models: Array<{ model: string; runs: ScenarioRun[]; stats: ModelStats }>, options: ReportOptions = {}): string {
   const pct = (a: number, b: number) => b ? `${(a / b * 100).toFixed(1)} %` : '—';
-  const lines = [`# ${title}`, '', '| Модель | Сценариев пройдено | Код (порог 100 %) | Судья (порог 90 %) | Средняя задержка | Токены вход / выход / рассужд. | Стоимость |', '|---|---|---|---|---|---|---|'];
+  const lines = [`# ${title}`, '', '| Модель | Сценариев пройдено | Код (порог 100 %) | Судья (порог 90 %) | Задержка средняя / p95 | Токены вход / выход / рассужд. | Кэш (чтение) | Стоимость прогона | На 1000 ответов | Сбои модели |', '|---|---|---|---|---|---|---|---|---|---|'];
   for (const m of models) {
-    const code = m.runs.flatMap(r => r.code), judged = m.runs.flatMap(r => r.judge);
+    const code = m.runs.flatMap(r => r.code), judged = m.runs.flatMap(r => r.judge), turns = m.runs.flatMap(r => r.turns);
     const passed = m.runs.filter(r => r.code.every(c => c.pass) && r.judge.every(c => c.pass)).length;
-    lines.push(`| ${m.model} | ${passed}/${m.runs.length} (${pct(passed, m.runs.length)}) | ${pct(code.filter(c => c.pass).length, code.length)} | ${pct(judged.filter(c => c.pass).length, judged.length)} | ${m.stats.calls ? Math.round(m.stats.latencyMs / m.stats.calls) : 0} мс | ${m.stats.input} / ${m.stats.output} / ${m.stats.thinking} | $${m.cost.toFixed(4)} |`);
+    const latencies = turns.map(t => t.latencyMs), mean = latencies.length ? Math.round(latencies.reduce((x, y) => x + y, 0) / latencies.length) : 0;
+    const failures = turns.filter(t => t.error).map(t => t.error!);
+    const reasons = [...new Set(failures)].map(r => `${r} ×${failures.filter(f => f === r).length}`).join(', ');
+    lines.push(`| ${m.model} | ${passed}/${m.runs.length} (${pct(passed, m.runs.length)}) | ${pct(code.filter(c => c.pass).length, code.length)} | ${pct(judged.filter(c => c.pass).length, judged.length)} | ${mean} / ${percentile95(latencies)} мс | ${m.stats.input} / ${m.stats.output} / ${m.stats.thinking} | ${pct(m.stats.cacheRead, m.stats.input)} | ${costCell(m.stats, m.stats.cost)} | ${turns.length ? costCell(m.stats, m.stats.cost / turns.length * 1000) : '—'} | ${failures.length ? `${failures.length}: ${reasons}` : '0'} |`);
   }
   for (const m of models) {
     lines.push('', `## ${m.model} — по сценариям`, '', '| Сценарий | Прогонов PASS | Код | Судья | Провалы |', '|---|---|---|---|---|');
@@ -121,9 +135,10 @@ export function formatInstructionReport(title: string, models: Array<{ model: st
     }
   }
   for (const m of models) {
-    lines.push('', `## ${m.model}`);
+    lines.push('', `## ${m.model}${options.failuresOnly ? ' — диалоги с провалами' : ''}`);
     for (const r of m.runs) {
       const ok = r.code.every(c => c.pass) && r.judge.every(c => c.pass);
+      if (ok && options.failuresOnly) continue;
       lines.push('', `### ${r.id} · прогон ${r.run} — ${ok ? 'PASS' : 'FAIL'}`);
       for (const t of r.turns) lines.push(`- **Клиент:** ${t.client}`, `- **Лея:** ${(t.reply ?? '(нет ответа)').replace(/\n/g, ' ')}${t.labels.length ? ` \`[${t.labels.join(', ')}]\`` : ''}${t.request ? ` \`${JSON.stringify(t.request)}\`` : ''}${t.error ? ` — ошибка модели: ${t.error}` : ''}`);
       for (const c of [...r.code, ...r.judge]) if (!c.pass) lines.push(`  - ✗ ${c.check}`);

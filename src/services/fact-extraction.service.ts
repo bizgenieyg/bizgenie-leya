@@ -13,7 +13,7 @@ export interface ExtractedConflict { fact_id: string; new_text: string; quote: s
 export interface DroppedFact { text: string; quote: string; nearest: string | null }
 export interface SkippedBlock { block: string; reason: 'service' | 'duplicate'; duplicate_of: string | null }
 export interface Coverage { blocks: number; covered: number; skipped: SkippedBlock[]; uncovered: string[] }
-export interface ExtractionCall { finishReason: string; input_tokens: number; output_tokens: number; thinking_tokens: number; facts: number; retry: boolean }
+export interface ExtractionCall { finishReason: string; input_tokens: number; output_tokens: number; thinking_tokens: number; facts: number; retry: boolean; model?: string; cached_input_tokens?: number }
 export interface RewrittenFact { before: string; after: string; claims: string[]; fallback: boolean }
 export interface RejectedSkip { block: string; duplicate_of: string; missing: string[] }
 export interface Extraction { facts: ExtractedFact[]; conflicts: ExtractedConflict[]; gaps: KnowledgeTopic[]; dropped: number; droppedFacts?: DroppedFact[]; coverage?: Coverage; calls?: ExtractionCall[]; rewritten?: RewrittenFact[]; rejectedSkips?: RejectedSkip[] }
@@ -219,7 +219,7 @@ export const REWRITE_PROMPT = `Эти факты добавляют к свое�
 
 const callInfo = (usage: AIUsage | undefined, facts: number, retry: boolean): ExtractionCall => ({
   finishReason: usage?.finish_reason ?? 'STOP', input_tokens: usage?.input_tokens ?? 0, output_tokens: usage?.output_tokens ?? 0,
-  thinking_tokens: usage?.thinking_tokens ?? 0, facts, retry });
+  thinking_tokens: usage?.thinking_tokens ?? 0, facts, retry, ...(usage?.model ? { model: usage.model } : {}), cached_input_tokens: usage?.cached_input_tokens ?? 0 });
 
 export async function extractFacts(ai: AIProvider, sourceText: string, existing: ExistingFact[], chunkChars: number, title?: string | null): Promise<Extraction> {
   const out: Extraction = { facts: [], conflicts: [], gaps: [], dropped: 0, droppedFacts: [], calls: [], rewritten: [], rejectedSkips: [] };

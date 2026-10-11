@@ -84,14 +84,15 @@ export async function runDialogEval(db: DatabaseClient, tenantId: string, scenar
     routePass: route.filter(r => r.pass).length, routeTotal: route.length, textPass: text.filter(r => r.pass).length, textTotal: text.length };
 }
 
-export function formatReport(summary: EvalSummary, prices: { inputPerMillion: number; outputPerMillion: number }): string {
+export function formatReport(summary: EvalSummary, prices: { inputPerMillion: number; outputPerMillion: number } | null): string {
   const rows = summary.results.map(r => `| ${r.scenario} | ${r.turn} | ${r.check} | ${r.pass ? 'PASS' : 'FAIL'} | ${(r.detail ?? '').replace(/\|/g, '/').slice(0, 80)} |`);
   const routeShare = summary.routeTotal ? summary.routePass / summary.routeTotal : 1, textShare = summary.textTotal ? summary.textPass / summary.textTotal : 1;
-  const cost = summary.inputTokens / 1e6 * prices.inputPerMillion + summary.outputTokens / 1e6 * prices.outputPerMillion;
+  // Z4: the real price of the model; none for a stand-in or unknown model (never a stub price).
+  const cost = prices ? `≈ $${(summary.inputTokens / 1e6 * prices.inputPerMillion + summary.outputTokens / 1e6 * prices.outputPerMillion).toFixed(4)}` : 'цена не задана';
   return ['| Сценарий | Ход | Проверка | Итог | Детали |', '|---|---|---|---|---|', ...rows, '',
     `Маршрут и этапы: ${summary.routePass}/${summary.routeTotal} (${(routeShare * 100).toFixed(1)} %, порог 100 %) — ${routeShare === 1 ? 'PASS' : 'FAIL'}`,
     `Текстовые проверки: ${summary.textPass}/${summary.textTotal} (${(textShare * 100).toFixed(1)} %, порог 90 %) — ${textShare >= 0.9 ? 'PASS' : 'FAIL'}`,
-    `Вызовов модели: ${summary.modelCalls}; токены: вход ${summary.inputTokens}, выход ${summary.outputTokens}; оценка стоимости прогона ≈ $${cost.toFixed(4)}`].join('\n');
+    `Вызовов модели: ${summary.modelCalls}; токены: вход ${summary.inputTokens}, выход ${summary.outputTokens}; оценка стоимости прогона: ${cost}`].join('\n');
 }
 
 /** Accept a full tenant UUID or a unique prefix ("ef795be3"); ambiguity or no match is an error listing candidates. */

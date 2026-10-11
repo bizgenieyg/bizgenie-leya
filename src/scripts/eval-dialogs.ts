@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { formatReport, loadScenarios, resolveTenant, runDialogEval, scriptedModel } from '../evals/dialog-eval.js';
-import { EVAL_PRICE_INPUT_PER_MILLION, EVAL_PRICE_OUTPUT_PER_MILLION } from '../config/evals.js';
+import { priceFor } from '../config/model-prices.js';
+import { DEFAULT_GEMINI_MODEL } from '../providers/ai/gemini.provider.js';
 
 const arg = (name: string) => process.argv.find(a => a.startsWith(`--${name}=`))?.split('=')[1];
 const live = process.argv.includes('--live');
@@ -46,7 +47,8 @@ async function main() {
     summary = await runDialogEval(db, tenant, scenarios, scriptedModel(), runs, line => console.log(line));
     await pg.close();
   }
-  console.log('\n' + formatReport(summary, { inputPerMillion: EVAL_PRICE_INPUT_PER_MILLION, outputPerMillion: EVAL_PRICE_OUTPUT_PER_MILLION }));
+  const price = live ? priceFor(process.env.GEMINI_MODEL?.trim() || DEFAULT_GEMINI_MODEL, new Date(), 0) : null;
+  console.log('\n' + formatReport(summary, price ? { inputPerMillion: price.input, outputPerMillion: price.output } : null));
   process.exit(summary.routePass === summary.routeTotal && summary.textPass >= 0.9 * summary.textTotal ? 0 : 1);
 }
 void main().catch(error => { console.error(error instanceof Error ? error.message : 'eval failed'); process.exit(2); });

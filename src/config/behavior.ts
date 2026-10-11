@@ -92,6 +92,9 @@ export const BEHAVIOR_DEFAULTS = {
   reply_engine: 'legacy' as 'legacy' | 'instruction',
   /** Answer model for the instruction path; empty — the current reply model (GEMINI_MODEL). */
   reply_model: '',
+  /** Task Z4: one attempt on this model when the reply model is down (timeout / unavailable / 5xx); empty — none.
+   *  Prefix picks the provider: gemini- / claude- / gpt-. */
+  reply_fallback_model: '',
   /** Task Z2: output cap of the reply model (thinking + text together on Gemini 3.x); one retry with the larger
    *  cap after 'incomplete_max_tokens'. 1024 cut 33 replies of gemini-3.8-flash in Z1. */
   reply_max_output_tokens: 2048,

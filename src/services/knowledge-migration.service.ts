@@ -5,7 +5,7 @@ import { behavior, saveRuntimeSettings } from './runtime-settings.service.js';
 import { loadOwnerSettings } from './owner-settings.service.js';
 import { extractFacts, requiredGaps, type Extraction } from './fact-extraction.service.js';
 import { requiredTopics, type KnowledgeTopic } from '../config/knowledge-topics.js';
-import { TASK_PRICE_INPUT_PER_MILLION, TASK_PRICE_OUTPUT_PER_MILLION } from '../config/evals.js';
+import { callCost } from '../config/model-prices.js';
 import { activeFacts, saveExtraction } from './business-facts.service.js';
 import { meterAI } from './metered-providers.js';
 
@@ -70,8 +70,10 @@ export function formatMigration(result: Pick<MigrationResult, 'parts' | 'gaps'> 
     const calls = part.extraction.calls ?? [];
     if (calls.length) {
       const sum = (k: 'input_tokens' | 'output_tokens' | 'thinking_tokens') => calls.reduce((n, c) => n + c[k], 0);
-      const cost = sum('input_tokens') / 1e6 * TASK_PRICE_INPUT_PER_MILLION + (sum('output_tokens') + sum('thinking_tokens')) / 1e6 * TASK_PRICE_OUTPUT_PER_MILLION;
-      lines.push(`  вызовов: ${calls.length} (повторных: ${calls.filter(c => c.retry).length}); finishReason: ${[...new Set(calls.map(c => c.finishReason))].join(', ')}; токены: вход ${sum('input_tokens')}, выход ${sum('output_tokens')}, рассуждения ${sum('thinking_tokens')}; ≈ $${cost.toFixed(4)}`);
+      // Z4: the real price of each call's model (tier by date and prompt); a model without a price is said so.
+      const costs = calls.map(c => c.model ? callCost(c.model, new Date(), { input: c.input_tokens, output: c.output_tokens, thinking: c.thinking_tokens, cacheRead: c.cached_input_tokens ?? 0, cacheWrite: 0 }) : null);
+      const cost = costs.every((x): x is number => x !== null) ? `≈ $${costs.reduce((a, b) => a + b, 0).toFixed(4)}` : 'цена не задана';
+      lines.push(`  вызовов: ${calls.length} (повторных: ${calls.filter(c => c.retry).length}); finishReason: ${[...new Set(calls.map(c => c.finishReason))].join(', ')}; токены: вход ${sum('input_tokens')}, выход ${sum('output_tokens')}, рассуждения ${sum('thinking_tokens')}; ${cost}`);
     }
   }
   return lines.join('\n');

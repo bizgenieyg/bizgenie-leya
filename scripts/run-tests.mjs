@@ -16,5 +16,5 @@ for(const folder of folders){
 }
 if(!files.length){console.error('No tests found. Run npm run build first.');process.exit(1)}
 // Tests never call paid models: a real key in .env (dotenv does not override a set variable) is blanked.
-const child=spawn(process.execPath,['--test',...files],{stdio:'inherit',env:{...process.env,GEMINI_API_KEY:'',STT_API_KEY:''}});
+const child=spawn(process.execPath,['--test',...files],{stdio:'inherit',env:{...process.env,GEMINI_API_KEY:'',STT_API_KEY:'',ANTHROPIC_API_KEY:'',OPENAI_API_KEY:''}});
 child.on('exit',(code,signal)=>{if(signal)process.kill(process.pid,signal);else process.exitCode=code??1});

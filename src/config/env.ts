@@ -26,6 +26,8 @@ export const env = Object.freeze({
   geminiApiKey: process.env.GEMINI_API_KEY,
   geminiModel: process.env.GEMINI_MODEL,
   geminiTaskModel: process.env.GEMINI_TASK_MODEL,
+  anthropicApiKey: process.env.ANTHROPIC_API_KEY,
+  openaiApiKey: process.env.OPENAI_API_KEY,
   geminiTaskMaxOutputTokens: process.env.GEMINI_TASK_MAX_OUTPUT_TOKENS,
   geminiTaskThinkingLevel: process.env.GEMINI_TASK_THINKING_LEVEL,
   geminiEmbeddingModel: process.env.GEMINI_EMBEDDING_MODEL,

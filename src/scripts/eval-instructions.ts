@@ -1,7 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { formatInstructionReport, loadInstructionScenarios, measured, runScenario, tenantScenarios, type ModelStats, type ScenarioRun } from '../evals/instruction-eval.js';
-import { EVAL_PRICE_INPUT_PER_MILLION, EVAL_PRICE_OUTPUT_PER_MILLION } from '../config/evals.js';
+import { emptyStats, formatInstructionReport, loadInstructionScenarios, measured, runScenario, tenantScenarios, type ModelStats, type ScenarioRun } from '../evals/instruction-eval.js';
 import { isKnowledgeTopic } from '../config/knowledge-topics.js';
 import { failureReason } from '../providers/ai/ai-provider.interface.js';
 
@@ -24,7 +23,8 @@ export function parseFactsMarkdown(markdown: string): Array<{ topic: string; tex
 }
 
 /**
- * npm run eval:instructions -- --tenant=bizgenie|ira|all --model=<id>[,<id>] [--runs=3] [--facts-model=<id>] [--out=docs/evals/…md]
+ * npm run eval:instructions -- --tenant=bizgenie|ira|all --model=<id>[,<id>] [--runs=3] [--facts-model=<id>] [--failures-only] [--out=docs/evals/…md]
+ * Model ids: gemini-… / claude-… / gpt-… (provider by prefix; ANTHROPIC_API_KEY / OPENAI_API_KEY for the latter two).
  * npm run eval:instructions -- --check   (no model: validates the scenarios and fixtures)
  */
 async function main() {
@@ -40,7 +40,7 @@ async function main() {
     }
     return;
   }
-  const { createAIProvider, createTaskAIProvider, modelKeyConfigured } = await import('../providers/ai/index.js');
+  const { createModelProvider, createTaskAIProvider, modelKeyConfigured } = await import('../providers/ai/index.js');
   if (!modelKeyConfigured()) throw new Error('GEMINI_API_KEY is not configured: eval:instructions needs the real model');
   const models = (arg('model') ?? process.env.GEMINI_MODEL ?? 'gemini-3.5-flash-lite').split(',').map(m => m.trim()).filter(Boolean);
   const runs = Math.max(1, Number(arg('runs') ?? 3));
@@ -49,7 +49,7 @@ async function main() {
   const { uploadInstruction, activateInstruction } = await import('../services/instructions.service.js');
   const { extractFacts } = await import('../services/fact-extraction.service.js');
   const judgeAI = createTaskAIProvider();
-  const results: Array<{ model: string; runs: ScenarioRun[]; stats: ModelStats; cost: number }> = [];
+  const results: Array<{ model: string; runs: ScenarioRun[]; stats: ModelStats }> = [];
   // Facts do not depend on the reply model: extracted once per tenant, before the models. A failed call is
   // retried with smaller chunks (a long chunk can run the task model out of output tokens).
   // --facts-model: the extraction model, when the task model cannot extract this fixture (reported).
@@ -68,8 +68,8 @@ async function main() {
     console.log(`${t}: ${facts.length} facts extracted by ${arg('facts-model') ?? (process.env.GEMINI_TASK_MODEL || 'default task model')}`);
   }
   for (const model of models) {
-    const stats: ModelStats = { calls: 0, latencyMs: 0, input: 0, output: 0, thinking: 0 };
-    const ai = measured(createAIProvider(undefined, model), stats);
+    const stats = emptyStats();
+    const ai = measured(createModelProvider(model), stats, model);
     const all: ScenarioRun[] = [];
     for (const t of tenants) {
       const spec = TENANTS[t]!;
@@ -92,11 +92,11 @@ async function main() {
       }
       await pg.close();
     }
-    results.push({ model, runs: all, stats, cost: stats.input / 1e6 * EVAL_PRICE_INPUT_PER_MILLION + (stats.output + stats.thinking) / 1e6 * EVAL_PRICE_OUTPUT_PER_MILLION });
+    results.push({ model, runs: all, stats });
   }
   const out = arg('out') ?? `docs/evals/${new Date().toISOString().slice(0, 10)}-instructions.md`;
   mkdirSync(dirname(out), { recursive: true });
-  writeFileSync(out, formatInstructionReport(`eval:instructions — ${tenants.join(', ')}, ${runs} прогона`, results));
+  writeFileSync(out, formatInstructionReport(`eval:instructions — ${tenants.join(', ')}, ${runs} прогона`, results, { failuresOnly: process.argv.includes('--failures-only') }));
   console.log(`Report: ${out}`);
 }
 main().catch(error => { console.error(error instanceof Error ? error.message : 'eval:instructions failed'); process.exitCode = 1; });

@@ -10,7 +10,8 @@ import { findExactKnowledgeAnswer } from './knowledge.service.js';
 import { loadKnowledgeMaterials } from './knowledge-context.service.js';
 import { loadFactsContext } from './reply-context.service.js';
 import { answerByInstruction } from './instruction-engine.service.js';
-import { createAIProvider } from '../providers/ai/index.js';
+import { createModelProvider } from '../providers/ai/index.js';
+import { withFallback } from '../providers/ai/fallback.provider.js';
 import { meterAI } from './metered-providers.js';
 import { behavior } from './runtime-settings.service.js';
 import { agentIntent, asksListedQuestion, discoveryGate, markAnswered, normalizeDialogState, replyQuestions, untilFirstQuestion, type DialogState, type DiscoveryGate } from './dialog-state.js';
@@ -226,7 +227,12 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
   // stages or gates. Without an active instruction it keeps the legacy path below.
   if (config.reply_engine === 'instruction') {
     state.client_turns += 1;
-    const replyModel = config.reply_model ? meterAI(db, tenantId, createAIProvider(undefined, config.reply_model), { reply_engine: 'instruction' }) : meterAI(db, tenantId, model, { reply_engine: 'instruction' });
+    // Z4: the reply model by its prefix (gemini- / claude- / gpt-), with the operator's fallback model for outages.
+    // Each side is metered on its own (the wrapper itself is not), so a fallback call is counted once, as itself.
+    const primary = meterAI(db, tenantId, config.reply_model ? createModelProvider(config.reply_model) : model, { reply_engine: 'instruction' });
+    const replyModel = primary && config.reply_fallback_model
+      ? withFallback(primary, meterAI(db, tenantId, createModelProvider(config.reply_fallback_model), { reply_engine: 'instruction', fallback: true })!, { primary: config.reply_model || 'default', fallback: config.reply_fallback_model })
+      : primary;
     let outcome: Awaited<ReturnType<typeof answerByInstruction>>;
     try {
       outcome = replyModel ? await answerByInstruction({ db, tenantId, text, language, settings, state, memory: memory.messages, model: replyModel,

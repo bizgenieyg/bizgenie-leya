@@ -307,3 +307,23 @@ test('Z3: numbers of the answer that starts a demo are checked against the demo 
     } finally { await g.pg.close(); }
   } finally { await f.pg.close(); }
 });
+
+test('Z4: reply_fallback_model — an outage of the reply model goes to the fallback once (logged); setting validated', async () => {
+  const f = await fixture();
+  const warnings: unknown[][] = [], warn = console.warn, error = console.error;
+  console.warn = (...a: unknown[]) => { warnings.push(a); }; console.error = () => {};
+  try {
+    await saveRuntimeSettings(f.db, f.tenantId, { reply_fallback_model: 'claude-haiku-5-5' });
+    f.reply('THROW:timeout');
+    // No ANTHROPIC_API_KEY in tests: the fallback is the missing-key provider, so the client gets the failure template.
+    const r = await f.say('сколько стоит?');
+    assert.equal(r.reply, 'Уточню этот вопрос — Юрий ответит, и я вернусь к вам.');
+    assert.equal(r.modelFailure, 'missing_api_key', 'the failure reported is the fallback’s');
+    assert.deepEqual(warnings.find(w => w[0] === 'model_fallback')?.[1], { model: 'default', fallback: 'claude-haiku-5-5', reason: 'timeout' });
+    f.reply('THROW:incomplete_max_tokens');
+    warnings.length = 0;
+    await f.say('а ещё?');
+    assert.equal(warnings.filter(w => w[0] === 'model_fallback').length, 0, 'not an outage — no fallback');
+    await assert.rejects(saveRuntimeSettings(f.db, f.tenantId, { reply_fallback_model: 'claude haiku; drop' }), /Invalid fallback model/);
+  } finally { console.warn = warn; console.error = error; await f.pg.close(); }
+});
