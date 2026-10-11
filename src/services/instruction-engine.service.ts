@@ -85,7 +85,8 @@ export async function answerByInstruction(turn: InstructionTurn): Promise<Instru
   const history = turn.memory.slice(0, -1).map(m => ({ role: m.fromMe ? 'assistant' as const : 'user' as const, text: m.text }));
   const ask = async (notes: string[]): Promise<ParsedReply> => {
     const result = await turn.model.generateReply({ systemPrompt: system(notes), userMessage: text, history,
-      generation: { maxOutputTokens: config.reply_max_output_tokens, retryMaxOutputTokens: config.reply_retry_max_output_tokens, thinkingLevels: config.reply_thinking_levels } });
+      generation: { maxOutputTokens: config.reply_max_output_tokens, retryMaxOutputTokens: config.reply_retry_max_output_tokens, thinkingLevels: config.reply_thinking_levels,
+        timeoutMs: config.reply_timeout_ms, attemptTimeoutMs: config.reply_attempt_timeout_ms, retryDelayMs: config.reply_retry_delay_ms } });
     const parsed = parseLabels(result.text);
     if (parsed.unknown.length) console.warn('instruction_unknown_labels', { tenantId, labels: parsed.unknown });
     return parsed;

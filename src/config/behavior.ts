@@ -102,6 +102,10 @@ export const BEHAVIOR_DEFAULTS = {
   /** Thinking level per reply model (Gemini generationConfig.thinkingConfig.thinkingLevel); a model not listed gets
    *  none — its own default (gemini-3.5-flash-lite: minimal). 3.8-flash defaults to 'medium': 'low' for latency. */
   reply_thinking_levels: { 'gemini-3.8-flash': 'low' } as Record<string, string>,
+  /** Z4: the reply model call — whole call, one HTTP attempt, pause before the one retry on 429/5xx/network. */
+  reply_timeout_ms: 20_000,
+  reply_attempt_timeout_ms: 9_000,
+  reply_retry_delay_ms: 1_500,
   /** Fields a request of each type must carry before it is created. */
   request_required_fields: { meeting: ['topic'], consultation: ['city', 'when'], procedure: ['service', 'city', 'when', 'allergy'] } as Record<string, string[]>,
   /** Demo mode ("покажу на примере") closes after this many client turns. */
@@ -121,6 +125,11 @@ export const MESSAGE_RETENTION_SWEEP_MS = 24 * 60 * 60 * 1000;
  *  GEMINI_TASK_MAX_OUTPUT_TOKENS and GEMINI_TASK_THINKING_LEVEL. 8192 with the default 'medium' thinking could not
  *  extract ira-facts.md even in 600-character parts. */
 export const TASK_MODEL_LIMITS = { maxOutputTokens: 16_384, retryMaxOutputTokens: 32_768, thinkingLevels: { 'gemini-3.8-flash': 'low' } as Record<string, string> };
+/** System defaults of one model call (any provider) when the caller sets nothing: replies take the tenant's
+ *  reply_* settings above, the task model its own options. */
+export const MODEL_CALL_DEFAULTS = { timeoutMs: 20_000, attemptTimeoutMs: 9_000, retryDelayMs: 1_500 };
+/** Z4: the judge of eval:instructions, pinned so that comparisons do not follow GEMINI_TASK_MODEL. */
+export const EVAL_JUDGE_MODEL = 'gemini-3.8-flash';
 export const THINKING_LEVELS = ['minimal', 'low', 'medium', 'high'] as const;
 export const STT_DEFAULT_MODEL = 'gemini-2.5-flash-lite';
 // Local operational storage, shared by workers on the supported single VPS.

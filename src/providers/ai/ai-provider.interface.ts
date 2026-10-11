@@ -7,10 +7,12 @@ export interface AIReplyInput {
   /** Task Z: the conversation as chat turns before `userMessage` (the latest client message). */
   history?: Array<{ role: 'user' | 'assistant'; text: string }>;
   /** Per-call output cap and thinking (Gemini: see GeminiOptions); overrides the provider's own options. */
-  generation?: { maxOutputTokens?: number; retryMaxOutputTokens?: number; thinkingLevels?: Record<string, string> };
+  generation?: { maxOutputTokens?: number; retryMaxOutputTokens?: number; thinkingLevels?: Record<string, string>; timeoutMs?: number; attemptTimeoutMs?: number; retryDelayMs?: number };
 }
 
-export interface AIUsage { model?: string; input_tokens?: number; output_tokens?: number; total_tokens?: number; thinking_tokens?: number; cached_input_tokens?: number; cache_write_tokens?: number; finish_reason?: string; }
+export interface AIUsage { model?: string; input_tokens?: number; output_tokens?: number; total_tokens?: number; thinking_tokens?: number; cached_input_tokens?: number; cache_write_tokens?: number; finish_reason?: string;
+  /** Z4: every billed attempt of this call when there was more than one (the top-level counts are their sum). */
+  attempts?: AIUsage[]; }
 /** Why a model call failed: safe operational codes only (HTTP code, provider status), never prompt/key text. */
 export interface AIFailure { reason:string; httpStatus?:number; providerStatus?:string; providerMessage?:string }
 export class AIProviderError extends Error {
@@ -21,6 +23,15 @@ export class AIProviderError extends Error {
 /** Marks a provider that cannot answer at all (no API key); kept by metering wrappers. */
 export const MODEL_UNAVAILABLE=Symbol.for('leya.model-unavailable');
 export const modelUnavailable=(ai:unknown):boolean=>!ai||(ai as Record<symbol,unknown>)[MODEL_UNAVAILABLE]===true;
+/** Z4: one usage for several billed attempts — counts summed, each attempt kept for per-attempt pricing. */
+export function combineUsage(list: Array<AIUsage | undefined>): AIUsage | undefined {
+  const billed = list.flatMap(u => u ? (u.attempts ?? [u]) : []);
+  if (billed.length <= 1) return billed[0];
+  const sum = (k: 'input_tokens' | 'output_tokens' | 'total_tokens' | 'thinking_tokens' | 'cached_input_tokens' | 'cache_write_tokens') => billed.reduce((n, u) => n + (u[k] ?? 0), 0);
+  const last = billed.at(-1)!;
+  return { ...(last.model ? { model: last.model } : {}), input_tokens: sum('input_tokens'), output_tokens: sum('output_tokens'), total_tokens: sum('total_tokens'), thinking_tokens: sum('thinking_tokens'),
+    cached_input_tokens: sum('cached_input_tokens'), cache_write_tokens: sum('cache_write_tokens'), ...(last.finish_reason ? { finish_reason: last.finish_reason } : {}), attempts: billed };
+}
 export const failureReason=(error:unknown):string=>error instanceof AIProviderError?error.failure.reason:'unavailable';
 export interface AIReplyResult {
   usage?: AIUsage;

@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { emptyStats, formatInstructionReport, loadInstructionScenarios, measured, runScenario, tenantScenarios, type ModelStats, type ScenarioRun } from '../evals/instruction-eval.js';
 import { isKnowledgeTopic } from '../config/knowledge-topics.js';
+import { EVAL_JUDGE_MODEL } from '../config/behavior.js';
 import { failureReason } from '../providers/ai/ai-provider.interface.js';
 
 const arg = (name: string) => process.argv.find(a => a.startsWith(`--${name}=`))?.slice(name.length + 3);
@@ -23,7 +24,7 @@ export function parseFactsMarkdown(markdown: string): Array<{ topic: string; tex
 }
 
 /**
- * npm run eval:instructions -- --tenant=bizgenie|ira|all --model=<id>[,<id>] [--runs=3] [--facts-model=<id>] [--failures-only] [--out=docs/evals/…md]
+ * npm run eval:instructions -- --tenant=bizgenie|ira|all --model=<id>[,<id>] [--runs=3] [--facts-model=<id>] [--failures-only] [--judge-model=<id>] [--out=docs/evals/…md]
  * Model ids: gemini-… / claude-… / gpt-… (provider by prefix; ANTHROPIC_API_KEY / OPENAI_API_KEY for the latter two).
  * npm run eval:instructions -- --check   (no model: validates the scenarios and fixtures)
  */
@@ -48,12 +49,15 @@ async function main() {
   const { saveRuntimeSettings } = await import('../services/runtime-settings.service.js');
   const { uploadInstruction, activateInstruction } = await import('../services/instructions.service.js');
   const { extractFacts } = await import('../services/fact-extraction.service.js');
-  const judgeAI = createTaskAIProvider();
+  // Z4: the judge is pinned (--judge-model, default EVAL_JUDGE_MODEL), not whatever GEMINI_TASK_MODEL says.
+  const judgeModel = arg('judge-model') ?? EVAL_JUDGE_MODEL;
+  const judgeAI = createTaskAIProvider(undefined, judgeModel);
+  console.log(`judge: ${judgeModel}`);
   const results: Array<{ model: string; runs: ScenarioRun[]; stats: ModelStats }> = [];
   // Facts do not depend on the reply model: extracted once per tenant, before the models. A failed call is
   // retried with smaller chunks (a long chunk can run the task model out of output tokens).
   // --facts-model: the extraction model, when the task model cannot extract this fixture (reported).
-  const factsAI = arg('facts-model') ? createTaskAIProvider(undefined, arg('facts-model')) : judgeAI;
+  const factsAI = arg('facts-model') ? createTaskAIProvider(undefined, arg('facts-model')) : createTaskAIProvider();
   const factsByTenant = new Map<string, Array<{ topic: string; text: string }>>();
   for (const t of tenants) {
     const spec = TENANTS[t]!, source = readFileSync(`${DIR}/${spec.facts.file}`, 'utf8');

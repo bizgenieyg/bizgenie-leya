@@ -107,6 +107,9 @@ export function validateRuntimePatch(input:Record<string,unknown>) {
   else if(key==='reply_fallback_model'){if(typeof value!=='string'||value.length>80||!/^[a-z0-9._-]*$/i.test(value))throw new HttpError(400,'Invalid fallback model');behaviorPatch[key]=value;}
   else if(key==='reply_model'){if(typeof value!=='string'||value.length>80||!/^[a-z0-9._-]*$/i.test(value))throw new HttpError(400,'Invalid reply model');behaviorPatch[key]=value;}
   else if(key==='reply_max_output_tokens'||key==='reply_retry_max_output_tokens')behaviorPatch[key]=integer(key,value,256,65536);
+  else if(key==='reply_timeout_ms')behaviorPatch[key]=integer(key,value,1000,300000);
+  else if(key==='reply_attempt_timeout_ms')behaviorPatch[key]=integer(key,value,1000,300000);
+  else if(key==='reply_retry_delay_ms')behaviorPatch[key]=integer(key,value,0,30000);
   else if(key==='reply_thinking_levels'){
    if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).length>10||Object.entries(value).some(([m,l])=>m.length>80||!/^[a-z0-9._-]+$/i.test(m)||!(THINKING_LEVELS as readonly unknown[]).includes(l)))throw new HttpError(400,'Invalid thinking levels');
    behaviorPatch[key]=value;

@@ -119,3 +119,37 @@ test('Z4 prices: tiers by date and prompt size, cache reads and writes, unknown 
   assert.equal(callCost('claude-haiku-5-5', dec, { input: 1000, output: 20, thinking: 0, cacheRead: 900, cacheWrite: 0 }), (100 * 0.1 + 900 * 0.01 + 20 * 0.5) / 1e6);
   assert.equal(callCost('claude-haiku-5-5', dec, { input: 1000, output: 0, thinking: 0, cacheRead: 0, cacheWrite: 1000 }), 1000 * 0.125 / 1e6);
 });
+
+test('Z4 review: every billed attempt is counted — a cut first attempt, and the usage of a call that failed in the end', async () => {
+  const { measured, emptyStats } = await import('../evals/instruction-eval.js');
+  const cut = () => claude('', 'max_tokens', { input_tokens: 1000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 });
+  const day = () => new Date('2026-10-11T12:00:00Z');
+  await withFetch([cut(), claude('Готово', 'end_turn', { input_tokens: 1000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 })], async () => {
+    const stats = emptyStats();
+    const r = await measured(new AnthropicProvider('k', 'claude-haiku-5-5'), stats, 'claude-haiku-5-5', day).generateReply({ systemPrompt: 's', userMessage: 'u', generation: { maxOutputTokens: 2048, retryMaxOutputTokens: 4096 } });
+    assert.equal(r.usage?.input_tokens, 2000); assert.equal(r.usage?.attempts?.length, 2);
+    assert.equal(stats.input, 2000); assert.equal(stats.cost.toFixed(5), '0.00020');
+  });
+  await withFetch([cut(), claude('', 'max_tokens', { input_tokens: 1000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 })], async () => {
+    const stats = emptyStats();
+    await assert.rejects(measured(new AnthropicProvider('k', 'claude-haiku-5-5'), stats, 'claude-haiku-5-5', day).generateReply({ systemPrompt: 's', userMessage: 'u', generation: { maxOutputTokens: 2048, retryMaxOutputTokens: 4096 } }),
+      (e: AIProviderError) => e.failure.reason === 'incomplete_max_tokens' && e.usage?.input_tokens === 2000);
+    assert.equal(stats.input, 2000, 'the failed call still cost two attempts'); assert.equal(stats.calls, 1);
+    assert.equal(stats.cost.toFixed(5), '0.00020');
+  });
+  const geminiCut = json({ candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [] } }], usageMetadata: { promptTokenCount: 1000, candidatesTokenCount: 0, thoughtsTokenCount: 2048 } });
+  await withFetch([geminiCut, json({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: 'ok' }] } }], usageMetadata: { promptTokenCount: 1000, candidatesTokenCount: 5, thoughtsTokenCount: 100 } })], async () => {
+    const r = await new GeminiProvider('k', 'gemini-3.8-flash').generateReply({ systemPrompt: 's', userMessage: 'u', generation: { maxOutputTokens: 2048, retryMaxOutputTokens: 4096 } });
+    assert.equal(r.usage?.input_tokens, 2000); assert.equal(r.usage?.thinking_tokens, 2148);
+  });
+});
+
+test('Z4 review: call timeouts and the retry pause come per call (operator settings), not from constants', async () => {
+  const original = globalThis.fetch, started: number[] = [];
+  globalThis.fetch = (async () => { started.push(Date.now()); return json({ error: { type: 'overloaded_error' } }, 529); }) as typeof fetch;
+  const error = console.error; console.error = () => {};
+  try {
+    await assert.rejects(new AnthropicProvider('k', 'claude-haiku-5-5').generateReply({ systemPrompt: 's', userMessage: 'u', generation: { retryDelayMs: 0, timeoutMs: 5000, attemptTimeoutMs: 1000 } }));
+    assert.equal(started.length, 2); assert.ok(started[1]! - started[0]! < 500, 'retry delay 0 is honoured');
+  } finally { globalThis.fetch = original; console.error = error; }
+});

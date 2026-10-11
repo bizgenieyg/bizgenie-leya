@@ -268,10 +268,11 @@ test('Z2: reply model limits reach the model call; the new settings are validate
     const calls: unknown[] = [];
     const ai = { async generateReply(input: { generation?: unknown }) { calls.push(input.generation); return { text: 'Хорошо.' }; } };
     await simulateCustomerMessage(f.db, f.tenantId, crypto.randomUUID(), 'привет', ai as never, { evaluation: {}, embedder: null });
-    assert.deepEqual(calls[0], { maxOutputTokens: 2048, retryMaxOutputTokens: 4096, thinkingLevels: { 'gemini-3.8-flash': 'low' } });
-    await saveRuntimeSettings(f.db, f.tenantId, { reply_max_output_tokens: 3000, reply_thinking_levels: { 'gemini-3.8-flash': 'minimal' } });
+    assert.deepEqual(calls[0], { maxOutputTokens: 2048, retryMaxOutputTokens: 4096, thinkingLevels: { 'gemini-3.8-flash': 'low' }, timeoutMs: 20000, attemptTimeoutMs: 9000, retryDelayMs: 1500 });
+    await saveRuntimeSettings(f.db, f.tenantId, { reply_max_output_tokens: 3000, reply_thinking_levels: { 'gemini-3.8-flash': 'minimal' }, reply_timeout_ms: 30000, reply_attempt_timeout_ms: 12000, reply_retry_delay_ms: 500 });
     await simulateCustomerMessage(f.db, f.tenantId, crypto.randomUUID(), 'привет', ai as never, { evaluation: {}, embedder: null });
-    assert.deepEqual(calls[1], { maxOutputTokens: 3000, retryMaxOutputTokens: 4096, thinkingLevels: { 'gemini-3.8-flash': 'minimal' } });
+    assert.deepEqual(calls[1], { maxOutputTokens: 3000, retryMaxOutputTokens: 4096, thinkingLevels: { 'gemini-3.8-flash': 'minimal' }, timeoutMs: 30000, attemptTimeoutMs: 12000, retryDelayMs: 500 });
+    await assert.rejects(saveRuntimeSettings(f.db, f.tenantId, { reply_timeout_ms: 10 }), /Invalid setting/);
     await assert.rejects(saveRuntimeSettings(f.db, f.tenantId, { reply_thinking_levels: { 'gemini-3.8-flash': 'max' } }), /Invalid thinking levels/);
     await assert.rejects(saveRuntimeSettings(f.db, f.tenantId, { reply_max_output_tokens: 10 }), /Invalid setting/);
   } finally { await f.pg.close(); }

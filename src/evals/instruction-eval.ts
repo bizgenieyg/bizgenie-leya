@@ -1,5 +1,5 @@
 import { parse } from 'yaml';
-import { failureReason, type AIProvider, type AIUsage } from '../providers/ai/ai-provider.interface.js';
+import { AIProviderError, failureReason, type AIProvider, type AIUsage } from '../providers/ai/ai-provider.interface.js';
 import type { DatabaseClient } from '../db/supabase.js';
 import { simulateCustomerMessage, type SimulationResult } from '../services/simulator.service.js';
 import { callCost } from '../config/model-prices.js';
@@ -71,18 +71,28 @@ export async function judge(ai: AIProvider, scenario: InstructionScenario, turns
 
 export interface ModelStats { calls: number; latencyMs: number; input: number; output: number; thinking: number; cacheRead: number; cacheWrite: number; cost: number; unpriced: number }
 export const emptyStats = (): ModelStats => ({ calls: 0, latencyMs: 0, input: 0, output: 0, thinking: 0, cacheRead: 0, cacheWrite: 0, cost: 0, unpriced: 0 });
-/** Wraps the reply model: counts calls, latency, tokens and the real price of every call (Z4: tier by date and prompt). */
+/** Wraps the reply model: counts calls, latency, tokens and the real price of every billed attempt — a cut first
+ *  attempt before the retry, and the known usage of a call that failed in the end (Z4: tier per attempt). */
 export function measured(ai: AIProvider, stats: ModelStats, model: string, now: () => Date = () => new Date()): AIProvider {
+  const account = (usage: AIUsage | undefined) => {
+    for (const u of usage ? (usage.attempts ?? [usage]) : []) {
+      const tokens = { input: u.input_tokens ?? 0, output: u.output_tokens ?? 0, thinking: u.thinking_tokens ?? 0, cacheRead: u.cached_input_tokens ?? 0, cacheWrite: u.cache_write_tokens ?? 0 };
+      if (!tokens.input && !tokens.output && !tokens.thinking) continue;
+      stats.input += tokens.input; stats.output += tokens.output; stats.thinking += tokens.thinking; stats.cacheRead += tokens.cacheRead; stats.cacheWrite += tokens.cacheWrite;
+      const cost = callCost(u.model ?? model, now(), tokens);
+      if (cost === null) stats.unpriced++; else stats.cost += cost;
+    }
+  };
   return { async generateReply(input) {
     const started = Date.now();
-    const result = await ai.generateReply(input);
-    const usage: AIUsage = result.usage ?? {};
-    const tokens = { input: usage.input_tokens ?? 0, output: usage.output_tokens ?? 0, thinking: usage.thinking_tokens ?? 0, cacheRead: usage.cached_input_tokens ?? 0, cacheWrite: usage.cache_write_tokens ?? 0 };
-    stats.calls++; stats.latencyMs += Date.now() - started;
-    stats.input += tokens.input; stats.output += tokens.output; stats.thinking += tokens.thinking; stats.cacheRead += tokens.cacheRead; stats.cacheWrite += tokens.cacheWrite;
-    const cost = callCost(usage.model ?? model, now(), tokens);
-    if (cost === null) stats.unpriced++; else stats.cost += cost;
-    return result;
+    try {
+      const result = await ai.generateReply(input);
+      account(result.usage);
+      return result;
+    } catch (error) {
+      if (error instanceof AIProviderError) account(error.usage);
+      throw error;
+    } finally { stats.calls++; stats.latencyMs += Date.now() - started; }
   } };
 }
 
