@@ -3,7 +3,8 @@ import { supportedTimeZone } from "../config/time-zones.js";
 import { createHash, randomInt } from "node:crypto";
 import type { DatabaseClient } from "../db/supabase.js";
 import type { SessionIdentity } from "../utils/incoming-policy.js";
-import { ownerIdentityField } from "../utils/incoming-policy.js";
+import { ownerIdentityField, readSessionIdentity } from "../utils/incoming-policy.js";
+import type { WhatsAppProvider } from "../providers/whatsapp/whatsapp-provider.interface.js";
 import { HttpError } from "../utils/http-error.js";
 import { normalizeInternationalPhone, toChatId } from "../utils/whatsapp-id.js";
 
@@ -75,6 +76,41 @@ export async function saveOwnerSettings(db: DatabaseClient, tenantId: string, in
     await rescheduleTenantEscalationTimeouts(db,tenantId,updated);
   }
   return { phone, code, ttlMinutes };
+}
+/**
+ * Z6 onboarding: the owner's number before the business WhatsApp is connected (the pairing code can only be sent
+ * from that session). Phone, time zone and quiet hours are saved; no code is issued and no pairing is pending, so
+ * customer traffic is never intercepted. After the QR connection the same request sends the code (submitOwnerSettings).
+ */
+export async function savePendingOwnerSettings(db: DatabaseClient, tenantId: string, input: Record<string,unknown>): Promise<{ phone: string }> {
+  const phone = normalizeInternationalPhone(input.phone);
+  if (!phone) throw new HttpError(400,"Укажите номер владельца с кодом страны, например +972501234567.");
+  const start = input.quietStart || null; const end = input.quietEnd || null;
+  const validTime = (v: unknown) => typeof v === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(v);
+  if ((start || end) && (!validTime(start) || !validTime(end) || start === end)) throw new HttpError(400,"Укажите начало и окончание тихих часов.");
+  const timeZone=typeof input.timeZone==='string'?input.timeZone:'';
+  if(!supportedTimeZone(timeZone)) throw new HttpError(400,"Выберите часовой пояс владельца из списка.");
+  const { error } = await db.from("notification_settings").upsert({tenant_id:tenantId,owner_phone:phone,owner_chat_id:null,time_zone:timeZone,
+    owner_pairing_hash:null,owner_pairing_expires_at:null,quiet_hours_start:start,quiet_hours_end:end,mode:"mute_all"},{onConflict:"tenant_id"});
+  if(error) throw new Error("Owner settings save failed");
+  invalidateOwnerSettings(db,tenantId);
+  return { phone };
+}
+
+/** The owner-settings request: with a working business session — save and send the pairing code; without one —
+ *  save the number only and say the code comes after the WhatsApp connection (Z6, onboarding before the QR). */
+export async function submitOwnerSettings(db: DatabaseClient, tenantId: string, input: Record<string,unknown>, provider: WhatsAppProvider, session: string | null,
+  send: (session: string, chatId: string, text: string) => Promise<void>): Promise<{ sent: true } | { sent: false; pending: 'whatsapp' }> {
+  const status = session ? await provider.getSessionStatus(session) : null;
+  if (!session || status?.status !== 'WORKING') { await savePendingOwnerSettings(db, tenantId, input); return { sent: false, pending: 'whatsapp' }; }
+  const saved = await saveOwnerSettings(db, tenantId, input, readSessionIdentity(status.me));
+  const settings = await loadOwnerSettings(db, tenantId);
+  const { renderText } = await import('./templates.service.js');
+  const { behavior } = await import('./runtime-settings.service.js');
+  const text = renderText(settings, 'owner.pairing_code', behavior(settings).owner_language, { code: saved.code, minutes: String(saved.ttlMinutes) });
+  try { await send(session, toChatId(saved.phone), text); }
+  catch { throw new HttpError(422,'Не удалось отправить код подтверждения владельцу.'); }
+  return { sent: true };
 }
 export async function pairOwner(db: DatabaseClient,tenantId:string,from:string,text:string,settings:OwnerSettings):Promise<boolean> {
   // No pairing in progress: never intercept the message, so ordinary customer traffic

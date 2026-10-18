@@ -3,7 +3,7 @@ import { createException,deleteException,listExceptions,updateException } from '
 import { registry } from '../agents/index.js';
 import { usageSummary } from "../services/usage.service.js";
 import { supabase } from '../db/supabase.js';
-import { loadOwnerSettings, saveOwnerSettings } from '../services/owner-settings.service.js';
+import { loadOwnerSettings, submitOwnerSettings } from '../services/owner-settings.service.js';
 import { getTenantRouting } from '../services/tenant.service.js';
 import { createWhatsAppProvider } from '../providers/whatsapp/index.js';
 import { readSessionIdentity } from '../utils/incoming-policy.js';
@@ -97,23 +97,13 @@ adminRouter.get('/owner-settings', async (request,response) => {
 adminRouter.post('/owner-settings', async (request,response) => {
   const tenantId=queryTenantId(request.query.tenantId);
   const routing=await getTenantRouting(supabase,tenantId);
-  if(!routing?.instance?.session_name) throw new HttpError(409,'Сначала подключите бизнес-номер WhatsApp.');
-  const session=routing.instance.session_name;
   const provider=createWhatsAppProvider();
-  const status=await provider.getSessionStatus(session);
-  if(status.status!=='WORKING') throw new HttpError(409,'Сначала подключите бизнес-номер WhatsApp.');
-  const saved=await saveOwnerSettings(supabase,tenantId,objectBody(request.body),readSessionIdentity(status.me));
-  // A service message, not client traffic: sent directly (no usage metering), so the
-  // owner only has to reply with the digits instead of typing a command themselves.
-  const settings=await loadOwnerSettings(supabase,tenantId);
-  const text=renderText(settings,'owner.pairing_code',behavior(settings).owner_language,{code:saved.code,minutes:String(saved.ttlMinutes)});
-  try{
-    await enqueueMessage(supabase,tenantId,provider,{session,chatId:toChatId(saved.phone),text},{kind:'owner_notice'});
-  }catch{
-    throw new HttpError(422,'Не удалось отправить код подтверждения владельцу.');
-  }
+  // Z6: before the QR connection the number is saved and the code is sent after it; with a working session —
+  // a service message (not client traffic, no usage metering): the owner replies with the digits.
+  const result=await submitOwnerSettings(supabase,tenantId,objectBody(request.body),provider,routing?.instance?.session_name??null,
+    async(session,chatId,text)=>{await enqueueMessage(supabase,tenantId,provider,{session,chatId,text},{kind:'owner_notice'});});
   response.setHeader('Cache-Control','no-store');
-  response.json({sent:true});
+  response.json(result);
 });
 
 

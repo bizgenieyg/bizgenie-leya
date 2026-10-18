@@ -6,7 +6,7 @@ import type { PGlite } from '@electric-sql/pglite';
 import type { DatabaseClient } from '../db/supabase.js';
 import type { WhatsAppProvider } from '../providers/whatsapp/whatsapp-provider.interface.js';
 import { conversationPaused, createEscalation, handleOwnerMessage, runDueScheduledEscalations } from './owner-workflow.service.js';
-import { invalidateOwnerSettings, saveOwnerSettings, type OwnerSettings } from './owner-settings.service.js';
+import { invalidateOwnerSettings, loadOwnerSettings, saveOwnerSettings, submitOwnerSettings, type OwnerSettings } from './owner-settings.service.js';
 import { isWithinQuietHours, nextQuietHoursEnd } from './escalation.service.js';
 import { observeOwnerOutgoing } from './outgoing-owner.service.js';
 import { enqueueMessage, settleAllOutboundQueues } from '../workers/outbound-queue.js';
@@ -618,4 +618,37 @@ test('owner interview: a voice answer is transcribed (service limits, audio wipe
   assert.equal(await h.admissions(), 0, 'not the client monthly limit');
   const stt = (await h.pg.query<{ metadata: Record<string, unknown> }>("select metadata from usage_events where event_type='stt_call'")).rows[0]!;
   assert.equal(stt.metadata.purpose, 'owner_voice');
+});
+
+test('Z6 onboarding: owner number before the QR is saved without a code; after the connection the code is sent and pairing completes', async () => {
+  const h = await pgHarness();
+  await h.pg.query('update notification_settings set owner_phone=null, owner_chat_id=null where tenant_id=$1', [h.tenant]);
+  let status = 'SCAN_QR_CODE';
+  const provider: WhatsAppProvider = { ...h.provider, async getSessionStatus() { return status === 'WORKING' ? { status, me: { id: '972500000009@c.us', lid: '99999999@lid' } } : { status }; } };
+  const send = async (session: string, chatId: string, text: string) => { await enqueueMessage(h.db, h.tenant, provider, { session, chatId, text }, { kind: 'owner_notice' }); };
+  const body = { phone: '+972 50-000-0002', timeZone: 'Asia/Jerusalem', quietStart: '22:00', quietEnd: '07:00' };
+
+  // No session at all, then a session still waiting for the QR: the number is kept, no code, nothing sent.
+  assert.deepEqual(await submitOwnerSettings(h.db, h.tenant, body, provider, null, send), { sent: false, pending: 'whatsapp' });
+  assert.deepEqual(await submitOwnerSettings(h.db, h.tenant, body, provider, 'session', send), { sent: false, pending: 'whatsapp' });
+  await settleAllOutboundQueues();
+  let row = await h.notificationSettings();
+  assert.equal(row.owner_phone, '972500000002'); assert.equal(row.owner_chat_id, null); assert.equal(row.owner_pairing_hash, null, 'no pairing pending — customer messages are not intercepted');
+  assert.equal(h.sent.length, 0);
+  invalidateOwnerSettings(h.db, h.tenant);
+  const saved = await loadOwnerSettings(h.db, h.tenant);
+  assert.equal(saved.time_zone, 'Asia/Jerusalem'); assert.equal(saved.quiet_hours_start?.slice(0, 5), '22:00');
+
+  // QR scanned: the onboarding returns to the owner step, the same request now sends the code to the saved number.
+  status = 'WORKING';
+  assert.deepEqual(await submitOwnerSettings(h.db, h.tenant, { phone: saved.owner_phone, timeZone: 'Asia/Jerusalem', quietStart: '22:00', quietEnd: '07:00' }, provider, 'session', send), { sent: true });
+  await settleAllOutboundQueues();
+  const message = h.sent.find(m => m.chatId === '972500000002@c.us');
+  const code = /\b(\d{6})\b/.exec(message?.text ?? '')?.[1];
+  assert.ok(code, 'the pairing code went to the owner number');
+  const settings = { ...h.settings, ...(await h.notificationSettings()) } as unknown as OwnerSettings;
+  await handleOwnerMessage(h.db, provider, h.tenant, 'session', '88888888@lid', code!, null, settings); await settleAllOutboundQueues();
+  row = await h.notificationSettings();
+  assert.equal(row.owner_chat_id, '88888888@lid', 'paired'); assert.equal(row.owner_pairing_hash, null);
+  await assert.rejects(submitOwnerSettings(h.db, h.tenant, { phone: '972500000009', timeZone: 'Asia/Jerusalem' }, provider, 'session', send), /отличаться/, 'the business number check runs once connected');
 });
