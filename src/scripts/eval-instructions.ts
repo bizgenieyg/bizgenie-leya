@@ -3,14 +3,20 @@ import { dirname } from 'node:path';
 import { emptyStats, formatInstructionReport, loadInstructionScenarios, measured, runScenario, tenantScenarios, type ModelStats, type ScenarioRun } from '../evals/instruction-eval.js';
 import { isKnowledgeTopic } from '../config/knowledge-topics.js';
 import { EVAL_JUDGE_MODEL } from '../config/behavior.js';
+import type { TemplateKey } from '../config/instruction-templates.js';
 import { failureReason } from '../providers/ai/ai-provider.interface.js';
 
+/** A tenant's own instruction file, or its template (evals/instructions/templates/<key>.md). */
+const instructionPath = (spec: { instruction?: string; template?: string }) => spec.template ? `${DIR}/templates/${spec.template}.md` : `${DIR}/${spec.instruction}`;
+const instructionLabel = (spec: { instruction?: string; template?: string }) => spec.template ? `template ${spec.template}` : 'instruction';
 const arg = (name: string) => process.argv.find(a => a.startsWith(`--${name}=`))?.slice(name.length + 3);
 const DIR = 'evals/instructions';
 /** Tenant fixtures on PGlite (no production data): who the owner is, the instruction, where the facts come from. */
 export const TENANTS: Record<string, { owner: string; business: string; sector: string; facts: { kind: 'markdown' | 'extract'; file: string } }> = {
   bizgenie: { owner: 'Юрий', business: 'BizGenie', sector: 'автоматизация бизнеса', facts: { kind: 'markdown', file: 'bizgenie-facts.md' } },
   ira: { owner: 'Ирена', business: 'Ирена Прасолов', sector: 'эстетическая косметология', facts: { kind: 'extract', file: 'ira-facts.md' } },
+  // Z6: no own instruction — the template is resolved from the sector, like a newly registered business.
+  manicure: { owner: 'Ольга', business: 'Ноготки', sector: 'мастер маникюра', facts: { kind: 'markdown', file: 'manicure-facts.md' } },
 };
 /** "## topic\n- fact" lines of an exported facts file. */
 export function parseFactsMarkdown(markdown: string): Array<{ topic: string; text: string }> {
@@ -36,7 +42,7 @@ async function main() {
       const spec = TENANTS[t]; if (!spec) throw new Error(`Unknown tenant ${t}`);
       const scenarios = tenantScenarios(file, t, spec.owner);
       const unfilled = scenarios.flatMap(s => s.turns).filter(turn => /\{[a-z_0-9]+\}/.test(turn));
-      console.log(`${t}: ${scenarios.length} scenarios, instruction ${readFileSync(`${DIR}/${file.tenants[t]!.instruction}`, 'utf8').length} chars${unfilled.length ? `, UNFILLED: ${unfilled.join(' | ')}` : ''}`);
+      console.log(`${t}: ${scenarios.length} scenarios, ${instructionLabel(file.tenants[t]!)} ${readFileSync(instructionPath(file.tenants[t]!), 'utf8').length} chars${unfilled.length ? `, UNFILLED: ${unfilled.join(' | ')}` : ''}`);
       if (unfilled.length) process.exitCode = 1;
     }
     return;
@@ -83,9 +89,18 @@ async function main() {
       await pg.query("insert into plans(code,display_name,messages_per_month,voice_minutes_per_month,warning_percent,unlimited) values('basic','Базовый',500,60,80,true) on conflict(code) do nothing");
       await pg.query("insert into tenant_usage_limits(tenant_id,plan,messages_per_month,voice_minutes_per_month,warning_percent,messages_overridden,voice_overridden,warning_overridden) values($1,'basic',100000,60,80,true,false,false)", [tenantId]);
       await pg.query("insert into assistant_profiles(tenant_id,assistant_name,allowed_languages,tone) values($1,'Лея',array['ru','he','en'],'friendly_professional')", [tenantId]);
-      await saveRuntimeSettings(db, tenantId, { reply_engine: 'instruction' });
-      await uploadInstruction(db, { kind: 'business', tenantId }, readFileSync(`${DIR}/${file.tenants[t]!.instruction}`, 'utf8'));
-      await activateInstruction(db, { kind: 'business', tenantId }, 1);
+      // The model under test is the measured one (reply_model '' → the injected model), no fallback.
+      await saveRuntimeSettings(db, tenantId, { reply_engine: 'instruction', reply_model: '', reply_fallback_model: '' });
+      const tenantSpec = file.tenants[t]!;
+      if (tenantSpec.template) {
+        // Published like the operator does (instructions:publish --template); the tenant has none of its own.
+        const target = { kind: 'template' as const, templateKey: tenantSpec.template as TemplateKey };
+        await uploadInstruction(db, target, readFileSync(instructionPath(tenantSpec), 'utf8'));
+        await activateInstruction(db, target, 1);
+      } else {
+        await uploadInstruction(db, { kind: 'business', tenantId }, readFileSync(instructionPath(tenantSpec), 'utf8'));
+        await activateInstruction(db, { kind: 'business', tenantId }, 1);
+      }
       const facts = factsByTenant.get(t)!;
       for (const fact of facts) await pg.query("insert into business_facts(tenant_id,topic,text,status,created_by) values($1,$2,$3,'active','migration')", [tenantId, fact.topic, fact.text]);
       console.log(`${model} · ${t}: ${facts.length} facts`);

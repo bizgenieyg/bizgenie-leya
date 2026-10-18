@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
  * Upload a draft, activate it, optionally switch reply_engine / reply_model; the same text twice is not a new
  * version. The API is an interface so the logic is tested on PGlite with the real services behind it.
  */
-export type PublishTarget = { tenantId: string; demoKey?: undefined } | { demoKey: string; tenantId?: undefined };
+export type PublishTarget = { tenantId: string; demoKey?: undefined; templateKey?: undefined } | { demoKey: string; tenantId?: undefined; templateKey?: undefined } | { templateKey: string; tenantId?: undefined; demoKey?: undefined };
 export interface InstructionRow { version: number; status: string; sha256: string }
 export interface OperatorApi {
   list(target: PublishTarget): Promise<InstructionRow[]>;
@@ -47,7 +47,7 @@ export async function publishPlan(api: OperatorApi, options: PublishOptions): Pr
     if (options.replyModel !== undefined && current.reply_model !== options.replyModel) patch.reply_model = options.replyModel;
     if (options.fallbackModel !== undefined && current.reply_fallback_model !== options.fallbackModel) patch.reply_fallback_model = options.fallbackModel;
     if (Object.keys(patch).length) steps.push({ action: 'settings', patch });
-  } else if (options.engine || options.replyModel !== undefined || options.fallbackModel !== undefined) throw new Error('--engine, --reply-model and --fallback-model apply to a tenant, not to a demo');
+  } else if (options.engine || options.replyModel !== undefined || options.fallbackModel !== undefined) throw new Error('--engine, --reply-model and --fallback-model apply to a tenant, not to a demo or a template');
   return steps;
 }
 

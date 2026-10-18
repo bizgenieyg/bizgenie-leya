@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describeSteps, publishInstruction, rollbackInstruction, type OperatorApi, type PublishTarget } from '../services/instruction-publish.js';
 import { env } from '../config/env.js';
+import { isTemplateKey, TEMPLATE_KEYS } from '../config/instruction-templates.js';
 
 const arg = (name: string) => process.argv.find(a => a.startsWith(`--${name}=`))?.slice(name.length + 3);
 const flag = (name: string) => process.argv.includes(`--${name}`);
@@ -15,7 +16,7 @@ function httpApi(base: string, secret: string): OperatorApi {
     if (!response.ok) throw new Error(`${init.method ?? 'GET'} ${path}: HTTP ${response.status}`);
     return response.status === 204 ? null : response.json();
   };
-  const q = (t: PublishTarget): Record<string, string> => t.tenantId ? { tenantId: t.tenantId } : { demoKey: t.demoKey! };
+  const q = (t: PublishTarget): Record<string, string> => t.tenantId ? { tenantId: t.tenantId } : t.templateKey ? { templateKey: t.templateKey } : { demoKey: t.demoKey! };
   return {
     list: t => call('/instructions', q(t)),
     upload: (t, content) => call('/instructions', q(t), { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: content }),
@@ -28,13 +29,14 @@ function httpApi(base: string, secret: string): OperatorApi {
 /**
  * npm run instructions:publish -- --tenant=<uuid> --file=<md> [--engine=instruction|legacy] [--reply-model=<id>] [--fallback-model=<id>|--fallback-model=] [--dry-run]
  * npm run instructions:publish -- --demo=home_cook|cosmetologist --file=<md> [--dry-run]
+ * npm run instructions:publish -- --template=service_booking|order|project|b2b|general --file=<md> [--dry-run]
  * npm run instructions:publish -- --rollback --tenant=<uuid> [--dry-run]
  * [--api=http://127.0.0.1:<PORT>] — the leya-api base URL; ADMIN_SECRET from the environment.
  */
 async function main() {
   const secret = env.adminSecret, api = httpApi(arg('api') ?? `http://127.0.0.1:${env.port}`, secret ?? '');
   if (!secret) throw new Error('ADMIN_SECRET is not configured');
-  const tenant = arg('tenant'), demo = arg('demo'), dryRun = flag('dry-run');
+  const tenant = arg('tenant'), demo = arg('demo'), template = arg('template'), dryRun = flag('dry-run');
   if (tenant && !UUID.test(tenant)) throw new Error('--tenant must be a UUID');
   if (flag('rollback')) {
     if (!tenant) throw new Error('--rollback needs --tenant');
@@ -42,12 +44,13 @@ async function main() {
     console.log([dryRun ? 'План (dry-run):' : 'Сделано:', ...describeSteps(steps)].join('\n'));
     return;
   }
-  if (!!tenant === !!demo) throw new Error('Give exactly one of --tenant or --demo');
+  if ([tenant, demo, template].filter(Boolean).length !== 1) throw new Error('Give exactly one of --tenant, --demo or --template');
+  if (template && !isTemplateKey(template)) throw new Error(`--template must be one of ${TEMPLATE_KEYS.join(', ')}`);
   if (demo && !/^[a-z][a-z0-9_]{1,39}$/.test(demo)) throw new Error('--demo must be a demo key like home_cook');
   const file = arg('file'); if (!file) throw new Error('--file=<path> is required');
   const engine = arg('engine');
   if (engine !== undefined && engine !== 'instruction' && engine !== 'legacy') throw new Error('--engine must be instruction or legacy');
-  const steps = await publishInstruction(api, { target: tenant ? { tenantId: tenant } : { demoKey: demo! }, content: readFileSync(file, 'utf8'),
+  const steps = await publishInstruction(api, { target: tenant ? { tenantId: tenant } : template ? { templateKey: template } : { demoKey: demo! }, content: readFileSync(file, 'utf8'),
     ...(engine ? { engine } : {}), ...(arg('reply-model') !== undefined ? { replyModel: arg('reply-model')! } : {}),
     ...(arg('fallback-model') !== undefined ? { fallbackModel: arg('fallback-model')! } : {}), dryRun,
     keys: { gemini: !!env.geminiApiKey?.trim(), anthropic: !!env.anthropicApiKey?.trim(), openai: !!env.openaiApiKey?.trim() } });

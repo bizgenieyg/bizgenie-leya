@@ -8,6 +8,8 @@ import { DEFAULT_TIME_ZONE,SUPPORTED_TIME_ZONES,supportedTimeZone } from '../con
 import type { WeeklySchedule } from '../config/behavior.js';
 import { logSystemEvent } from './logging.service.js';
 import { invalidateTenantRouting } from './tenant.service.js';
+import { isTemplateKey, SIMULATOR_SUGGESTIONS } from '../config/instruction-templates.js';
+import { activeInstructionFor, resolveTemplate } from './instructions.service.js';
 import { DISCOVERY_MAX_CHARS, DISCOVERY_MAX_QUESTIONS, discoveryQuestions } from '../config/discovery.js';
 export function behavior(settings:OwnerSettings) {
  const stored=settings.behavior&&typeof settings.behavior==='object'&&!Array.isArray(settings.behavior)?settings.behavior:{};
@@ -27,7 +29,11 @@ export async function readRuntimeSettings(db:DatabaseClient,tenantId:string){
  const plan=planCode?await db.from('plans').select('code,display_name,messages_per_month,voice_minutes_per_month,warning_percent,unlimited').eq('code',planCode).maybeSingle():{data:null,error:{}};
  if(plan.error||!plan.data){console.error('critical_tenant_plan_integrity_violation',{tenantId});try{await logSystemEvent(db,{tenantId,level:'error',event:'tenant_plan_integrity_violation'});}catch{}throw new Error('Tenant plan unavailable');}
  const config=behavior(owner);
- return { ...config,greeting_templates:Object.fromEntries(GREETING_TEMPLATE_KEYS.map(k=>[k,Object.fromEntries(['ru','he','en'].flatMap(l=>{const v=ownerTemplate(owner,k,l);return v?[[l,v]]:[];}))])),greeting_template_defaults:Object.fromEntries(GREETING_TEMPLATE_KEYS.map(k=>[k,TEMPLATE_DEFAULTS[k]])),client_discovery_questions:discoveryQuestions(config.client_discovery_questions,tenant.data.business_sector,config.cabinet_language??config.owner_language),business_sector:tenant.data.business_sector??null,translate_owner_answer:owner.translate_owner_answer??BEHAVIOR_DEFAULTS.translate_owner_answer,
+ // Z6, read-only for the cabinet: whether replies go by an instruction (own or template) — then tone, greetings
+ // and discovery chips do not apply — and three client questions of the tenant's deal type for the simulator.
+ const template=resolveTemplate(config.instruction_template,tenant.data.business_sector);
+ const instructionAnswers=config.reply_engine==='instruction'&&(await activeInstructionFor(db,tenantId,template))!==null;
+ return { ...config,instruction_answers:instructionAnswers,simulator_suggestions:SIMULATOR_SUGGESTIONS[template],greeting_templates:Object.fromEntries(GREETING_TEMPLATE_KEYS.map(k=>[k,Object.fromEntries(['ru','he','en'].flatMap(l=>{const v=ownerTemplate(owner,k,l);return v?[[l,v]]:[];}))])),greeting_template_defaults:Object.fromEntries(GREETING_TEMPLATE_KEYS.map(k=>[k,TEMPLATE_DEFAULTS[k]])),client_discovery_questions:discoveryQuestions(config.client_discovery_questions,tenant.data.business_sector,config.cabinet_language??config.owner_language),business_sector:tenant.data.business_sector??null,translate_owner_answer:owner.translate_owner_answer??BEHAVIOR_DEFAULTS.translate_owner_answer,
  messages_per_month:data?.messages_overridden?data.messages_per_month:plan.data.messages_per_month,
  voice_minutes_per_month:data?.voice_overridden?data.voice_minutes_per_month:plan.data.voice_minutes_per_month,
  warning_percent:data?.warning_overridden?data.warning_percent:plan.data.warning_percent,plan:plan.data.code,plan_name:plan.data.display_name,unlimited:Boolean(plan.data.unlimited),
@@ -104,6 +110,7 @@ export function validateRuntimePatch(input:Record<string,unknown>) {
   else if(key==='link_max_pages')behaviorPatch[key]=integer(key,value,0,10);
   else if(key==='audit_max_open_cards')behaviorPatch[key]=integer(key,value,1,50);
   else if(key==='reply_engine'){if(value!=='legacy'&&value!=='instruction')throw new HttpError(400,'Invalid reply engine');behaviorPatch[key]=value;}
+  else if(key==='instruction_template'){if(value!==''&&!isTemplateKey(value))throw new HttpError(400,'Invalid instruction template');behaviorPatch[key]=value;}
   else if(key==='reply_fallback_model'){if(typeof value!=='string'||value.length>80||!/^[a-z0-9._-]*$/i.test(value))throw new HttpError(400,'Invalid fallback model');behaviorPatch[key]=value;}
   else if(key==='reply_model'){if(typeof value!=='string'||value.length>80||!/^[a-z0-9._-]*$/i.test(value))throw new HttpError(400,'Invalid reply model');behaviorPatch[key]=value;}
   else if(key==='reply_max_output_tokens'||key==='reply_retry_max_output_tokens')behaviorPatch[key]=integer(key,value,256,65536);

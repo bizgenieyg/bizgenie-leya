@@ -10,7 +10,7 @@ import { callCost } from '../config/model-prices.js';
  * model with one binary answer per item (threshold 90 %).
  */
 export interface InstructionScenario { id: string; turns: string[]; checks: string[]; labels_expect?: string[] | Record<string, string[]>; labels_forbid?: string[]; request_fields?: Record<string, string>; note?: string }
-interface TenantSpec { instruction: string; demo?: string[]; facts_fixture?: string; trap_vars: Record<string, string>; scenarios: InstructionScenario[] }
+interface TenantSpec { instruction?: string; template?: string; demo?: string[]; facts_fixture?: string; trap_vars: Record<string, string>; scenarios: InstructionScenario[] }
 export interface ScenarioFile { traps: InstructionScenario[]; tenants: Record<string, TenantSpec> }
 
 export function loadInstructionScenarios(source: string): ScenarioFile {

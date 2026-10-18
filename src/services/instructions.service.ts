@@ -3,6 +3,7 @@ import type { DatabaseClient } from '../db/supabase.js';
 import { HttpError } from '../utils/http-error.js';
 import { CORE_INSTRUCTION_DEFAULT, DEMO_INSTRUCTION_DEFAULTS } from '../config/instruction-defaults.js';
 import { CORE_CONFIG_KEY, INSTRUCTION_PLACEHOLDERS } from '../config/instructions.js';
+import { isTemplateKey, templateForSector, type TemplateKey } from '../config/instruction-templates.js';
 
 /** Task Z: core of the platform (config default, operator override) + versioned business and demo instructions. */
 const check = (error: unknown, message: string) => { if (error) throw new Error(message); };
@@ -19,6 +20,22 @@ export async function activeBusinessInstruction(db: DatabaseClient, tenantId: st
   check(r.error, 'Instruction unavailable');
   return typeof r.data?.content === 'string' ? r.data.content : null;
 }
+/**
+ * Z6: the instruction a tenant answers by — its own active business instruction, else the active template of its
+ * deal type, else the 'general' template. Null when none is published (the tenant keeps the legacy path).
+ */
+export async function activeInstructionFor(db: DatabaseClient, tenantId: string, template: TemplateKey): Promise<{ text: string; source: 'business' | 'template'; template: TemplateKey | null } | null> {
+  const own = await activeBusinessInstruction(db, tenantId);
+  if (own) return { text: own, source: 'business', template: null };
+  for (const key of template === 'general' ? ['general' as const] : [template, 'general' as const]) {
+    const r = await db.from('assistant_instructions').select('content').eq('kind', 'template').eq('template_key', key).eq('status', 'active').maybeSingle();
+    check(r.error, 'Template unavailable');
+    if (typeof r.data?.content === 'string') return { text: r.data.content, source: 'template', template: key };
+  }
+  return null;
+}
+/** Z6: operator setting instruction_template, else the template of the sector. */
+export const resolveTemplate = (setting: string, sector: string | null | undefined): TemplateKey => isTemplateKey(setting) ? setting : templateForSector(sector);
 /** Active demo text; the built-in one when the operator has not loaded any. */
 export async function activeDemoInstruction(db: DatabaseClient, demoKey: string): Promise<string | null> {
   const r = await db.from('assistant_instructions').select('content').eq('kind', 'demo').eq('demo_key', demoKey).eq('status', 'active').maybeSingle();
@@ -41,12 +58,16 @@ export function fillPlaceholders(text: string, values: Partial<Record<(typeof IN
   return { text: missing.length ? null : filled, missing: [...new Set(missing)] };
 }
 
-type Target = { kind: 'business'; tenantId: string } | { kind: 'demo'; demoKey: string };
+type Target = { kind: 'business'; tenantId: string } | { kind: 'demo'; demoKey: string } | { kind: 'template'; templateKey: TemplateKey };
 const scope = (db: DatabaseClient, target: Target) => {
-  const q = db.from('assistant_instructions').select('id,kind,demo_key,version,status,created_by,created_at,content').eq('kind', target.kind);
-  return target.kind === 'business' ? q.eq('tenant_id', target.tenantId) : q.eq('demo_key', target.demoKey);
+  const q = db.from('assistant_instructions').select('id,kind,demo_key,template_key,version,status,created_by,created_at,content').eq('kind', target.kind);
+  return target.kind === 'business' ? q.eq('tenant_id', target.tenantId) : target.kind === 'demo' ? q.eq('demo_key', target.demoKey) : q.eq('template_key', target.templateKey);
 };
-export function instructionTarget(input: { tenantId?: unknown; demoKey?: unknown }): Target {
+export function instructionTarget(input: { tenantId?: unknown; demoKey?: unknown; templateKey?: unknown }): Target {
+  if (input.templateKey !== undefined) {
+    if (!isTemplateKey(input.templateKey)) throw new HttpError(400, 'Unknown template', { code: 'instruction_target' });
+    return { kind: 'template', templateKey: input.templateKey };
+  }
   if (typeof input.demoKey === 'string' && /^[a-z][a-z0-9_]{1,39}$/.test(input.demoKey)) return { kind: 'demo', demoKey: input.demoKey };
   if (typeof input.tenantId === 'string' && input.tenantId) return { kind: 'business', tenantId: input.tenantId };
   throw new HttpError(400, 'tenantId or demoKey required', { code: 'instruction_target' });
@@ -58,7 +79,7 @@ export async function uploadInstruction(db: DatabaseClient, target: Target, cont
   const last = await scope(db, target).order('version', { ascending: false }).limit(1);
   check(last.error, 'Instructions unavailable');
   const version = Number(last.data?.[0]?.version ?? 0) + 1;
-  const inserted = await db.from('assistant_instructions').insert({ kind: target.kind, ...(target.kind === 'business' ? { tenant_id: target.tenantId } : { demo_key: target.demoKey }),
+  const inserted = await db.from('assistant_instructions').insert({ kind: target.kind, ...(target.kind === 'business' ? { tenant_id: target.tenantId } : target.kind === 'demo' ? { demo_key: target.demoKey } : { template_key: target.templateKey }),
     version, content, status: 'draft', created_by: createdBy }).select('id,version,status').single();
   check(inserted.error || !inserted.data, 'Instruction save failed');
   return inserted.data!;

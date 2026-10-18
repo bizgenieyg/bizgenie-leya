@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { agentContext } from '../agents/index.js';
 import type { DatabaseClient } from '../db/supabase.js';
-import { failureReason, type AIProvider } from '../providers/ai/ai-provider.interface.js';
+import { failureReason, modelUnavailable, type AIProvider } from '../providers/ai/ai-provider.interface.js';
 import type { ClientRow, ConversationRow } from './tenant.service.js';
 import type { ConversationMemory } from './context.service.js';
 import type { OwnerSettings } from './owner-settings.service.js';
@@ -230,8 +230,10 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
     // Z4: the reply model by its prefix (gemini- / claude- / gpt-), with the operator's fallback model for outages.
     // Each side is metered on its own (the wrapper itself is not), so a fallback call is counted once, as itself.
     const primary = meterAI(db, tenantId, config.reply_model ? createModelProvider(config.reply_model) : model, { reply_engine: 'instruction' });
-    const replyModel = primary && config.reply_fallback_model
-      ? withFallback(primary, meterAI(db, tenantId, createModelProvider(config.reply_fallback_model), { reply_engine: 'instruction', fallback: true })!, { primary: config.reply_model || 'default', fallback: config.reply_fallback_model })
+    // Z6: the fallback only when its provider has a key on this server (no OPENAI_API_KEY → no fallback, no error).
+    const fallbackProvider = config.reply_fallback_model ? createModelProvider(config.reply_fallback_model) : null;
+    const replyModel = primary && fallbackProvider && !modelUnavailable(fallbackProvider)
+      ? withFallback(primary, meterAI(db, tenantId, fallbackProvider, { reply_engine: 'instruction', fallback: true })!, { primary: config.reply_model || 'default', fallback: config.reply_fallback_model })
       : primary;
     let outcome: Awaited<ReturnType<typeof answerByInstruction>>;
     try {

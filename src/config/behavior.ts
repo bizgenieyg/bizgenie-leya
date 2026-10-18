@@ -89,12 +89,15 @@ export const BEHAVIOR_DEFAULTS = {
   /** Open improvement cards per tenant. */
   audit_max_open_cards: 10,
   /** Task Z: 'legacy' — the rules/JSON path; 'instruction' — core + business instruction + facts, text with labels. */
-  reply_engine: 'legacy' as 'legacy' | 'instruction',
-  /** Answer model for the instruction path; empty — the current reply model (GEMINI_MODEL). */
-  reply_model: '',
+  reply_engine: 'instruction' as 'legacy' | 'instruction',
+  /** Answer model for the instruction path; empty — the current reply model (GEMINI_MODEL). Z6: one scheme for all. */
+  reply_model: 'gemini-3.8-flash',
   /** Task Z4: one attempt on this model when the reply model is down (timeout / unavailable / 5xx); empty — none.
    *  Prefix picks the provider: gemini- / claude- / gpt-. */
-  reply_fallback_model: '',
+  reply_fallback_model: 'gpt-6.1-sol',
+  /** Z6: the instruction template of a tenant without its own instruction (service_booking | order | project | b2b |
+   *  general); empty — derived from business_sector (config/instruction-templates.ts). */
+  instruction_template: '',
   /** Task Z2: output cap of the reply model (thinking + text together on Gemini 3.x); one retry with the larger
    *  cap after 'incomplete_max_tokens'. 1024 cut 33 replies of gemini-3.8-flash in Z1. */
   reply_max_output_tokens: 2048,
@@ -107,7 +110,8 @@ export const BEHAVIOR_DEFAULTS = {
   reply_attempt_timeout_ms: 9_000,
   reply_retry_delay_ms: 1_500,
   /** Fields a request of each type must carry before it is created. */
-  request_required_fields: { meeting: ['topic'], consultation: ['city', 'when'], procedure: ['service', 'city', 'when', 'allergy'] } as Record<string, string[]>,
+  request_required_fields: { meeting: ['topic'], consultation: ['city', 'when'], procedure: ['service', 'city', 'when', 'allergy'],
+    booking: ['service', 'when'], reschedule: ['when'], cancel: [], order: ['items', 'date'], estimate: ['task'], request: ['what'] } as Record<string, string[]>,
   /** Demo mode ("покажу на примере") closes after this many client turns. */
   demo_max_turns: 6,
   /** Owner interview: questions on the first day, then per day. */

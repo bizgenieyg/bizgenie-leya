@@ -11,7 +11,7 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-only';
 
 /** The operator endpoints' services on PGlite (the HTTP layer only forwards to these). */
 function serviceApi(db: ReturnType<typeof pgliteDatabaseClient>): OperatorApi {
-  const t = (target: PublishTarget) => instructionTarget({ tenantId: target.tenantId, demoKey: target.demoKey });
+  const t = (target: PublishTarget) => instructionTarget({ tenantId: target.tenantId, demoKey: target.demoKey, ...(target.templateKey ? { templateKey: target.templateKey } : {}) });
   return {
     list: async target => listInstructions(db, t(target)) as never,
     upload: (target, content) => uploadInstruction(db, t(target), content) as never,
@@ -28,6 +28,8 @@ test('Z3 instructions:publish — publish, the same text again creates no versio
     await pg.query("insert into notification_settings(tenant_id,owner_phone,mode,time_zone) values($1,'972500000002','mute_all','Asia/Jerusalem')", [tenantId]);
     await pg.query("insert into plans(code,display_name,messages_per_month,voice_minutes_per_month,warning_percent,unlimited) values('basic','Базовый',500,60,80,false) on conflict(code) do nothing");
     await pg.query("insert into tenant_usage_limits(tenant_id,plan,messages_per_month,voice_minutes_per_month,warning_percent) values($1,'basic',500,60,80)", [tenantId]);
+    // A tenant from before Z6: legacy path, no models (the new defaults would otherwise already be in place).
+    await saveRuntimeSettings(db, tenantId, { reply_engine: 'legacy', reply_model: '', reply_fallback_model: '' });
     const api = serviceApi(db), target = { tenantId };
     const versions = async () => (await pg.query<{ version: number; status: string }>("select version,status from assistant_instructions where tenant_id=$1 order by version", [tenantId])).rows.map(r => `${r.version}:${r.status}`);
 
@@ -67,6 +69,7 @@ test('Z5 instructions:publish --fallback-model: set, shown in dry-run, cleared b
     await pg.query("insert into notification_settings(tenant_id,owner_phone,mode,time_zone) values($1,'972500000002','mute_all','Asia/Jerusalem')", [tenantId]);
     await pg.query("insert into plans(code,display_name,messages_per_month,voice_minutes_per_month,warning_percent,unlimited) values('basic','Базовый',500,60,80,false) on conflict(code) do nothing");
     await pg.query("insert into tenant_usage_limits(tenant_id,plan,messages_per_month,voice_minutes_per_month,warning_percent) values($1,'basic',500,60,80)", [tenantId]);
+    await saveRuntimeSettings(db, tenantId, { reply_engine: 'legacy', reply_model: '', reply_fallback_model: '' });
     const api = serviceApi(db), target = { tenantId }, keys = { gemini: true, anthropic: false, openai: true };
     const versions = async () => Number((await pg.query<{ n: string }>("select count(*)::text n from assistant_instructions where tenant_id=$1", [tenantId])).rows[0]!.n);
     const fallback = async () => (await readRuntimeSettings(db, tenantId)).reply_fallback_model;

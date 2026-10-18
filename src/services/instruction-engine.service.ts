@@ -5,7 +5,7 @@ import type { OwnerSettings } from './owner-settings.service.js';
 import type { DialogState } from './dialog-state.js';
 import { behavior } from './runtime-settings.service.js';
 import { activeFacts, factsMarkdown } from './business-facts.service.js';
-import { activeBusinessInstruction, activeDemoInstruction, fillPlaceholders, loadCore } from './instructions.service.js';
+import { activeInstructionFor, resolveTemplate, activeDemoInstruction, fillPlaceholders, loadCore } from './instructions.service.js';
 import { checkedNumbers, hasLabel, labelValue, missingFields, parseLabels, parseRequestValue, unbackedNumbers, unsafeClientText, type ParsedReply } from './instruction-checks.js';
 import { agreement, isDirectRequest } from './client-consent.js';
 import { CLAIMED_PASSED_PATTERN } from '../config/consent.js';
@@ -51,8 +51,10 @@ export function wrongLanguage(reply: string, language: string): boolean {
 export async function answerByInstruction(turn: InstructionTurn): Promise<InstructionOutcome | null> {
   const { db, tenantId, text, language, settings, state } = turn;
   const config = behavior(settings);
-  const instructionRaw = await activeBusinessInstruction(db, tenantId);
-  if (!instructionRaw) return null; // no active instruction: the tenant keeps the legacy path
+  // Z6: its own instruction, else the template of its deal type (setting or sector), else 'general'.
+  const active = await activeInstructionFor(db, tenantId, resolveTemplate(config.instruction_template, turn.business?.business_sector));
+  if (!active) return null; // nothing published: the tenant keeps the legacy path
+  const instructionRaw = active.text;
   const values = { business_name: turn.business?.business_name, owner_name: turn.business?.owner_name };
   const core = fillPlaceholders(await loadCore(db), values), instruction = fillPlaceholders(instructionRaw, values);
   if (!core.text || !instruction.text) {

@@ -78,6 +78,7 @@ const MIGRATIONS_IN_APPLICATION_ORDER = [
   '20260927120000_061_business_knowledge_profile.sql',
   '20260928090000_062_client_preferred_name.sql',
   '20260930090000_063_instructions_owner_interview.sql',
+  '20261018090000_064_instruction_templates.sql',
 ];
 
 /** PGlite has no real `auth` schema/GoTrue; stub just enough for RLS-authoring

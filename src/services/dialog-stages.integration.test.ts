@@ -406,7 +406,7 @@ test('task Z over WhatsApp: [[DATA_REQUEST: delete]] notifies the owner; the cli
   const f = await fixture();
   try {
     const { uploadInstruction, activateInstruction } = await import('./instructions.service.js');
-    await saveRuntimeSettings(f.db, f.tenantId, { reply_engine: 'instruction' });
+    await saveRuntimeSettings(f.db, f.tenantId, { reply_engine: 'instruction', reply_model: '', reply_fallback_model: '' });
     await uploadInstruction(f.db, { kind: 'business', tenantId: f.tenantId }, 'Инструкция {business_name}');
     await activateInstruction(f.db, { kind: 'business', tenantId: f.tenantId }, 1);
     const ai = f.ai as unknown as { generateReply: (i: { systemPrompt: string }) => Promise<{ text: string }> };

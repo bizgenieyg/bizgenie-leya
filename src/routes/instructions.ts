@@ -11,7 +11,7 @@ import { importOwnerQuestions } from '../services/owner-interview.service.js';
 export const instructionsRouter = Router();
 const target = (query: Record<string, unknown>) => {
   if (query.tenantId !== undefined && (typeof query.tenantId !== 'string' || !isUuid(query.tenantId))) throw new HttpError(400, 'tenantId must be a UUID');
-  return instructionTarget({ tenantId: query.tenantId, demoKey: query.demoKey });
+  return instructionTarget({ tenantId: query.tenantId, demoKey: query.demoKey, ...(query.templateKey !== undefined ? { templateKey: query.templateKey } : {}) });
 };
 const plain = express.text({ type: 'text/plain', limit: '256kb' });
 

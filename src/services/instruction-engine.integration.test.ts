@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createTestDatabase, pgliteDatabaseClient } from './test-support/pglite-harness.js';
 import { simulateCustomerMessage } from './simulator.service.js';
-import { saveRuntimeSettings } from './runtime-settings.service.js';
+import { readRuntimeSettings, saveRuntimeSettings } from './runtime-settings.service.js';
+import { BEHAVIOR_DEFAULTS } from '../config/behavior.js';
 import { activateInstruction, uploadInstruction } from './instructions.service.js';
 import { AIProviderError } from '../providers/ai/ai-provider.interface.js';
 
@@ -20,7 +21,8 @@ async function fixture(options: { owner?: string; engine?: 'instruction' | 'lega
   await pg.query("insert into tenant_usage_limits(tenant_id,plan,messages_per_month,voice_minutes_per_month,warning_percent,messages_overridden,voice_overridden,warning_overridden) values($1,'basic',500,60,80,false,false,false)", [tenantId]);
   await pg.query("insert into assistant_profiles(tenant_id,assistant_name,allowed_languages,tone) values($1,'Лея',$2::text[],'friendly_professional')", [tenantId, options.languages ?? ['ru']]);
   await pg.query("insert into business_facts(tenant_id,topic,text,status,created_by) values($1,'services_prices','Базовый ассистент — от 249 ₪ в месяц, установка от 500 ₪.','active','migration')", [tenantId]);
-  await saveRuntimeSettings(db, tenantId, { reply_engine: options.engine ?? 'instruction' });
+  // The model under test is the injected one (reply_model '' → the caller's model), no fallback.
+  await saveRuntimeSettings(db, tenantId, { reply_engine: options.engine ?? 'instruction', reply_model: '', reply_fallback_model: '' });
   if (options.instruction !== null) { await uploadInstruction(db, { kind: 'business', tenantId }, options.instruction ?? INSTRUCTION); await activateInstruction(db, { kind: 'business', tenantId }, 1); }
   const prompts: Array<{ system: string; user: string; history: number }> = [];
   let replies: string[] = [];
@@ -309,22 +311,85 @@ test('Z3: numbers of the answer that starts a demo are checked against the demo 
   } finally { await f.pg.close(); }
 });
 
-test('Z4: reply_fallback_model — an outage of the reply model goes to the fallback once (logged); setting validated', async () => {
+test('Z4/Z6: reply_fallback_model without its provider key is not used (no error); setting validated', async () => {
   const f = await fixture();
   const warnings: unknown[][] = [], warn = console.warn, error = console.error;
   console.warn = (...a: unknown[]) => { warnings.push(a); }; console.error = () => {};
   try {
     await saveRuntimeSettings(f.db, f.tenantId, { reply_fallback_model: 'claude-haiku-5-5' });
     f.reply('THROW:timeout');
-    // No ANTHROPIC_API_KEY in tests: the fallback is the missing-key provider, so the client gets the failure template.
+    // No ANTHROPIC_API_KEY in tests: the fallback is skipped, the client gets the failure template of the primary.
     const r = await f.say('сколько стоит?');
     assert.equal(r.reply, 'Уточню этот вопрос — Юрий ответит, и я вернусь к вам.');
-    assert.equal(r.modelFailure, 'missing_api_key', 'the failure reported is the fallback’s');
-    assert.deepEqual(warnings.find(w => w[0] === 'model_fallback')?.[1], { model: 'default', fallback: 'claude-haiku-5-5', reason: 'timeout' });
-    f.reply('THROW:incomplete_max_tokens');
-    warnings.length = 0;
-    await f.say('а ещё?');
-    assert.equal(warnings.filter(w => w[0] === 'model_fallback').length, 0, 'not an outage — no fallback');
+    assert.equal(r.modelFailure, 'timeout');
+    assert.equal(warnings.filter(w => w[0] === 'model_fallback').length, 0, 'no key — no fallback attempt');
     await assert.rejects(saveRuntimeSettings(f.db, f.tenantId, { reply_fallback_model: 'claude haiku; drop' }), /Invalid fallback model/);
   } finally { console.warn = warn; console.error = error; await f.pg.close(); }
+});
+
+test('Z6: a tenant without its own instruction answers by the template of its sector; unknown → general; own wins; setting overrides', async () => {
+  const f = await fixture({ instruction: null });
+  try {
+    const publish = async (templateKey: 'service_booking' | 'general' | 'order', text: string) => {
+      await uploadInstruction(f.db, { kind: 'template', templateKey }, text);
+      const v = (await f.pg.query<{ version: number }>("select max(version) as version from assistant_instructions where template_key=$1", [templateKey])).rows[0]!.version;
+      await activateInstruction(f.db, { kind: 'template', templateKey }, Number(v));
+    };
+    const sector = (value: string) => f.pg.query('update tenants set business_sector=$2 where id=$1', [f.tenantId, value]);
+    const instructionOf = () => /=== ИНСТРУКЦИЯ БИЗНЕСА ===\n(.*)/.exec(f.prompts.at(-1)!.system)?.[1];
+
+    // Nothing published: the legacy path answers (no model call through the instruction prompt).
+    f.reply('Хорошо.');
+    await f.say('привет');
+    assert.equal(f.prompts.filter(p => p.system.includes('=== ИНСТРУКЦИЯ БИЗНЕСА ===')).length, 0);
+    assert.equal((await readRuntimeSettings(f.db, f.tenantId)).instruction_answers, false);
+
+    await publish('service_booking', 'ШАБЛОН запись для {business_name}, владелец {owner_name}.');
+    await publish('general', 'ШАБЛОН общий для {business_name}.');
+    await sector('мастер маникюра');
+    f.reply('Здравствуйте!');
+    await f.say('сколько стоит маникюр?');
+    assert.equal(instructionOf(), 'ШАБЛОН запись для BizGenie, владелец Юрий.');
+    const settings = await readRuntimeSettings(f.db, f.tenantId);
+    assert.equal(settings.instruction_answers, true);
+    assert.deepEqual(settings.simulator_suggestions.ru, ['Сколько стоит и сколько длится процедура?', 'Можно записаться на эту неделю?', 'Где вы принимаете?']);
+
+    await sector('צלמת חתונות');     // project — not published → general
+    await f.say('שלום');
+    assert.equal(instructionOf(), 'ШАБЛОН общий для BizGenie.');
+    await sector('что-то совсем другое'); // no match → general
+    await f.say('привет');
+    assert.equal(instructionOf(), 'ШАБЛОН общий для BizGenie.');
+
+    await saveRuntimeSettings(f.db, f.tenantId, { instruction_template: 'service_booking' }); // operator setting wins over the sector
+    await f.say('привет');
+    assert.equal(instructionOf(), 'ШАБЛОН запись для BizGenie, владелец Юрий.');
+
+    await uploadInstruction(f.db, { kind: 'business', tenantId: f.tenantId }, 'СВОЯ инструкция {business_name}.');
+    await activateInstruction(f.db, { kind: 'business', tenantId: f.tenantId }, 1);
+    await f.say('привет');
+    assert.equal(instructionOf(), 'СВОЯ инструкция BizGenie.', 'its own instruction wins over any template');
+
+    await assert.rejects(saveRuntimeSettings(f.db, f.tenantId, { instruction_template: 'beauty' }), /Invalid instruction template/);
+    await saveRuntimeSettings(f.db, f.tenantId, { instruction_template: '' });
+  } finally { await f.pg.close(); }
+});
+
+test('Z6: sector → template table (cabinet suggestions ru/he/en and keywords), defaults of the one scheme', async () => {
+  const { templateForSector } = await import('../config/instruction-templates.js');
+  for (const [sector, key] of [
+    ['косметолог', 'service_booking'], ['Парикмахер', 'service_booking'], ['мастер маникюра', 'service_booking'], ['репетитор', 'service_booking'],
+    ['ресторан', 'order'], ['кафе', 'order'], ['магазин', 'order'], ['риелтор', 'project'],
+    ['קוסמטיקאית', 'service_booking'], ['מעצב שיער', 'service_booking'], ['טכנאית ציפורניים', 'service_booking'], ['מסעדה', 'order'], ['בית קפה', 'order'], ['חנות', 'order'], ['מתווך נדל״ן', 'project'], ['מורה פרטי', 'service_booking'],
+    ['cosmetologist', 'service_booking'], ['Nail technician', 'service_booking'], ['café', 'order'], ['real estate agent', 'project'], ['tutor', 'service_booking'],
+    ['IT outsourcing', 'b2b'], ['автоматизация бизнеса', 'b2b'], ['домашний повар', 'order'], ['что-то другое', 'general'], ['', 'general'],
+  ] as const) assert.equal(templateForSector(sector), key, sector);
+  const f = await fixture({ instruction: null });
+  try {
+    assert.deepEqual([BEHAVIOR_DEFAULTS.reply_engine, BEHAVIOR_DEFAULTS.reply_model, BEHAVIOR_DEFAULTS.reply_fallback_model, BEHAVIOR_DEFAULTS.instruction_template], ['instruction', 'gemini-3.8-flash', 'gpt-6.1-sol', '']);
+    const s = await readRuntimeSettings(f.db, f.tenantId);
+    assert.ok(s.request_required_fields.booking && s.request_required_fields.order && s.request_required_fields.estimate && s.request_required_fields.request);
+    assert.deepEqual([s.request_required_fields.booking, s.request_required_fields.reschedule, s.request_required_fields.cancel, s.request_required_fields.order, s.request_required_fields.estimate, s.request_required_fields.request],
+      [['service', 'when'], ['when'], [], ['items', 'date'], ['task'], ['what']]);
+  } finally { await f.pg.close(); }
 });
