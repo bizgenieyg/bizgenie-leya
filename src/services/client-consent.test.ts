@@ -95,3 +95,9 @@ test('task X: assistant actions are not owner offers; "получит цену" 
   assert.equal(CLAIMED_PASSED_PATTERN.test('Юрий получит вашу заявку и перезвонит.'), true);
   assert.equal(CLAIMED_PASSED_PATTERN.test('Отлично, Юрий свяжется с вами.'), true);
 });
+
+test('Z6 (M6): cancelling or moving an appointment is a direct request of the client, in ru/he/en', () => {
+  for (const text of ['мне нужно отменить запись на завтра', 'хочу перенести запись на четверг', 'можно передвинуть время?', 'אני רוצה לבטל את התור', 'אפשר לדחות את התור?', 'I need to cancel my appointment', 'can we reschedule?'])
+    assert.equal(isDirectRequest(text), true, text);
+  assert.equal(isDirectRequest('не надо ничего отменять'), false, 'negated');
+});

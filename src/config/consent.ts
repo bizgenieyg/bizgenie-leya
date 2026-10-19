@@ -12,9 +12,9 @@ export const NAME_STOP_WORDS: readonly string[] = [
  * negation earlier in the same clause ("не надо звонить") cancels the match.
  */
 export const REQUEST_ACTION_PATTERNS: readonly RegExp[] = [
-  /(?<![\p{L}])(?:запиш|записат|позвон|звонит|звоните|перезвон|свяж|связат|встреч|демо|приед|приезж|приех|закаж|заказат|созвон|подключит)/iu,
-  /(?<![\p{L}])(?:תקבע|תתקשר|לקבוע|פגישה|דמו|להזמין|רוצה להירשם|תחזרו|תחזור אלי)/iu,
-  /\b(?:book|call me|schedule|meeting|demo|order|sign up|sign me up)\b/iu,
+  /(?<![\p{L}])(?:запиш|записат|позвон|звонит|звоните|перезвон|свяж|связат|встреч|демо|приед|приезж|приех|закаж|заказат|созвон|подключит|отмен|перенес|перенест|передвин)/iu,
+  /(?<![\p{L}])(?:תקבע|תתקשר|לקבוע|פגישה|דמו|להזמין|רוצה להירשם|תחזרו|תחזור אלי|לבטל|ביטול|לדחות|להזיז|לשנות את התור)/iu,
+  /\b(?:book|call me|schedule|reschedule|cancel|meeting|demo|order|sign up|sign me up)\b/iu,
 ];
 export const NEGATION_PATTERN = /(?<![\p{L}])(?:не|нет|ни|не надо|не нужно|не хочу|не стоит|לא|אין|no|not|don't|dont|do not|never)(?![\p{L}])/iu;
 
