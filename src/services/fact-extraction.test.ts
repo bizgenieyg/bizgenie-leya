@@ -140,3 +140,16 @@ test('"duplicate" skip needs every detail in the named fact: the examples block 
   assert.equal(r.coverage!.skipped.length, 0);
   assert.equal(r.rejectedSkips!.length, 1);
 });
+
+test('a payment failure (402) in the rewrite stops the extraction: no further calls, no quote fallback', async () => {
+  const { AIProviderError } = await import('../providers/ai/ai-provider.interface.js');
+  let after402 = 0, failed = false;
+  const ai = { async generateReply(input: { systemPrompt: string; userMessage: string }) {
+    if (failed) after402++;
+    if (input.systemPrompt.startsWith('Эти факты добавляют')) { failed = true; throw new AIProviderError('x', undefined, { reason: 'http_402' }); }
+    if (input.systemPrompt.startsWith('Эти фрагменты')) return { text: '{"facts":[],"skip":[]}' };
+    return { text: JSON.stringify({ facts: [{ topic: 'booking', text: 'Бесплатный пробный период на две недели.', quote: 'Есть ли пробный период? Да, две недели.', added_claims: [] }] }) };
+  } };
+  await assert.rejects(extractFacts(ai as never, 'Есть ли пробный период? Да, две недели.', [], 2500), (e: Error) => e instanceof AIProviderError && e.failure.reason === 'http_402');
+  assert.equal(after402, 0);
+});

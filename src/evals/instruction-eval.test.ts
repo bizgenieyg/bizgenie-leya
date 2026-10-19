@@ -59,3 +59,22 @@ test('eval cost rules: a missing saved facts fixture is an error, not a paid ext
   const brokenJudge = { async generateReply(): Promise<never> { throw new AIProviderError('x', undefined, { reason: 'timeout' }); } };
   assert.deepEqual(await judge(brokenJudge, { id: 's', turns: [], checks: ['a'] }, []), [{ check: 'a [judge_timeout]', pass: false }], 'other judge failures stay marked items');
 });
+
+test('402 in the fact rewrite step (real extractFacts) stops eval with PaymentStop, no smaller-chunk retries', async () => {
+  const { loadEvalFacts, PaymentStop } = await import('./instruction-eval.js');
+  const { extractFacts } = await import('../services/fact-extraction.service.js');
+  const { AIProviderError } = await import('../providers/ai/ai-provider.interface.js');
+  const { mkdtempSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const dir = mkdtempSync(`${tmpdir()}/eval-facts-`);
+  writeFileSync(`${dir}/src.md`, 'Есть ли пробный период? Да, две недели.');
+  let calls = 0;
+  const ai = { async generateReply(input: { systemPrompt: string }) {
+    calls++;
+    if (input.systemPrompt.startsWith('Эти факты добавляют')) throw new AIProviderError('x', undefined, { reason: 'http_402' });
+    return { text: JSON.stringify({ facts: [{ topic: 'booking', text: 'Бесплатный пробный период на две недели.', quote: 'Есть ли пробный период? Да, две недели.', added_claims: [] }] }) };
+  } };
+  await assert.rejects(loadEvalFacts('ira', { kind: 'extract', file: 'src.md', saved: 'saved.md' },
+    { dir, ai: ai as never, extractNow: true, extract: (m, s, chunk) => extractFacts(m, s, [], chunk), modelLabel: 'm' }), (e: Error) => e instanceof PaymentStop && /facts extraction \(ira\)/.test(e.message));
+  assert.equal(calls, 2, 'extraction + rewrite, nothing after the 402');
+});

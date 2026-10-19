@@ -1,4 +1,4 @@
-import type { AIProvider, AIUsage } from '../providers/ai/ai-provider.interface.js';
+import { failureReason, type AIProvider, type AIUsage } from '../providers/ai/ai-provider.interface.js';
 import { isKnowledgeTopic, KNOWLEDGE_TOPICS, TOPIC_PROMPT_NAMES, type KnowledgeTopic } from '../config/knowledge-topics.js';
 import { CLAIM_STEMS, DETAIL_MIN_LENGTH, DETAIL_STOP_WORDS, DUPLICATE_DETAIL_SHARE } from '../config/fact-claims.js';
 
@@ -151,7 +151,11 @@ async function withoutAddedClaims(ai: AIProvider, facts: Candidate[], out: Extra
       const result = await ai.generateReply({ systemPrompt: REWRITE_PROMPT, userMessage: JSON.stringify({ facts: flagged.map((x, index) => ({ index, text: x.f.text, quote: x.f.quote, added: x.f.added })) }) });
       out.calls!.push(callInfo(result.usage, 0, true));
       rewrites = parseJson(result.text);
-    } catch { rewrites = {}; }
+    } catch (error) {
+      // A payment failure stops the whole extraction (eval stops on it); other failures fall back to the quote.
+      if (failureReason(error) === 'http_402') throw error;
+      rewrites = {};
+    }
     const answers = new Map<number, string>();
     for (const item of Array.isArray(rewrites.facts) ? rewrites.facts : []) { const r = record(item); if (Number.isInteger(r.index) && typeof r.text === 'string') answers.set(Number(r.index), cleanText(r.text, 500)); }
     flagged.forEach((x, index) => {
