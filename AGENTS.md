@@ -34,3 +34,11 @@ Do not implement Booking, Payments, Email, History Scanner (bulk scan of chats t
 ## Quality gates
 
 Before finishing: npm install, npm run build, npm run typecheck if configured, migrations exist, RLS enabled, .env.example exists, README explains setup and tests, invalid webhook returns 401, exact FAQ returns answer, unknown question escalates.
+
+## Paid eval
+
+`npm test` and `npm run test:integration` are free (model keys are blanked) — run them always.
+`npm run eval:instructions` makes real, paid model calls. Follow «Платный eval» in the project `CLAUDE.md`
+(parent folder): only when what the model sees changes (core, instructions, templates, demo texts, fact fixtures,
+model, prompt/label code); `--runs=1` and only affected tenants by default; saved fact fixtures, never a silent
+extraction; no reruns for changes without model impact; stop on a payment failure (402).
