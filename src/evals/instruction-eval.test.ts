@@ -28,3 +28,12 @@ test('a failed model call fails only its scenario, with the operational reason i
   assert.match(report, /\| x \| 0\/1 \| 50\.0 % \| — \| model call \(incomplete_max_tokens\) \|/);
   assert.match(report, /ошибка модели: incomplete_max_tokens/);
 });
+
+test('eval cost rules: judge calibration agreement is counted item by item', async () => {
+  const { judgeAgreement } = await import('./instruction-eval.js');
+  const run = (id: string, main: boolean[], cand?: boolean[]) => ({ id, run: 1, turns: [], code: [], judge: main.map((pass, i) => ({ check: `c${i}`, pass })), ...(cand ? { calibration: cand.map((pass, i) => ({ check: `c${i}`, pass })) } : {}) });
+  assert.equal(judgeAgreement([run('a', [true])]), null);
+  const a = judgeAgreement([run('a', [true, false, true], [true, true, true]), run('b', [false], [false])])!;
+  assert.deepEqual([a.agree, a.total], [3, 4]);
+  assert.deepEqual(a.disagreements, [{ id: 'a', run: 1, check: 'c1', main: false, candidate: true }]);
+});

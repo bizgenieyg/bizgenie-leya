@@ -29,7 +29,9 @@ export function tenantScenarios(file: ScenarioFile, tenant: string, ownerName: s
 }
 
 export interface TurnLog { client: string; reply: string | null; labels: string[]; request?: { type: string; fields: Record<string, string> }; latencyMs: number; error?: string }
-export interface ScenarioRun { id: string; run: number; turns: TurnLog[]; code: Array<{ check: string; pass: boolean }>; judge: Array<{ check: string; pass: boolean }> }
+export interface ScenarioRun { id: string; run: number; turns: TurnLog[]; code: Array<{ check: string; pass: boolean }>; judge: Array<{ check: string; pass: boolean }>;
+  /** Same dialogue judged by a second (candidate) judge — only for calibration (CLAUDE.md, «Платный eval», п. 4). */
+  calibration?: Array<{ check: string; pass: boolean }> }
 
 /** Code checks: expected / forbidden labels (last turn, or turnN) and request fields. */
 export function codeChecks(scenario: InstructionScenario, turns: TurnLog[]): Array<{ check: string; pass: boolean }> {
@@ -96,7 +98,7 @@ export function measured(ai: AIProvider, stats: ModelStats, model: string, now: 
   } };
 }
 
-export async function runScenario(db: DatabaseClient, tenantId: string, scenario: InstructionScenario, run: number, ai: AIProvider, judgeAI: AIProvider): Promise<ScenarioRun> {
+export async function runScenario(db: DatabaseClient, tenantId: string, scenario: InstructionScenario, run: number, ai: AIProvider, judgeAI: AIProvider, calibrationAI: AIProvider | null = null): Promise<ScenarioRun> {
   const session = crypto.randomUUID();
   const turns: TurnLog[] = [];
   try {
@@ -115,7 +117,18 @@ export async function runScenario(db: DatabaseClient, tenantId: string, scenario
     await db.from('simulator_messages').delete().eq('tenant_id', tenantId).eq('session_id', session);
     await db.from('simulator_sessions').delete().eq('tenant_id', tenantId).eq('id', session);
   }
-  return { id: scenario.id, run, turns, code: codeChecks(scenario, turns), judge: await judge(judgeAI, scenario, turns) };
+  const verdict = await judge(judgeAI, scenario, turns);
+  return { id: scenario.id, run, turns, code: codeChecks(scenario, turns), judge: verdict, ...(calibrationAI ? { calibration: await judge(calibrationAI, scenario, turns) } : {}) };
+}
+
+/** Agreement of the candidate judge with the main one, item by item (null when no calibration ran). */
+export function judgeAgreement(runs: ScenarioRun[]): { agree: number; total: number; disagreements: Array<{ id: string; run: number; check: string; main: boolean; candidate: boolean }> } | null {
+  const calibrated = runs.filter(r => r.calibration);
+  if (!calibrated.length) return null;
+  const disagreements: Array<{ id: string; run: number; check: string; main: boolean; candidate: boolean }> = [];
+  let total = 0;
+  for (const r of calibrated) r.judge.forEach((c, i) => { const other = r.calibration![i]; if (!other) return; total++; if (other.pass !== c.pass) disagreements.push({ id: r.id, run: r.run, check: c.check, main: c.pass, candidate: other.pass }); });
+  return { agree: total - disagreements.length, total, disagreements };
 }
 
 /** 95th percentile (nearest rank). */
@@ -134,6 +147,12 @@ export function formatInstructionReport(title: string, models: Array<{ model: st
     const failures = turns.filter(t => t.error).map(t => t.error!);
     const reasons = [...new Set(failures)].map(r => `${r} ×${failures.filter(f => f === r).length}`).join(', ');
     lines.push(`| ${m.model} | ${passed}/${m.runs.length} (${pct(passed, m.runs.length)}) | ${pct(code.filter(c => c.pass).length, code.length)} | ${pct(judged.filter(c => c.pass).length, judged.length)} | ${mean} / ${percentile95(latencies)} мс | ${m.stats.input} / ${m.stats.output} / ${m.stats.thinking} | ${pct(m.stats.cacheRead, m.stats.input)} | ${costCell(m.stats, m.stats.cost)} | ${turns.length ? costCell(m.stats, m.stats.cost / turns.length * 1000) : '—'} | ${failures.length ? `${failures.length}: ${reasons}` : '0'} |`);
+  }
+  for (const m of models) {
+    const a = judgeAgreement(m.runs);
+    if (!a) continue;
+    lines.push('', `**Калибровка судьи (${m.model}):** второй судья согласен с основным в ${a.agree} из ${a.total} пунктов (${pct(a.agree, a.total)}).`);
+    for (const d of a.disagreements) lines.push(`- ${d.id} · прогон ${d.run}: «${d.check}» — основной ${d.main ? 'да' : 'нет'}, второй ${d.candidate ? 'да' : 'нет'}`);
   }
   for (const m of models) {
     lines.push('', `## ${m.model} — по сценариям`, '', '| Сценарий | Прогонов PASS | Код | Судья | Провалы |', '|---|---|---|---|---|');

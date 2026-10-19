@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { emptyStats, formatInstructionReport, loadInstructionScenarios, measured, runScenario, tenantScenarios, type ModelStats, type ScenarioRun } from '../evals/instruction-eval.js';
 import { isKnowledgeTopic } from '../config/knowledge-topics.js';
@@ -12,9 +12,10 @@ const instructionLabel = (spec: { instruction?: string; template?: string }) => 
 const arg = (name: string) => process.argv.find(a => a.startsWith(`--${name}=`))?.slice(name.length + 3);
 const DIR = 'evals/instructions';
 /** Tenant fixtures on PGlite (no production data): who the owner is, the instruction, where the facts come from. */
-export const TENANTS: Record<string, { owner: string; business: string; sector: string; facts: { kind: 'markdown' | 'extract'; file: string } }> = {
+export const TENANTS: Record<string, { owner: string; business: string; sector: string; facts: { kind: 'markdown' | 'extract'; file: string; saved?: string } }> = {
   bizgenie: { owner: 'Юрий', business: 'BizGenie', sector: 'автоматизация бизнеса', facts: { kind: 'markdown', file: 'bizgenie-facts.md' } },
-  ira: { owner: 'Ирена', business: 'Ирена Прасолов', sector: 'эстетическая косметология', facts: { kind: 'extract', file: 'ira-facts.md' } },
+  // Facts extracted once from ira-facts.md and kept (--extract-facts=ira rewrites them when the source changes).
+  ira: { owner: 'Ирена', business: 'Ирена Прасолов', sector: 'эстетическая косметология', facts: { kind: 'extract', file: 'ira-facts.md', saved: 'ira-facts-extracted.md' } },
   // Z6: no own instruction — the template is resolved from the sector, like a newly registered business.
   manicure: { owner: 'Ольга', business: 'Ноготки', sector: 'мастер маникюра', facts: { kind: 'markdown', file: 'manicure-facts.md' } },
 };
@@ -30,7 +31,7 @@ export function parseFactsMarkdown(markdown: string): Array<{ topic: string; tex
 }
 
 /**
- * npm run eval:instructions -- --tenant=bizgenie|ira|all --model=<id>[,<id>] [--runs=3] [--facts-model=<id>] [--failures-only] [--judge-model=<id>] [--out=docs/evals/…md]
+ * npm run eval:instructions -- --tenant=bizgenie|ira|all --model=<id>[,<id>] [--runs=3] [--facts-model=<id>] [--failures-only] [--judge-model=<id>] [--calibrate-judge=<id>] [--extract-facts=<tenant,…>] [--out=docs/evals/…md]
  * Model ids: gemini-… / claude-… / gpt-… (provider by prefix; ANTHROPIC_API_KEY / OPENAI_API_KEY for the latter two).
  * npm run eval:instructions -- --check   (no model: validates the scenarios and fixtures)
  */
@@ -50,7 +51,8 @@ async function main() {
   const { createModelProvider, createTaskAIProvider, modelKeyConfigured } = await import('../providers/ai/index.js');
   if (!modelKeyConfigured()) throw new Error('GEMINI_API_KEY is not configured: eval:instructions needs the real model');
   const models = (arg('model') ?? process.env.GEMINI_MODEL ?? 'gemini-3.5-flash-lite').split(',').map(m => m.trim()).filter(Boolean);
-  const runs = Math.max(1, Number(arg('runs') ?? 3));
+  // CLAUDE.md «Платный eval»: one run by default; --runs=3 before a rollout or on the owner's request.
+  const runs = Math.max(1, Number(arg('runs') ?? 1));
   const { createTestDatabase, pgliteDatabaseClient } = await import('../services/test-support/pglite-harness.js');
   const { saveRuntimeSettings } = await import('../services/runtime-settings.service.js');
   const { uploadInstruction, activateInstruction } = await import('../services/instructions.service.js');
@@ -58,7 +60,9 @@ async function main() {
   // Z4: the judge is pinned (--judge-model, default EVAL_JUDGE_MODEL), not whatever GEMINI_TASK_MODEL says.
   const judgeModel = arg('judge-model') ?? EVAL_JUDGE_MODEL;
   const judgeAI = createTaskAIProvider(undefined, judgeModel);
-  console.log(`judge: ${judgeModel}`);
+  const calibrationModel = arg('calibrate-judge');
+  const calibrationAI = calibrationModel ? createTaskAIProvider(undefined, calibrationModel) : null;
+  console.log(`judge: ${judgeModel}${calibrationModel ? `, calibrating ${calibrationModel}` : ''}`);
   const results: Array<{ model: string; runs: ScenarioRun[]; stats: ModelStats }> = [];
   // Facts do not depend on the reply model: extracted once per tenant, before the models. A failed call is
   // retried with smaller chunks (a long chunk can run the task model out of output tokens).
@@ -68,6 +72,12 @@ async function main() {
   for (const t of tenants) {
     const spec = TENANTS[t]!, source = readFileSync(`${DIR}/${spec.facts.file}`, 'utf8');
     if (spec.facts.kind === 'markdown') { factsByTenant.set(t, parseFactsMarkdown(source)); continue; }
+    // Saved extraction unless --extract-facts names this tenant (a paid call per chunk, so only when the source changed).
+    const extractNow = (arg('extract-facts') ?? '').split(',').includes(t);
+    if (spec.facts.saved && !extractNow && existsSync(`${DIR}/${spec.facts.saved}`)) {
+      const saved = parseFactsMarkdown(readFileSync(`${DIR}/${spec.facts.saved}`, 'utf8'));
+      factsByTenant.set(t, saved); console.log(`${t}: ${saved.length} saved facts (${spec.facts.saved})`); continue;
+    }
     let facts: Array<{ topic: string; text: string }> | null = null, reason = '';
     for (const chunk of [2500, 1200, 600]) {
       try { facts = (await extractFacts(factsAI, source, [], chunk, spec.facts.file)).facts; break; }
@@ -75,6 +85,11 @@ async function main() {
     }
     if (!facts) throw new Error(`eval:instructions: facts extraction for ${t} failed (${reason}); model ${arg('facts-model') ?? (process.env.GEMINI_TASK_MODEL || 'default')}`);
     factsByTenant.set(t, facts);
+    if (spec.facts.saved) {
+      const order = [...new Set(facts.map(f => f.topic))];
+      writeFileSync(`${DIR}/${spec.facts.saved}`, [`# Факты, извлечённые из ${spec.facts.file} (eval:instructions --extract-facts=${t}, ${new Date().toISOString().slice(0, 10)}). Не править вручную.`, '',
+        ...order.flatMap(topic => [`## ${topic}`, ...facts!.filter(f => f.topic === topic).map(f => `- ${f.text.replace(/\n/g, ' ')}`), ''])].join('\n'));
+    }
     console.log(`${t}: ${facts.length} facts extracted by ${arg('facts-model') ?? (process.env.GEMINI_TASK_MODEL || 'default task model')}`);
   }
   for (const model of models) {
@@ -105,7 +120,7 @@ async function main() {
       for (const fact of facts) await pg.query("insert into business_facts(tenant_id,topic,text,status,created_by) values($1,$2,$3,'active','migration')", [tenantId, fact.topic, fact.text]);
       console.log(`${model} · ${t}: ${facts.length} facts`);
       for (let run = 1; run <= runs; run++) for (const scenario of tenantScenarios(file, t, spec.owner)) {
-        const result = await runScenario(db, tenantId, scenario, run, ai, judgeAI);
+        const result = await runScenario(db, tenantId, scenario, run, ai, judgeAI, calibrationAI);
         all.push(result);
         console.log(`${model} · ${scenario.id} · ${run}: ${result.code.every(c => c.pass) && result.judge.every(c => c.pass) ? 'PASS' : 'FAIL'}`);
       }
