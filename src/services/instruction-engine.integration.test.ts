@@ -393,3 +393,16 @@ test('Z6: sector → template table (cabinet suggestions ru/he/en and keywords),
       [['service', 'when'], ['when'], [], ['items', 'date'], ['task'], ['what']]);
   } finally { await f.pg.close(); }
 });
+
+test('eval cost rules: a 402 of the reply model stops the eval scenario (no further paid calls)', async () => {
+  const { runScenario, PaymentStop } = await import('../evals/instruction-eval.js');
+  const f = await fixture();
+  const error = console.error, warn = console.warn; console.error = () => {}; console.warn = () => {};
+  try {
+    let judged = 0;
+    const model = { async generateReply(): Promise<never> { throw new AIProviderError('Gemini reply unavailable', undefined, { reason: 'http_402' }); } };
+    const judgeAI = { async generateReply() { judged++; return { text: '{"results":[true]}' }; } };
+    await assert.rejects(runScenario(f.db, f.tenantId, { id: 'x', turns: ['привет', 'ещё'], checks: ['a'] }, 1, model, judgeAI), (e: Error) => e instanceof PaymentStop && /reply \(x\)/.test(e.message));
+    assert.equal(judged, 0, 'the judge is not called after a payment failure');
+  } finally { console.error = error; console.warn = warn; await f.pg.close(); }
+});

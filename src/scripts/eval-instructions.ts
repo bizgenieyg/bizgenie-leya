@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { emptyStats, formatInstructionReport, loadInstructionScenarios, measured, runScenario, tenantScenarios, type ModelStats, type ScenarioRun } from '../evals/instruction-eval.js';
+import { emptyStats, formatInstructionReport, loadEvalFacts, loadInstructionScenarios, measured, runScenario, tenantScenarios, type ModelStats, type ScenarioRun } from '../evals/instruction-eval.js';
 import { isKnowledgeTopic } from '../config/knowledge-topics.js';
 import { EVAL_JUDGE_MODEL } from '../config/behavior.js';
 import type { TemplateKey } from '../config/instruction-templates.js';
@@ -70,27 +70,9 @@ async function main() {
   const factsAI = arg('facts-model') ? createTaskAIProvider(undefined, arg('facts-model')) : createTaskAIProvider();
   const factsByTenant = new Map<string, Array<{ topic: string; text: string }>>();
   for (const t of tenants) {
-    const spec = TENANTS[t]!, source = readFileSync(`${DIR}/${spec.facts.file}`, 'utf8');
-    if (spec.facts.kind === 'markdown') { factsByTenant.set(t, parseFactsMarkdown(source)); continue; }
-    // Saved extraction unless --extract-facts names this tenant (a paid call per chunk, so only when the source changed).
-    const extractNow = (arg('extract-facts') ?? '').split(',').includes(t);
-    if (spec.facts.saved && !extractNow && existsSync(`${DIR}/${spec.facts.saved}`)) {
-      const saved = parseFactsMarkdown(readFileSync(`${DIR}/${spec.facts.saved}`, 'utf8'));
-      factsByTenant.set(t, saved); console.log(`${t}: ${saved.length} saved facts (${spec.facts.saved})`); continue;
-    }
-    let facts: Array<{ topic: string; text: string }> | null = null, reason = '';
-    for (const chunk of [2500, 1200, 600]) {
-      try { facts = (await extractFacts(factsAI, source, [], chunk, spec.facts.file)).facts; break; }
-      catch (error) { reason = failureReason(error); console.warn(`${t}: facts extraction failed (${reason}), chunk ${chunk}`); }
-    }
-    if (!facts) throw new Error(`eval:instructions: facts extraction for ${t} failed (${reason}); model ${arg('facts-model') ?? (process.env.GEMINI_TASK_MODEL || 'default')}`);
+    const facts = await loadEvalFacts(t, TENANTS[t]!.facts, { dir: DIR, extractNow: (arg('extract-facts') ?? '').split(',').includes(t), ai: factsAI,
+      extract: (ai, source, chunk, title) => extractFacts(ai, source, [], chunk, title), modelLabel: arg('facts-model') ?? (process.env.GEMINI_TASK_MODEL || 'default task model'), isTopic: isKnowledgeTopic });
     factsByTenant.set(t, facts);
-    if (spec.facts.saved) {
-      const order = [...new Set(facts.map(f => f.topic))];
-      writeFileSync(`${DIR}/${spec.facts.saved}`, [`# Факты, извлечённые из ${spec.facts.file} (eval:instructions --extract-facts=${t}, ${new Date().toISOString().slice(0, 10)}). Не править вручную.`, '',
-        ...order.flatMap(topic => [`## ${topic}`, ...facts!.filter(f => f.topic === topic).map(f => `- ${f.text.replace(/\n/g, ' ')}`), ''])].join('\n'));
-    }
-    console.log(`${t}: ${facts.length} facts extracted by ${arg('facts-model') ?? (process.env.GEMINI_TASK_MODEL || 'default task model')}`);
   }
   for (const model of models) {
     const stats = emptyStats();

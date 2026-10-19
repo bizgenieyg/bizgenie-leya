@@ -37,3 +37,25 @@ test('eval cost rules: judge calibration agreement is counted item by item', asy
   assert.deepEqual([a.agree, a.total], [3, 4]);
   assert.deepEqual(a.disagreements, [{ id: 'a', run: 1, check: 'c1', main: false, candidate: true }]);
 });
+
+test('eval cost rules: a missing saved facts fixture is an error, not a paid extraction; 402 stops extraction and the judge', async () => {
+  const { loadEvalFacts, judge, PaymentStop } = await import('./instruction-eval.js');
+  const { AIProviderError } = await import('../providers/ai/ai-provider.interface.js');
+  const { mkdtempSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const dir = mkdtempSync(`${tmpdir()}/eval-facts-`);
+  writeFileSync(`${dir}/src.md`, 'исходник');
+  let calls = 0;
+  const extract = async () => { calls++; throw new AIProviderError('x', undefined, { reason: 'http_402' }); };
+  const base = { dir, ai: { generateReply: async () => ({ text: '' }) }, extract, modelLabel: 'm' };
+  await assert.rejects(loadEvalFacts('ira', { kind: 'extract', file: 'src.md', saved: 'saved.md' }, { ...base, extractNow: false }), /saved\.md is missing — restore it from Git or rebuild it with --extract-facts=ira/);
+  assert.equal(calls, 0, 'no paid call without --extract-facts');
+  await assert.rejects(loadEvalFacts('ira', { kind: 'extract', file: 'src.md', saved: 'saved.md' }, { ...base, extractNow: true }), (e: Error) => e instanceof PaymentStop);
+  assert.equal(calls, 1, 'no smaller-chunk retries after 402');
+  writeFileSync(`${dir}/saved.md`, '## about\n- Факт один\n');
+  assert.deepEqual(await loadEvalFacts('ira', { kind: 'extract', file: 'src.md', saved: 'saved.md' }, { ...base, extractNow: false }), [{ topic: 'about', text: 'Факт один' }]);
+  const paymentJudge = { async generateReply(): Promise<never> { throw new AIProviderError('x', undefined, { reason: 'http_402' }); } };
+  await assert.rejects(judge(paymentJudge, { id: 's', turns: [], checks: ['a'] }, []), (e: Error) => e instanceof PaymentStop);
+  const brokenJudge = { async generateReply(): Promise<never> { throw new AIProviderError('x', undefined, { reason: 'timeout' }); } };
+  assert.deepEqual(await judge(brokenJudge, { id: 's', turns: [], checks: ['a'] }, []), [{ check: 'a [judge_timeout]', pass: false }], 'other judge failures stay marked items');
+});
