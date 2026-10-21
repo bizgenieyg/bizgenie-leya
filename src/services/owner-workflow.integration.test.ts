@@ -652,3 +652,19 @@ test('Z6 onboarding: owner number before the QR is saved without a code; after t
   assert.equal(row.owner_chat_id, '88888888@lid', 'paired'); assert.equal(row.owner_pairing_hash, null);
   await assert.rejects(submitOwnerSettings(h.db, h.tenant, { phone: '972500000009', timeZone: 'Asia/Jerusalem' }, provider, 'session', send), /отличаться/, 'the business number check runs once connected');
 });
+
+test('Z8: interview questions follow owner_language — a gap question queued in Russian is sent and shown in Hebrew', async () => {
+  const h = await pgHarness();
+  await h.pg.query("insert into whatsapp_instances(tenant_id,waha_url,session_name,status) values($1,'http://waha','session','WORKING') on conflict (tenant_id) do update set session_name='session'", [h.tenant]);
+  const { GAP_QUESTIONS } = await import('../config/instructions.js');
+  const { ownerQuestionCards, runOwnerInterview } = await import('./owner-interview.service.js');
+  const { saveRuntimeSettings } = await import('./runtime-settings.service.js');
+  await h.pg.query("insert into owner_questions(tenant_id,question,priority,source,topic) values($1,$2,'launch','gap','booking')", [h.tenant, GAP_QUESTIONS.booking!.ru]);
+  await saveRuntimeSettings(h.db, h.tenant, { owner_language: 'he' });
+  invalidateOwnerSettings(h.db, h.tenant);
+  await runOwnerInterview(h.db, h.tenant, h.provider, new Date('2026-09-30T09:00:00Z')); await settleAllOutboundQueues();
+  assert.equal(h.sent.length, 1);
+  assert.ok(h.sent[0]!.text.includes(GAP_QUESTIONS.booking!.he), 'the question in Hebrew');
+  assert.doesNotMatch(h.sent[0]!.text, /[Ѐ-ӿ]/, 'no Russian left in the message');
+  assert.equal((await ownerQuestionCards(h.db, h.tenant))[0]!.question, GAP_QUESTIONS.booking!.he);
+});

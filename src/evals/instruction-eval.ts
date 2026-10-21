@@ -21,12 +21,12 @@ export function loadInstructionScenarios(source: string): ScenarioFile {
 }
 const fill = (text: string, vars: Record<string, string>) => text.replace(/\{([a-z_0-9]+)\}/g, (all, key: string) => vars[key] ?? all);
 /** The tenant's traps with its variables and owner name filled, then its own scenarios. */
-export function tenantScenarios(file: ScenarioFile, tenant: string, ownerName: string): InstructionScenario[] {
+export function tenantScenarios(file: ScenarioFile, tenant: string, ownerName: string, assistantName = 'Лея'): InstructionScenario[] {
   const spec = file.tenants[tenant];
   if (!spec) throw new Error(`eval:instructions: unknown tenant ${tenant}`);
-  const vars = { ...spec.trap_vars, owner_name: ownerName };
-  const traps = file.traps.map(t => ({ ...t, id: `${tenant}-${t.id}`, turns: t.turns.map(x => fill(x, vars)), checks: t.checks.map(x => fill(x, vars)) }));
-  return [...traps, ...spec.scenarios];
+  const vars = { ...spec.trap_vars, owner_name: ownerName, assistant_name: assistantName };
+  const filled = (t: InstructionScenario) => ({ ...t, turns: t.turns.map(x => fill(x, vars)), checks: t.checks.map(x => fill(x, vars)) });
+  return [...file.traps.map(t => ({ ...filled(t), id: `${tenant}-${t.id}` })), ...spec.scenarios.map(filled)];
 }
 
 export interface TurnLog { client: string; reply: string | null; labels: string[]; request?: { type: string; fields: Record<string, string> }; latencyMs: number; error?: string }

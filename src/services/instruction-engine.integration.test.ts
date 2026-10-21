@@ -379,9 +379,9 @@ test('Z6: sector → template table (cabinet suggestions ru/he/en and keywords),
   const { templateForSector } = await import('../config/instruction-templates.js');
   for (const [sector, key] of [
     ['косметолог', 'service_booking'], ['Парикмахер', 'service_booking'], ['мастер маникюра', 'service_booking'], ['репетитор', 'service_booking'],
-    ['ресторан', 'order'], ['кафе', 'order'], ['магазин', 'order'], ['риелтор', 'project'],
-    ['קוסמטיקאית', 'service_booking'], ['מעצב שיער', 'service_booking'], ['טכנאית ציפורניים', 'service_booking'], ['מסעדה', 'order'], ['בית קפה', 'order'], ['חנות', 'order'], ['מתווך נדל״ן', 'project'], ['מורה פרטי', 'service_booking'],
-    ['cosmetologist', 'service_booking'], ['Nail technician', 'service_booking'], ['café', 'order'], ['real estate agent', 'project'], ['tutor', 'service_booking'],
+    ['ресторан', 'order'], ['кафе', 'order'], ['магазин', 'order'], ['риелтор', 'general'],
+    ['קוסמטיקאית', 'service_booking'], ['מעצב שיער', 'service_booking'], ['טכנאית ציפורניים', 'service_booking'], ['מסעדה', 'order'], ['בית קפה', 'order'], ['חנות', 'order'], ['מתווך נדל״ן', 'general'], ['מורה פרטי', 'service_booking'],
+    ['cosmetologist', 'service_booking'], ['Nail technician', 'service_booking'], ['café', 'order'], ['real estate agent', 'general'], ['tutor', 'service_booking'],
     ['IT outsourcing', 'b2b'], ['автоматизация бизнеса', 'b2b'], ['домашний повар', 'order'], ['что-то другое', 'general'], ['', 'general'],
   ] as const) assert.equal(templateForSector(sector), key, sector);
   const f = await fixture({ instruction: null });
@@ -405,4 +405,19 @@ test('eval cost rules: a 402 of the reply model stops the eval scenario (no furt
     await assert.rejects(runScenario(f.db, f.tenantId, { id: 'x', turns: ['привет', 'ещё'], checks: ['a'] }, 1, model, judgeAI), (e: Error) => e instanceof PaymentStop && /reply \(x\)/.test(e.message));
     assert.equal(judged, 0, 'the judge is not called after a payment failure');
   } finally { console.error = error; console.warn = warn; await f.pg.close(); }
+});
+
+test('Z8: the core names the assistant by assistant_profiles.assistant_name; empty name → «Лея»', async () => {
+  for (const [name, expected] of [['Мира', 'Мира'], ['', 'Лея'], ['  ', 'Лея']] as const) {
+    const f = await fixture();
+    try {
+      await f.pg.query('update assistant_profiles set assistant_name=$2 where tenant_id=$1', [f.tenantId, name]);
+      f.reply('Здравствуйте!');
+      await f.say('сколько стоит?');
+      const p = f.prompts.at(-1)!;
+      assert.match(p.system, new RegExp(`^Ты — ${expected}, ассистент бизнеса «BizGenie»`));
+      assert.match(p.system, new RegExp(`«Я ${expected}, ИИ-ассистент BizGenie»`));
+      assert.doesNotMatch(p.system, /\{assistant_name\}/);
+    } finally { await f.pg.close(); }
+  }
 });

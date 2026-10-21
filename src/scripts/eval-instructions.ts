@@ -31,17 +31,19 @@ export function parseFactsMarkdown(markdown: string): Array<{ topic: string; tex
 }
 
 /**
- * npm run eval:instructions -- --tenant=bizgenie|ira|all --model=<id>[,<id>] [--runs=3] [--facts-model=<id>] [--failures-only] [--judge-model=<id>] [--calibrate-judge=<id>] [--extract-facts=<tenant,…>] [--out=docs/evals/…md]
+ * npm run eval:instructions -- --tenant=bizgenie|ira|all --model=<id>[,<id>] [--runs=3] [--facts-model=<id>] [--failures-only] [--judge-model=<id>] [--calibrate-judge=<id>] [--extract-facts=<tenant,…>] [--assistant-name=<имя>] [--out=docs/evals/…md]
  * Model ids: gemini-… / claude-… / gpt-… (provider by prefix; ANTHROPIC_API_KEY / OPENAI_API_KEY for the latter two).
  * npm run eval:instructions -- --check   (no model: validates the scenarios and fixtures)
  */
 async function main() {
   const file = loadInstructionScenarios(readFileSync(`${DIR}/scenarios.yaml`, 'utf8'));
+  // Z8: the assistant name the owner set (empty in the cabinet → «Лея» in the core).
+  const assistantName = arg('assistant-name') ?? 'Лея';
   const tenants = (arg('tenant') ?? 'all') === 'all' ? Object.keys(TENANTS) : [arg('tenant')!];
   if (process.argv.includes('--check')) {
     for (const t of tenants) {
       const spec = TENANTS[t]; if (!spec) throw new Error(`Unknown tenant ${t}`);
-      const scenarios = tenantScenarios(file, t, spec.owner);
+      const scenarios = tenantScenarios(file, t, spec.owner, assistantName);
       const unfilled = scenarios.flatMap(s => s.turns).filter(turn => /\{[a-z_0-9]+\}/.test(turn));
       console.log(`${t}: ${scenarios.length} scenarios, ${instructionLabel(file.tenants[t]!)} ${readFileSync(instructionPath(file.tenants[t]!), 'utf8').length} chars${unfilled.length ? `, UNFILLED: ${unfilled.join(' | ')}` : ''}`);
       if (unfilled.length) process.exitCode = 1;
@@ -85,7 +87,7 @@ async function main() {
       await pg.query("insert into notification_settings(tenant_id,owner_phone,owner_chat_id,mode,time_zone,auto_replies_paused) values($1,'972500000002','972500000002@c.us','mute_all','Asia/Jerusalem',false)", [tenantId]);
       await pg.query("insert into plans(code,display_name,messages_per_month,voice_minutes_per_month,warning_percent,unlimited) values('basic','Базовый',500,60,80,true) on conflict(code) do nothing");
       await pg.query("insert into tenant_usage_limits(tenant_id,plan,messages_per_month,voice_minutes_per_month,warning_percent,messages_overridden,voice_overridden,warning_overridden) values($1,'basic',100000,60,80,true,false,false)", [tenantId]);
-      await pg.query("insert into assistant_profiles(tenant_id,assistant_name,allowed_languages,tone) values($1,'Лея',array['ru','he','en'],'friendly_professional')", [tenantId]);
+      await pg.query("insert into assistant_profiles(tenant_id,assistant_name,allowed_languages,tone) values($1,$2,array['ru','he','en'],'friendly_professional')", [tenantId, assistantName]);
       // The model under test is the measured one (reply_model '' → the injected model), no fallback.
       await saveRuntimeSettings(db, tenantId, { reply_engine: 'instruction', reply_model: '', reply_fallback_model: '' });
       const tenantSpec = file.tenants[t]!;
@@ -101,7 +103,7 @@ async function main() {
       const facts = factsByTenant.get(t)!;
       for (const fact of facts) await pg.query("insert into business_facts(tenant_id,topic,text,status,created_by) values($1,$2,$3,'active','migration')", [tenantId, fact.topic, fact.text]);
       console.log(`${model} · ${t}: ${facts.length} facts`);
-      for (let run = 1; run <= runs; run++) for (const scenario of tenantScenarios(file, t, spec.owner)) {
+      for (let run = 1; run <= runs; run++) for (const scenario of tenantScenarios(file, t, spec.owner, assistantName)) {
         const result = await runScenario(db, tenantId, scenario, run, ai, judgeAI, calibrationAI);
         all.push(result);
         console.log(`${model} · ${scenario.id} · ${run}: ${result.code.every(c => c.pass) && result.judge.every(c => c.pass) ? 'PASS' : 'FAIL'}`);

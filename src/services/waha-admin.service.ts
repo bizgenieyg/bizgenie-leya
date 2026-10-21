@@ -187,7 +187,9 @@ export class WahaAdminService {
     await this.updateInstanceStatus(tenantId, status.status);
     if (status.status !== "WORKING") return { session, ...status };
     const numberChanged = await this.checkNumberChange(tenantId, raw?.me);
-    return { session, ...status, ...(numberChanged ? { numberChanged: true } : {}) };
+    // Z8: the business number for the cabinet home card (only a phone id, never a lid).
+    const phone = /^(\d{8,15})@(c\.us|s\.whatsapp\.net)$/.exec(readSessionIdentity(raw?.me).id ?? '')?.[1];
+    return { session, ...status, ...(numberChanged ? { numberChanged: true } : {}), ...(phone ? { phone: `+${phone}` } : {}) };
   }
 
   private async readStatus(session: string): Promise<{ status: string; qrAvailable: boolean; reason?: string }> {

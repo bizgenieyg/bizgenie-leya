@@ -21,7 +21,7 @@ export function templates(settings:OwnerSettings){
 }
 export async function readRuntimeSettings(db:DatabaseClient,tenantId:string){
  const owner=await loadOwnerSettings(db,tenantId);
- const tenant=await db.from('tenants').select('business_sector').eq('id',tenantId).single();
+ const tenant=await db.from('tenants').select('business_sector,business_name,name').eq('id',tenantId).single();
  if(tenant.error)throw new Error('Tenant profile unavailable');
  const {data,error}=await db.from('tenant_usage_limits').select('messages_per_month,voice_minutes_per_month,warning_percent,plan,messages_overridden,voice_overridden,warning_overridden').eq('tenant_id',tenantId).maybeSingle();
  if(error)throw new Error('Tenant limits unavailable');
@@ -33,7 +33,7 @@ export async function readRuntimeSettings(db:DatabaseClient,tenantId:string){
  // and discovery chips do not apply — and three client questions of the tenant's deal type for the simulator.
  const template=resolveTemplate(config.instruction_template,tenant.data.business_sector);
  const instructionAnswers=config.reply_engine==='instruction'&&(await activeInstructionFor(db,tenantId,template))!==null;
- return { ...config,instruction_answers:instructionAnswers,simulator_suggestions:SIMULATOR_SUGGESTIONS[template],greeting_templates:Object.fromEntries(GREETING_TEMPLATE_KEYS.map(k=>[k,Object.fromEntries(['ru','he','en'].flatMap(l=>{const v=ownerTemplate(owner,k,l);return v?[[l,v]]:[];}))])),greeting_template_defaults:Object.fromEntries(GREETING_TEMPLATE_KEYS.map(k=>[k,TEMPLATE_DEFAULTS[k]])),client_discovery_questions:discoveryQuestions(config.client_discovery_questions,tenant.data.business_sector,config.cabinet_language??config.owner_language),business_sector:tenant.data.business_sector??null,translate_owner_answer:owner.translate_owner_answer??BEHAVIOR_DEFAULTS.translate_owner_answer,
+ return { ...config,instruction_answers:instructionAnswers,simulator_suggestions:SIMULATOR_SUGGESTIONS[template],greeting_templates:Object.fromEntries(GREETING_TEMPLATE_KEYS.map(k=>[k,Object.fromEntries(['ru','he','en'].flatMap(l=>{const v=ownerTemplate(owner,k,l);return v?[[l,v]]:[];}))])),greeting_template_defaults:Object.fromEntries(GREETING_TEMPLATE_KEYS.map(k=>[k,TEMPLATE_DEFAULTS[k]])),client_discovery_questions:discoveryQuestions(config.client_discovery_questions,tenant.data.business_sector,config.cabinet_language??config.owner_language),business_sector:tenant.data.business_sector??null,business_name:tenant.data.business_name??'',owner_name:tenant.data.name??'',translate_owner_answer:owner.translate_owner_answer??BEHAVIOR_DEFAULTS.translate_owner_answer,
  messages_per_month:data?.messages_overridden?data.messages_per_month:plan.data.messages_per_month,
  voice_minutes_per_month:data?.voice_overridden?data.voice_minutes_per_month:plan.data.voice_minutes_per_month,
  warning_percent:data?.warning_overridden?data.warning_percent:plan.data.warning_percent,plan:plan.data.code,plan_name:plan.data.display_name,unlimited:Boolean(plan.data.unlimited),
@@ -181,7 +181,7 @@ export function validateRuntimePatch(input:Record<string,unknown>) {
  return {notification,behaviorPatch};
 }
 export async function saveRuntimeSettings(db:DatabaseClient,tenantId:string,input:Record<string,unknown>){
- const {business_sector,greeting_templates,...rest}=input;
+ const {business_sector,business_name,owner_name,greeting_templates,...rest}=input;
  const runtimeInput:Record<string,unknown>={...rest};
  if(greeting_templates!==undefined){
   // Merge owner greetings into the tenant's templates; other templates stay operator-only.
@@ -192,6 +192,8 @@ export async function saveRuntimeSettings(db:DatabaseClient,tenantId:string,inpu
   runtimeInput.templates=merged;
  }
  if(business_sector!==undefined&&(business_sector!==null&&(typeof business_sector!=='string'||business_sector.trim().length>100)))throw new HttpError(400,'Invalid business sector');
+ // Z8 «Настройки → Бизнес»: business and owner names (tenants.business_name / tenants.name) — required, as at signup.
+ for(const [key,value] of [['business_name',business_name],['owner_name',owner_name]] as const)if(value!==undefined&&(typeof value!=='string'||!value.trim()||value.trim().length>100))throw new HttpError(400,`Invalid ${key}`);
  const patch=validateRuntimePatch(runtimeInput),existing=await loadOwnerSettings(db,tenantId);
  const merged={...behavior(existing),...patch.behaviorPatch};
  if(Number(merged.knowledge_chunk_overlap)>=Number(merged.knowledge_chunk_characters))throw new HttpError(400,'Knowledge chunk overlap must be smaller than chunk size');
@@ -215,6 +217,11 @@ export async function saveRuntimeSettings(db:DatabaseClient,tenantId:string,inpu
   const sector=typeof business_sector==='string'?business_sector.trim():'';
   const result=await db.from('tenants').update({business_sector:sector||null}).eq('id',tenantId);
   if(result.error)throw new Error('Business sector save failed');
+  invalidateTenantRouting(db,tenantId);
+ }
+ if(business_name!==undefined||owner_name!==undefined){
+  const result=await db.from('tenants').update({...(typeof business_name==='string'?{business_name:business_name.trim()}:{}),...(typeof owner_name==='string'?{name:owner_name.trim()}:{})}).eq('id',tenantId);
+  if(result.error)throw new Error('Business profile save failed');
   invalidateTenantRouting(db,tenantId);
  }
  if(['summary_frequency','summary_time','summary_weekday','time_zone'].some(key=>key in runtimeInput)){

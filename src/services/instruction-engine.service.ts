@@ -9,7 +9,7 @@ import { activeInstructionFor, resolveTemplate, activeDemoInstruction, fillPlace
 import { checkedNumbers, hasLabel, labelValue, missingFields, parseLabels, parseRequestValue, unbackedNumbers, unsafeClientText, type ParsedReply } from './instruction-checks.js';
 import { agreement, isDirectRequest } from './client-consent.js';
 import { CLAIMED_PASSED_PATTERN } from '../config/consent.js';
-import { DEMO_EXAMPLE_MARKERS, REQUEST_INTENT_TURNS } from '../config/instructions.js';
+import { ASSISTANT_NAME_DEFAULT, DEMO_EXAMPLE_MARKERS, REQUEST_INTENT_TURNS } from '../config/instructions.js';
 import { renderText } from './templates.service.js';
 
 /**
@@ -21,6 +21,8 @@ export interface InstructionTurn {
   db: DatabaseClient; tenantId: string; text: string; language: string; settings: OwnerSettings; state: DialogState;
   memory: ConversationMemory[]; model: AIProvider;
   business: { business_name?: string | null; owner_name?: string | null; business_sector?: string | null } | null;
+  /** Z8: the name the owner gave the assistant; empty → ASSISTANT_NAME_DEFAULT. */
+  assistantName?: string | null | undefined;
   demo: { key: string | null; turns: number };
 }
 export type InstructionAction =
@@ -55,7 +57,7 @@ export async function answerByInstruction(turn: InstructionTurn): Promise<Instru
   const active = await activeInstructionFor(db, tenantId, resolveTemplate(config.instruction_template, turn.business?.business_sector));
   if (!active) return null; // nothing published: the tenant keeps the legacy path
   const instructionRaw = active.text;
-  const values = { business_name: turn.business?.business_name, owner_name: turn.business?.owner_name };
+  const values = { business_name: turn.business?.business_name, owner_name: turn.business?.owner_name, assistant_name: turn.assistantName?.trim() || ASSISTANT_NAME_DEFAULT };
   const core = fillPlaceholders(await loadCore(db), values), instruction = fillPlaceholders(instructionRaw, values);
   if (!core.text || !instruction.text) {
     console.error('instruction_placeholder_missing', { tenantId, placeholders: [...core.missing, ...instruction.missing] });

@@ -238,7 +238,7 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
     let outcome: Awaited<ReturnType<typeof answerByInstruction>>;
     try {
       outcome = replyModel ? await answerByInstruction({ db, tenantId, text, language, settings, state, memory: memory.messages, model: replyModel,
-        business: context.business ?? null, demo: await sink.loadDemo() }) : null;
+        business: context.business ?? null, assistantName: context.assistant?.assistant_name, demo: await sink.loadDemo() }) : null;
     } catch (error) {
       const failure = failureReason(error);
       console.warn('instruction_reply_failed', { tenantId, reason: failure });

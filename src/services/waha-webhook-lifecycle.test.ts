@@ -183,6 +183,7 @@ test("status() detects a WhatsApp number swap and defers recording it until ackn
   const first = await service.status(tenantId);
   assert.equal(first.numberChanged, undefined);
   assert.equal(row.connected_identity, "972500000001@c.us");
+  assert.equal((first as { phone?: string }).phone, "+972500000001", "Z8: the business number for the home card");
 
   // Same account reconnecting: still no prompt.
   const second = await service.status(tenantId);

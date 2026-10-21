@@ -1,7 +1,9 @@
 /** Task Z configuration that is data, not code. */
 export const CORE_CONFIG_KEY = 'assistant_core_instruction';
 /** Placeholders the core and business instructions may use; an empty value blocks the reply. */
-export const INSTRUCTION_PLACEHOLDERS = ['business_name', 'owner_name'] as const;
+export const INSTRUCTION_PLACEHOLDERS = ['business_name', 'owner_name', 'assistant_name'] as const;
+/** Z8: {assistant_name} when the owner left the name empty (assistant_profiles.assistant_name). */
+export const ASSISTANT_NAME_DEFAULT = 'Лея';
 /** In demo mode the first number needs one of these nearby (this or an earlier demo reply). */
 export const DEMO_EXAMPLE_MARKERS: readonly string[] = ['для примера', 'например', 'условн', 'לדוגמה', 'לשם הדוגמה', 'לצורך הדוגמה', 'for example', 'as an example', 'e.g.'];
 /** Owner replies that postpone an interview question. */

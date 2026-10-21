@@ -29,6 +29,9 @@ const check = (error: unknown, message: string) => { if (error) throw new Error(
 const DAY = 24 * 3_600_000;
 export interface OwnerQuestion { id: string; question: string; priority: 'launch' | 'normal'; source: string; topic: string | null; status: string; postponed_count: number; next_at: string | null; sent_at: string | null; owner_message_ids: string[] }
 const lang = (settings: OwnerSettings): 'ru' | 'he' | 'en' => { const l = behavior(settings).owner_language; return l === 'he' || l === 'en' ? l : 'ru'; };
+/** Z8: a gap question is worded in the owner's language at the time it is shown, not when it was queued. */
+export const questionText = (q: { question: string; source?: string | null; topic: string | null }, language: 'ru' | 'he' | 'en') =>
+  q.source === 'gap' && q.topic && GAP_QUESTIONS[q.topic] ? GAP_QUESTIONS[q.topic]![language] : q.question;
 
 /** "- [launch] Вопрос?" lines; other lines are ignored. */
 export function parseQuestionList(markdown: string): Array<{ priority: 'launch' | 'normal'; question: string }> {
@@ -118,7 +121,7 @@ export async function runOwnerInterview(db: DatabaseClient, tenantId: string, pr
     .sort((a, b) => (a.priority === b.priority ? 0 : a.priority === 'launch' ? -1 : 1) || a.created_at.localeCompare(b.created_at));
   const next = queue[0];
   if (!next || sentToday >= limit) return { sent: null, next: next ? tomorrow : null };
-  const text = renderText(settings, 'owner.interview_question', lang(settings), { question: next.question, left: queue.length });
+  const text = renderText(settings, 'owner.interview_question', lang(settings), { question: questionText(next, lang(settings)), left: queue.length });
   const out = await enqueueMessage(db, tenantId, provider, { session: instance.data.session_name, chatId: destination, text }, { kind: 'owner_notice', dedupeKey: `interview:${next.id}:${next.postponed_count}` });
   if (!out.id) throw new Error('Interview question not delivered');
   check((await db.from('owner_questions').update({ status: 'sent', sent_at: now.toISOString(), owner_message_ids: [...next.owner_message_ids, out.id] }).eq('id', next.id)).error, 'Owner question update failed');
@@ -205,7 +208,8 @@ export async function handleInterviewReply(db: DatabaseClient, provider: WhatsAp
 
 /** Cards in the cabinet: open, sent and cabinet-only questions. */
 export async function ownerQuestionCards(db: DatabaseClient, tenantId: string) {
-  const r = await db.from('owner_questions').select('id,question,priority,topic,status,postponed_count').eq('tenant_id', tenantId).in('status', ['open', 'sent', 'cabinet_only']).order('created_at', { ascending: true });
+  const r = await db.from('owner_questions').select('id,question,priority,source,topic,status,postponed_count').eq('tenant_id', tenantId).in('status', ['open', 'sent', 'cabinet_only']).order('created_at', { ascending: true });
   check(r.error, 'Owner questions unavailable');
-  return (r.data ?? []).sort((a, b) => (a.priority === b.priority ? 0 : a.priority === 'launch' ? -1 : 1));
+  const language = lang(await loadOwnerSettings(db, tenantId));
+  return (r.data ?? []).map(q => ({ ...q, question: questionText(q as never, language) })).sort((a, b) => (a.priority === b.priority ? 0 : a.priority === 'launch' ? -1 : 1));
 }
