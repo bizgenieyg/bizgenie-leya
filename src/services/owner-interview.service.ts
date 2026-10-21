@@ -56,9 +56,16 @@ export async function translateQuestion(ai: AIProvider, question: string): Promi
   }
   return out;
 }
-/** Stores the translations of an operator question (missing ones only); returns the merged set. */
-async function ensureTranslations(db: DatabaseClient, tenantId: string, q: { id: string; question: string; translations?: Record<string, string> | null }, ai: AIProvider): Promise<Record<string, string>> {
+/**
+ * Stores the translations of an operator question (missing ones only); returns the merged set. The call is a paid
+ * service call: it goes under the tenant's knowledge-service limits (knowledge_indexing_hourly/daily_limit), not
+ * the client traffic; over the limit nothing is called and the question waits.
+ */
+async function ensureTranslations(db: DatabaseClient, tenantId: string, q: { id: string; question: string; translations?: Record<string, string> | null }, ai: AIProvider, now = new Date()): Promise<Record<string, string>> {
   const current = { ...(q.translations ?? {}) };
+  const config = behavior(await loadOwnerSettings(db, tenantId));
+  const reservation = await reserveKnowledgeIndex(tenantId, config.knowledge_indexing_hourly_limit, config.knowledge_indexing_daily_limit, now);
+  if (!reservation.allowed) throw new Error('Owner question translation limit reached');
   const translated = await translateQuestion(ai, q.question);
   const merged = { ...translated, ...current };
   check((await db.from('owner_questions').update({ translations: merged }).eq('tenant_id', tenantId).eq('id', q.id)).error, 'Owner question update failed');
@@ -165,8 +172,9 @@ export async function runOwnerInterview(db: DatabaseClient, tenantId: string, pr
     // No text in the owner's language yet (imported before Z8 or the translation failed): translate now; until it
     // succeeds the question waits — the owner never gets it in another language.
     const base = deps.taskAI ?? createTaskAIProvider();
-    if (base) try { question = questionText({ ...next, translations: await ensureTranslations(db, tenantId, next, meterAI(db, tenantId, base, { purpose: 'owner_interview', billable_message: false })!) }, language); }
+    if (base) try { question = questionText({ ...next, translations: await ensureTranslations(db, tenantId, next, meterAI(db, tenantId, base, { purpose: 'owner_interview', billable_message: false })!, now) }, language); }
     catch { console.error('owner_question_translate_failed', { tenantId }); }
+    // Over the limit or failed: try again in an hour, never in another language.
     if (question === null) return { sent: null, next: new Date(now.getTime() + 3_600_000) };
   }
   const text = renderText(settings, 'owner.interview_question', language, { question, left: queue.length });

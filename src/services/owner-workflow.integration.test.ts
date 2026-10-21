@@ -693,3 +693,24 @@ test('Z8 review: operator questions follow owner_language too — translated on 
   const sent = await runOwnerInterview(h.db, h.tenant, h.provider, new Date('2026-10-01T10:00:00Z'), { taskAI: translator(true) as never }); await settleAllOutboundQueues();
   assert.ok(sent.sent); assert.doesNotMatch(h.sent.at(-1)!.text, /[Ѐ-ӿ]/);
 });
+
+test('Z8 review: question translation is a paid service call under the knowledge-service limits — over the limit nothing is called', async () => {
+  const previous = process.env.KNOWLEDGE_LIMIT_STATE_DIR;
+  process.env.KNOWLEDGE_LIMIT_STATE_DIR = `/tmp/leya-translate-limit-${process.pid}-${Date.now()}`;
+  try {
+    const h = await pgHarness();
+    await h.pg.query("insert into whatsapp_instances(tenant_id,waha_url,session_name,status) values($1,'http://waha','session','WORKING') on conflict (tenant_id) do update set session_name='session'", [h.tenant]);
+    const { importOwnerQuestions, runOwnerInterview } = await import('./owner-interview.service.js');
+    const { saveRuntimeSettings } = await import('./runtime-settings.service.js');
+    await saveRuntimeSettings(h.db, h.tenant, { owner_language: 'he', knowledge_indexing_hourly_limit: 1, knowledge_indexing_daily_limit: 1 });
+    invalidateOwnerSettings(h.db, h.tenant);
+    let calls = 0;
+    const ai = { async generateReply() { calls++; return { text: JSON.stringify({ ru: 'Вопрос?', he: 'שאלה?', en: 'Question?' }) }; } };
+    await importOwnerQuestions(h.db, h.tenant, '- [launch] Первый вопрос?\n- [launch] Второй вопрос?', { taskAI: ai as never });
+    assert.equal(calls, 1, 'the second translation is over the limit: no call');
+    await h.pg.query("update owner_questions set status='answered' where tenant_id=$1 and translations <> '{}'::jsonb", [h.tenant]);
+    const r = await runOwnerInterview(h.db, h.tenant, h.provider, new Date(), { taskAI: ai as never }); await settleAllOutboundQueues();
+    assert.equal(calls, 1, 'at send too: no call over the limit');
+    assert.equal(r.sent, null); assert.equal(h.sent.length, 0, 'the untranslated question waits');
+  } finally { process.env.KNOWLEDGE_LIMIT_STATE_DIR = previous; }
+});
