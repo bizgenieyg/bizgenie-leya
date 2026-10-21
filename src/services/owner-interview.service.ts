@@ -13,7 +13,7 @@ import { isWithinQuietHours, nextQuietHoursEnd } from './escalation.service.js';
 import { replyId } from '../utils/assistant-text.js';
 import { allowedRecipient } from '../utils/incoming-policy.js';
 import { requiredTopics } from '../config/knowledge-topics.js';
-import { GAP_QUESTIONS, INTERVIEW_POSTPONE_WORDS, LAUNCH_TOPICS } from '../config/instructions.js';
+import { GAP_QUESTIONS, INTERVIEW_POSTPONE_WORDS, LAUNCH_TOPICS, QUESTION_TRANSLATE_PROMPT } from '../config/instructions.js';
 import { extractFacts, quoteInSource } from './fact-extraction.service.js';
 import { activeFacts, addOwnerFact, saveExtraction } from './business-facts.service.js';
 import { meterAI } from './metered-providers.js';
@@ -27,11 +27,43 @@ import { intlTimeZone } from '../config/time-zones.js';
  */
 const check = (error: unknown, message: string) => { if (error) throw new Error(message); };
 const DAY = 24 * 3_600_000;
-export interface OwnerQuestion { id: string; question: string; priority: 'launch' | 'normal'; source: string; topic: string | null; status: string; postponed_count: number; next_at: string | null; sent_at: string | null; owner_message_ids: string[] }
+export interface OwnerQuestion { id: string; question: string; translations?: Record<string, string> | null; priority: 'launch' | 'normal'; source: string; topic: string | null; status: string; postponed_count: number; next_at: string | null; sent_at: string | null; owner_message_ids: string[] }
 const lang = (settings: OwnerSettings): 'ru' | 'he' | 'en' => { const l = behavior(settings).owner_language; return l === 'he' || l === 'en' ? l : 'ru'; };
-/** Z8: a gap question is worded in the owner's language at the time it is shown, not when it was queued. */
-export const questionText = (q: { question: string; source?: string | null; topic: string | null }, language: 'ru' | 'he' | 'en') =>
-  q.source === 'gap' && q.topic && GAP_QUESTIONS[q.topic] ? GAP_QUESTIONS[q.topic]![language] : q.question;
+type Language = 'ru' | 'he' | 'en';
+const SCRIPT: Record<Language, RegExp> = { ru: /[\u0400-\u04FF]/, he: /[\u05D0-\u05EA]/, en: /[A-Za-z]/ };
+/** The language a text is written in (by its letters); null when unclear. */
+export const textLanguage = (text: string): Language | null => (['he', 'ru', 'en'] as const).find(l => SCRIPT[l].test(text)) ?? null;
+/**
+ * Z8: the question in the owner's language at the time it is shown, not when it was queued: gap questions from the
+ * config, operator questions from their stored translations (the original when it is already in that language).
+ * null — no text in that language yet (translateQuestion fills it).
+ */
+export function questionText(q: { question: string; source?: string | null; topic: string | null; translations?: Record<string, string> | null }, language: Language): string | null {
+  if (q.source === 'gap' && q.topic && GAP_QUESTIONS[q.topic]) return GAP_QUESTIONS[q.topic]![language];
+  const stored = q.translations?.[language];
+  if (typeof stored === 'string' && stored.trim()) return stored;
+  return textLanguage(q.question) === language ? q.question : null;
+}
+/** ru/he/en of one question by the task model; only answers in the right script and without markup are kept. */
+export async function translateQuestion(ai: AIProvider, question: string): Promise<Record<Language, string>> {
+  const raw = (await ai.generateReply({ systemPrompt: QUESTION_TRANSLATE_PROMPT, userMessage: question })).text;
+  let parsed: Record<string, unknown> = {};
+  try { parsed = JSON.parse(raw.trim().replace(/^```(?:json)?\s*|\s*```$/g, '')) as Record<string, unknown>; } catch { parsed = {}; }
+  const out = {} as Record<Language, string>;
+  for (const l of ['ru', 'he', 'en'] as const) {
+    const v = parsed[l];
+    if (typeof v === 'string' && v.trim() && v.length <= 500 && !/[<>{}]/.test(v) && textLanguage(v) === l) out[l] = v.trim();
+  }
+  return out;
+}
+/** Stores the translations of an operator question (missing ones only); returns the merged set. */
+async function ensureTranslations(db: DatabaseClient, tenantId: string, q: { id: string; question: string; translations?: Record<string, string> | null }, ai: AIProvider): Promise<Record<string, string>> {
+  const current = { ...(q.translations ?? {}) };
+  const translated = await translateQuestion(ai, q.question);
+  const merged = { ...translated, ...current };
+  check((await db.from('owner_questions').update({ translations: merged }).eq('tenant_id', tenantId).eq('id', q.id)).error, 'Owner question update failed');
+  return merged;
+}
 
 /** "- [launch] Вопрос?" lines; other lines are ignored. */
 export function parseQuestionList(markdown: string): Array<{ priority: 'launch' | 'normal'; question: string }> {
@@ -40,13 +72,19 @@ export function parseQuestionList(markdown: string): Array<{ priority: 'launch' 
     return m && m[2]!.length <= 500 ? [{ priority: m[1]!.toLowerCase() as 'launch' | 'normal', question: m[2]! }] : [];
   });
 }
-export async function importOwnerQuestions(db: DatabaseClient, tenantId: string, markdown: string) {
+/** `taskAI` (Z8): new operator questions are translated to ru/he/en right away, so cards and WhatsApp follow owner_language. */
+export async function importOwnerQuestions(db: DatabaseClient, tenantId: string, markdown: string, deps: { taskAI?: AIProvider | null } = {}) {
   const items = parseQuestionList(markdown);
   let added = 0;
+  const base = deps.taskAI === null ? null : deps.taskAI ?? createTaskAIProvider();
+  const ai = base ? meterAI(db, tenantId, base, { purpose: 'owner_interview', billable_message: false }) : null;
   for (const item of items) {
-    const inserted = await db.from('owner_questions').insert({ tenant_id: tenantId, question: item.question, priority: item.priority, source: 'operator' });
+    const inserted = await db.from('owner_questions').insert({ tenant_id: tenantId, question: item.question, priority: item.priority, source: 'operator' }).select('id').single();
     if (inserted.error && inserted.error.code !== '23505') throw new Error('Owner question save failed');
-    if (!inserted.error) added++;
+    if (inserted.error) continue;
+    added++;
+    // A failed translation is not fatal: it is retried when the question is sent.
+    if (ai) try { await ensureTranslations(db, tenantId, { id: String((inserted.data as { id: string }).id), question: item.question }, ai); } catch { console.error('owner_question_translate_failed', { tenantId }); }
   }
   if (added) await ensureInterviewJob(db, tenantId);
   return { parsed: items.length, added };
@@ -98,7 +136,7 @@ function dayStart(settings: OwnerSettings, now: Date): Date {
  * out, or today's limit is used (first day: owner_interview_first_batch, then owner_interview_daily_limit).
  * Returns when it should run again.
  */
-export async function runOwnerInterview(db: DatabaseClient, tenantId: string, provider: WhatsAppProvider, now = new Date()): Promise<{ sent: string | null; next: Date | null }> {
+export async function runOwnerInterview(db: DatabaseClient, tenantId: string, provider: WhatsAppProvider, now = new Date(), deps: { taskAI?: AIProvider } = {}): Promise<{ sent: string | null; next: Date | null }> {
   const settings = await loadOwnerSettings(db, tenantId), config = behavior(settings);
   const destination = ownerDestination(settings);
   const instance = await db.from('whatsapp_instances').select('session_name').eq('tenant_id', tenantId).maybeSingle();
@@ -108,7 +146,7 @@ export async function runOwnerInterview(db: DatabaseClient, tenantId: string, pr
   const waiting = await db.from('escalations').select('id', { count: 'exact', head: true }).eq('tenant_id', tenantId).in('status', ['queued', 'notifying', 'pending', 'reminding']);
   check(waiting.error, 'Escalations unavailable');
   if ((waiting.count ?? 0) > 0) return { sent: null, next: new Date(now.getTime() + 3_600_000) };
-  const rows = await db.from('owner_questions').select('id,question,priority,source,topic,status,postponed_count,next_at,sent_at,owner_message_ids,created_at').eq('tenant_id', tenantId).in('status', ['open', 'sent', 'answered']);
+  const rows = await db.from('owner_questions').select('id,question,translations,priority,source,topic,status,postponed_count,next_at,sent_at,owner_message_ids,created_at').eq('tenant_id', tenantId).in('status', ['open', 'sent', 'answered']);
   check(rows.error, 'Owner questions unavailable');
   const all = (rows.data ?? []) as unknown as Array<OwnerQuestion & { created_at: string }>;
   const tomorrow = new Date(dayStart(settings, now).getTime() + DAY + 10 * 3_600_000);
@@ -121,7 +159,17 @@ export async function runOwnerInterview(db: DatabaseClient, tenantId: string, pr
     .sort((a, b) => (a.priority === b.priority ? 0 : a.priority === 'launch' ? -1 : 1) || a.created_at.localeCompare(b.created_at));
   const next = queue[0];
   if (!next || sentToday >= limit) return { sent: null, next: next ? tomorrow : null };
-  const text = renderText(settings, 'owner.interview_question', lang(settings), { question: questionText(next, lang(settings)), left: queue.length });
+  const language = lang(settings);
+  let question = questionText(next, language);
+  if (question === null) {
+    // No text in the owner's language yet (imported before Z8 or the translation failed): translate now; until it
+    // succeeds the question waits — the owner never gets it in another language.
+    const base = deps.taskAI ?? createTaskAIProvider();
+    if (base) try { question = questionText({ ...next, translations: await ensureTranslations(db, tenantId, next, meterAI(db, tenantId, base, { purpose: 'owner_interview', billable_message: false })!) }, language); }
+    catch { console.error('owner_question_translate_failed', { tenantId }); }
+    if (question === null) return { sent: null, next: new Date(now.getTime() + 3_600_000) };
+  }
+  const text = renderText(settings, 'owner.interview_question', language, { question, left: queue.length });
   const out = await enqueueMessage(db, tenantId, provider, { session: instance.data.session_name, chatId: destination, text }, { kind: 'owner_notice', dedupeKey: `interview:${next.id}:${next.postponed_count}` });
   if (!out.id) throw new Error('Interview question not delivered');
   check((await db.from('owner_questions').update({ status: 'sent', sent_at: now.toISOString(), owner_message_ids: [...next.owner_message_ids, out.id] }).eq('id', next.id)).error, 'Owner question update failed');
@@ -208,8 +256,9 @@ export async function handleInterviewReply(db: DatabaseClient, provider: WhatsAp
 
 /** Cards in the cabinet: open, sent and cabinet-only questions. */
 export async function ownerQuestionCards(db: DatabaseClient, tenantId: string) {
-  const r = await db.from('owner_questions').select('id,question,priority,source,topic,status,postponed_count').eq('tenant_id', tenantId).in('status', ['open', 'sent', 'cabinet_only']).order('created_at', { ascending: true });
+  const r = await db.from('owner_questions').select('id,question,translations,priority,source,topic,status,postponed_count').eq('tenant_id', tenantId).in('status', ['open', 'sent', 'cabinet_only']).order('created_at', { ascending: true });
   check(r.error, 'Owner questions unavailable');
   const language = lang(await loadOwnerSettings(db, tenantId));
-  return (r.data ?? []).map(q => ({ ...q, question: questionText(q as never, language) })).sort((a, b) => (a.priority === b.priority ? 0 : a.priority === 'launch' ? -1 : 1));
+  // The cabinet never calls the model: a question without a text in the owner's language shows its original until translated.
+  return (r.data ?? []).map(({ translations, ...q }) => ({ ...q, question: questionText({ ...q, translations } as never, language) ?? String(q.question) })).sort((a, b) => (a.priority === b.priority ? 0 : a.priority === 'launch' ? -1 : 1));
 }

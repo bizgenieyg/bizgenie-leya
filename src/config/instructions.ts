@@ -20,5 +20,7 @@ export const GAP_QUESTIONS: Record<string, Record<'ru' | 'he' | 'en', string>> =
   payment_cancel: { ru: 'Как клиенты оплачивают, нужна ли предоплата и какие правила отмены?', he: 'איך לקוחות משלמים, האם צריך מקדמה ומה כללי הביטול?', en: 'How do clients pay, is a deposit needed, and what are the cancellation rules?' },
   why_us: { ru: 'Почему клиенты выбирают именно вас? Что вы делаете иначе, чем другие?', he: 'למה לקוחות בוחרים דווקא בכם? מה אתם עושים אחרת?', en: 'Why do clients choose you? What do you do differently?' },
 };
+/** Z8: an operator question → the same question in ru/he/en for the owner (one task-model call per question, stored). */
+export const QUESTION_TRANSLATE_PROMPT = 'Переведи вопрос владельцу бизнеса на русский, иврит и английский. Смысл не меняй, ничего не добавляй, обращение на «вы» / во множественном числе. Верни строго JSON: {"ru": "...", "he": "...", "en": "..."}';
 /** Topics a business cannot start without: asked first ("что продаём, цены, как записаться, когда звать владельца"). */
 export const LAUNCH_TOPICS: readonly string[] = ['services_prices', 'booking'];

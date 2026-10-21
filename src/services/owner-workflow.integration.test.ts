@@ -668,3 +668,28 @@ test('Z8: interview questions follow owner_language — a gap question queued in
   assert.doesNotMatch(h.sent[0]!.text, /[Ѐ-ӿ]/, 'no Russian left in the message');
   assert.equal((await ownerQuestionCards(h.db, h.tenant))[0]!.question, GAP_QUESTIONS.booking!.he);
 });
+
+test('Z8 review: operator questions follow owner_language too — translated on import, or at send; never sent in another language', async () => {
+  const h = await pgHarness();
+  await h.pg.query("insert into whatsapp_instances(tenant_id,waha_url,session_name,status) values($1,'http://waha','session','WORKING') on conflict (tenant_id) do update set session_name='session'", [h.tenant]);
+  const { importOwnerQuestions, ownerQuestionCards, runOwnerInterview } = await import('./owner-interview.service.js');
+  const { saveRuntimeSettings } = await import('./runtime-settings.service.js');
+  let calls = 0;
+  const translator = (ok: boolean) => ({ async generateReply() { calls++; return { text: ok ? JSON.stringify({ ru: 'Нужна ли предоплата?', he: 'האם צריך מקדמה?', en: 'Is a deposit needed?' }) : 'не JSON' }; } });
+  await saveRuntimeSettings(h.db, h.tenant, { owner_language: 'he' });
+  invalidateOwnerSettings(h.db, h.tenant);
+  await importOwnerQuestions(h.db, h.tenant, '- [launch] Нужна ли предоплата?', { taskAI: translator(true) as never });
+  assert.equal(calls, 1, 'one call per imported question');
+  assert.equal((await ownerQuestionCards(h.db, h.tenant))[0]!.question, 'האם צריך מקדמה?');
+  await runOwnerInterview(h.db, h.tenant, h.provider, new Date('2026-09-30T09:00:00Z'), { taskAI: translator(true) as never }); await settleAllOutboundQueues();
+  assert.equal(calls, 1, 'stored translation, no second call');
+  assert.ok(h.sent[0]!.text.includes('האם צריך מקדמה?')); assert.doesNotMatch(h.sent[0]!.text, /[Ѐ-ӿ]/);
+
+  // A question imported before the translations (no text in Hebrew): translated at send; a bad answer → it waits.
+  await h.pg.query("update owner_questions set status='answered' where tenant_id=$1", [h.tenant]);
+  await h.pg.query("insert into owner_questions(tenant_id,question,priority,source) values($1,'Как вас называть?','launch','operator')", [h.tenant]);
+  const waited = await runOwnerInterview(h.db, h.tenant, h.provider, new Date('2026-10-01T09:00:00Z'), { taskAI: translator(false) as never }); await settleAllOutboundQueues();
+  assert.equal(waited.sent, null); assert.equal(h.sent.length, 1, 'not sent in Russian');
+  const sent = await runOwnerInterview(h.db, h.tenant, h.provider, new Date('2026-10-01T10:00:00Z'), { taskAI: translator(true) as never }); await settleAllOutboundQueues();
+  assert.ok(sent.sent); assert.doesNotMatch(h.sent.at(-1)!.text, /[Ѐ-ӿ]/);
+});
