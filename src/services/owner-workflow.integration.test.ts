@@ -740,3 +740,21 @@ test('Z9: a new owner number waits for confirmation; questions keep going to the
   loaded = await loadOwnerSettings(h.db, h.tenant);
   assert.deepEqual([loaded.owner_phone, loaded.owner_chat_id, loaded.pending_owner_phone], ['972541112233', '972541112233@c.us', null]);
 });
+
+test('Z9 review: with WhatsApp stopped a new number does not replace the confirmed one; it is confirmed after the connection', async () => {
+  const h = await pgHarness();
+  const before = await h.notificationSettings();
+  assert.ok(before.owner_chat_id, 'the harness owner is confirmed');
+  const stopped = { ...h.provider, getSessionStatus: async () => ({ status: 'STOPPED' }) } as unknown as typeof h.provider;
+  const result = await submitOwnerSettings(h.db, h.tenant, { phone: '972541112233' }, stopped, 'session', async () => { throw new Error('nothing is sent'); });
+  assert.deepEqual(result, { sent: false, pending: 'whatsapp' });
+  invalidateOwnerSettings(h.db, h.tenant);
+  const loaded = await loadOwnerSettings(h.db, h.tenant);
+  assert.deepEqual([loaded.owner_phone, loaded.owner_chat_id, loaded.pending_owner_phone], [before.owner_phone, before.owner_chat_id, '972541112233']);
+  assert.equal(ownerDestination(loaded), before.owner_chat_id, 'questions still go to the confirmed number');
+  // After the connection the same request sends the code to the new number; the old one stays until it comes back.
+  const next = await saveOwnerSettings(h.db, h.tenant, { phone: '972541112233' }, { id: '972500000009@c.us' });
+  const settings = { ...h.settings, ...(await h.notificationSettings()) } as unknown as OwnerSettings;
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', '972541112233@c.us', next.code, null, settings); await settleAllOutboundQueues();
+  assert.equal((await h.notificationSettings()).owner_phone, '972541112233');
+});

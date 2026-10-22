@@ -105,7 +105,12 @@ export async function savePendingOwnerSettings(db: DatabaseClient, tenantId: str
   const phone = normalizeInternationalPhone(input.phone);
   if (!phone) throw new HttpError(400,"Укажите номер владельца с кодом страны, например +972501234567.");
   const optional = optionalOwnerFields(input);
-  const { error } = await db.from("notification_settings").upsert({tenant_id:tenantId,time_zone:(await loadOwnerSettings(db,tenantId)).time_zone??DEFAULT_TIME_ZONE,owner_phone:phone,owner_chat_id:null,pending_owner_phone:null,...optional,
+  const settings = await loadOwnerSettings(db,tenantId);
+  // Z9 review: without WhatsApp a new number cannot be confirmed either — it waits in pending_owner_phone and the
+  // current number (with its confirmed chat) stays the destination; the code goes out once WhatsApp is connected.
+  const owner = !settings.owner_phone ? { owner_phone: phone, owner_chat_id: null, pending_owner_phone: null }
+    : settings.owner_phone !== phone ? { pending_owner_phone: phone } : { pending_owner_phone: null };
+  const { error } = await db.from("notification_settings").upsert({tenant_id:tenantId,time_zone:settings.time_zone??DEFAULT_TIME_ZONE,...owner,...optional,
     owner_pairing_hash:null,owner_pairing_expires_at:null,mode:"mute_all"},{onConflict:"tenant_id"});
   if(error) throw new Error("Owner settings save failed");
   invalidateOwnerSettings(db,tenantId);
