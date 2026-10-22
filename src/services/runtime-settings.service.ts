@@ -23,6 +23,8 @@ export async function readRuntimeSettings(db:DatabaseClient,tenantId:string){
  const owner=await loadOwnerSettings(db,tenantId);
  const tenant=await db.from('tenants').select('business_sector,business_name,name').eq('id',tenantId).single();
  if(tenant.error)throw new Error('Tenant profile unavailable');
+ const assistant=await db.from('assistant_profiles').select('assistant_name').eq('tenant_id',tenantId).maybeSingle();
+ if(assistant.error)throw new Error('Assistant profile unavailable');
  const {data,error}=await db.from('tenant_usage_limits').select('messages_per_month,voice_minutes_per_month,warning_percent,plan,messages_overridden,voice_overridden,warning_overridden').eq('tenant_id',tenantId).maybeSingle();
  if(error)throw new Error('Tenant limits unavailable');
  const planCode=data?.plan;
@@ -37,7 +39,8 @@ export async function readRuntimeSettings(db:DatabaseClient,tenantId:string){
  messages_per_month:data?.messages_overridden?data.messages_per_month:plan.data.messages_per_month,
  voice_minutes_per_month:data?.voice_overridden?data.voice_minutes_per_month:plan.data.voice_minutes_per_month,
  warning_percent:data?.warning_overridden?data.warning_percent:plan.data.warning_percent,plan:plan.data.code,plan_name:plan.data.display_name,unlimited:Boolean(plan.data.unlimited),
- auto_replies_paused:owner.auto_replies_paused??false,owner_phone:owner.owner_phone??'',paired:!!owner.owner_chat_id,
+ auto_replies_paused:owner.auto_replies_paused??false,owner_phone:owner.owner_phone??'',paired:!!owner.owner_chat_id,pending_owner_phone:owner.pending_owner_phone??'',
+ quiet_hours_start:owner.quiet_hours_start?.slice(0,5)??'',quiet_hours_end:owner.quiet_hours_end?.slice(0,5)??'',assistant_name:assistant.data?.assistant_name??'',
  time_zone:owner.time_zone??DEFAULT_TIME_ZONE,supported_time_zones:SUPPORTED_TIME_ZONES,weekly_schedule:normalizedSchedule(owner),templates:templates(owner),exceptions:owner.exceptions??[]};
 }
 const SYSTEM_FIELDS=new Set(['messages_per_month','voice_minutes_per_month','warning_percent','plan']);
@@ -180,8 +183,13 @@ export function validateRuntimePatch(input:Record<string,unknown>) {
  }
  return {notification,behaviorPatch};
 }
+/**
+ * Z9: every changed owner setting in one call and one transaction (save_tenant_settings_bundle, 066): runtime
+ * fields, the business profile (tenants), the assistant name (assistant_profiles) and «Не беспокоить» (quiet hours).
+ * Everything is validated before the write, so a rejected field saves nothing.
+ */
 export async function saveRuntimeSettings(db:DatabaseClient,tenantId:string,input:Record<string,unknown>){
- const {business_sector,business_name,owner_name,greeting_templates,...rest}=input;
+ const {business_sector,business_name,owner_name,assistant_name,greeting_templates,quiet_hours_start,quiet_hours_end,...rest}=input;
  const runtimeInput:Record<string,unknown>={...rest};
  if(greeting_templates!==undefined){
   // Merge owner greetings into the tenant's templates; other templates stay operator-only.
@@ -194,7 +202,20 @@ export async function saveRuntimeSettings(db:DatabaseClient,tenantId:string,inpu
  if(business_sector!==undefined&&(business_sector!==null&&(typeof business_sector!=='string'||business_sector.trim().length>100)))throw new HttpError(400,'Invalid business sector');
  // Z8 «Настройки → Бизнес»: business and owner names (tenants.business_name / tenants.name) — required, as at signup.
  for(const [key,value] of [['business_name',business_name],['owner_name',owner_name]] as const)if(value!==undefined&&(typeof value!=='string'||!value.trim()||value.trim().length>100))throw new HttpError(400,`Invalid ${key}`);
+ if(assistant_name!==undefined&&(typeof assistant_name!=='string'||!assistant_name.trim()||assistant_name.trim().length>60))throw new HttpError(400,'Invalid assistant name');
+ const quiet=quiet_hours_start!==undefined||quiet_hours_end!==undefined;
+ if(quiet){
+  // «Не беспокоить»: both empty (off) or two different times; the same start and end is rejected with a code.
+  const start=quiet_hours_start??null,end=quiet_hours_end??null;
+  if(start!==null||end!==null){
+   if(!time(start)||!time(end))throw new HttpError(400,'Invalid quiet hours',{code:'quiet_hours_invalid'});
+   if(start===end)throw new HttpError(400,'Quiet hours start and end are the same',{code:'quiet_hours_equal'});
+  }
+ }
  const patch=validateRuntimePatch(runtimeInput),existing=await loadOwnerSettings(db,tenantId);
+ // Z9: «Не беспокоить» is the one owner availability setting. A stored weekly schedule would override the quiet
+ // hours (isWithinQuietHours), so saving them clears it; exceptions keep working on top.
+ if(quiet){patch.notification.quiet_hours_start=quiet_hours_start??null;patch.notification.quiet_hours_end=quiet_hours_end??null;patch.behaviorPatch.weekly_schedule=null;}
  const merged={...behavior(existing),...patch.behaviorPatch};
  if(Number(merged.knowledge_chunk_overlap)>=Number(merged.knowledge_chunk_characters))throw new HttpError(400,'Knowledge chunk overlap must be smaller than chunk size');
  if(Number(merged.escalation_close_minutes)<=Number(merged.escalation_remind_minutes))throw new HttpError(400,'Close timeout must exceed reminder timeout');
@@ -203,32 +224,17 @@ export async function saveRuntimeSettings(db:DatabaseClient,tenantId:string,inpu
     Number(merged.outbound_conversation_gap_min_seconds)>Number(merged.outbound_conversation_gap_max_seconds)||
     Number(merged.outbound_proactive_gap_min_seconds)>Number(merged.outbound_proactive_gap_max_seconds))throw new HttpError(400,'Outbound minimum must not exceed maximum');
  for(const route of [...merged.campaign_routes,...merged.source_routes])if(!merged.enabled_agents.includes(route.agent))throw new HttpError(400,'Route agent must be enabled');
- if(Object.keys(runtimeInput).length){
-  const result=await db.rpc('update_tenant_runtime_settings',{p_tenant_id:tenantId,p_notification:patch.notification,p_behavior:patch.behaviorPatch,p_default_time_zone:DEFAULT_TIME_ZONE});
-  if(result.error)throw new Error('Settings save failed');
-  // update_tenant_runtime_settings (027) does not write templates: store them explicitly.
-  if(patch.notification.templates!==undefined){
-   const saved=await db.from('notification_settings').update({templates:patch.notification.templates}).eq('tenant_id',tenantId);
-   if(saved.error)throw new Error('Templates save failed');
-  }
-  invalidateOwnerSettings(db,tenantId);
- }
- if(business_sector!==undefined){
-  const sector=typeof business_sector==='string'?business_sector.trim():'';
-  const result=await db.from('tenants').update({business_sector:sector||null}).eq('id',tenantId);
-  if(result.error)throw new Error('Business sector save failed');
-  invalidateTenantRouting(db,tenantId);
- }
- if(business_name!==undefined||owner_name!==undefined){
-  const result=await db.from('tenants').update({...(typeof business_name==='string'?{business_name:business_name.trim()}:{}),...(typeof owner_name==='string'?{name:owner_name.trim()}:{})}).eq('id',tenantId);
-  if(result.error)throw new Error('Business profile save failed');
-  invalidateTenantRouting(db,tenantId);
- }
- if(['summary_frequency','summary_time','summary_weekday','time_zone'].some(key=>key in runtimeInput)){
+ const tenant={...(typeof business_name==='string'?{business_name:business_name.trim()}:{}),...(typeof owner_name==='string'?{name:owner_name.trim()}:{}),...(business_sector!==undefined?{business_sector:typeof business_sector==='string'?business_sector.trim():''}:{})};
+ const assistant=typeof assistant_name==='string'?{assistant_name:assistant_name.trim()}:{};
+ const result=await db.rpc('save_tenant_settings_bundle',{p_tenant_id:tenantId,p_tenant:tenant,p_assistant:assistant,p_notification:patch.notification,p_behavior:patch.behaviorPatch,p_default_time_zone:DEFAULT_TIME_ZONE});
+ if(result.error)throw new Error('Settings save failed');
+ invalidateOwnerSettings(db,tenantId);
+ if(Object.keys(tenant).length)invalidateTenantRouting(db,tenantId);
+ if(quiet||['summary_frequency','summary_time','summary_weekday','time_zone'].some(key=>key in runtimeInput)){
   const {rescheduleOwnerSummary}=await import('./owner-summary.service.js');
   await rescheduleOwnerSummary(db,tenantId,await loadOwnerSettings(db,tenantId));
  }
- if(['escalation_remind_minutes','escalation_close_minutes','deferred_max_age_hours','weekly_schedule','time_zone','auto_replies_paused'].some(key=>key in runtimeInput)){
+ if(quiet||['escalation_remind_minutes','escalation_close_minutes','deferred_max_age_hours','weekly_schedule','time_zone','auto_replies_paused'].some(key=>key in runtimeInput)){
   const {rescheduleTenantEscalationTimeouts}=await import('./owner-workflow.service.js');
   await rescheduleTenantEscalationTimeouts(db,tenantId,await loadOwnerSettings(db,tenantId));
  }

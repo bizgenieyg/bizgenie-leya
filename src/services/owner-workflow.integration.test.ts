@@ -6,7 +6,7 @@ import type { PGlite } from '@electric-sql/pglite';
 import type { DatabaseClient } from '../db/supabase.js';
 import type { WhatsAppProvider } from '../providers/whatsapp/whatsapp-provider.interface.js';
 import { conversationPaused, createEscalation, handleOwnerMessage, runDueScheduledEscalations } from './owner-workflow.service.js';
-import { invalidateOwnerSettings, loadOwnerSettings, saveOwnerSettings, submitOwnerSettings, type OwnerSettings } from './owner-settings.service.js';
+import { invalidateOwnerSettings, loadOwnerSettings, ownerDestination, saveOwnerSettings, submitOwnerSettings, type OwnerSettings } from './owner-settings.service.js';
 import { isWithinQuietHours, nextQuietHoursEnd } from './escalation.service.js';
 import { observeOwnerOutgoing } from './outgoing-owner.service.js';
 import { enqueueMessage, settleAllOutboundQueues } from '../workers/outbound-queue.js';
@@ -224,24 +224,28 @@ test('a wrong code or the right code from an unrelated sender never binds pairin
   const result = await saveOwnerSettings(h.db, h.tenant, { phone: '972500000002', timeZone: 'Asia/Jerusalem' }, { id: '972500000009@c.us' });
   const settings = { ...h.settings, ...(await h.notificationSettings()) } as unknown as OwnerSettings;
   const wrongCode = result.code === '000000' ? '111111' : '000000';
+  // Z9: the same number again keeps its confirmed chat; neither attempt rebinds it to the unrelated sender.
+  const chat = (await h.notificationSettings()).owner_chat_id;
   await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', '55555555@c.us', wrongCode, null, settings); await settleAllOutboundQueues();
-  assert.equal((await h.notificationSettings()).owner_chat_id, null);
+  assert.equal((await h.notificationSettings()).owner_chat_id, chat);
   await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', '55555555@c.us', result.code, null, settings); await settleAllOutboundQueues();
-  assert.equal((await h.notificationSettings()).owner_chat_id, null, 'a non-@lid sender must also match the owner phone');
+  assert.equal((await h.notificationSettings()).owner_chat_id, chat, 'a non-@lid sender must also match the owner phone');
 });
 
 test('owner phone accepts explicit international country codes from Israel and other countries', async () => {
   const h = await pgHarness();
   const result = await saveOwnerSettings(h.db, h.tenant, { phone: '+972 52-369-5741', timeZone: 'Asia/Jerusalem' }, { id: '972500000009@c.us' });
   assert.equal(result.phone, '972523695741');
-  assert.equal((await h.notificationSettings()).owner_phone, '972523695741');
+  assert.equal((await h.notificationSettings()).pending_owner_phone, '972523695741');
   const settings = { ...h.settings, ...(await h.notificationSettings()) } as unknown as OwnerSettings;
   await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', '972523695741@c.us', result.code, null, settings); await settleAllOutboundQueues();
   assert.equal((await h.notificationSettings()).owner_chat_id, '972523695741@c.us');
 
   const us = await saveOwnerSettings(h.db, h.tenant, { phone: '+15551234567', timeZone: 'America/New_York' }, { id: '972500000009@c.us' });
   assert.equal(us.phone, '15551234567');
-  assert.equal((await h.notificationSettings()).owner_phone, '15551234567');
+  // Z9: a set number is replaced only after the new one is confirmed.
+  assert.equal((await h.notificationSettings()).owner_phone, '972523695741');
+  assert.equal((await h.notificationSettings()).pending_owner_phone, '15551234567');
 });
 test('saveOwnerSettings rejects local numbers without a country code instead of guessing a country', async () => {
   const h = await pgHarness();
@@ -713,4 +717,26 @@ test('Z8 review: question translation is a paid service call under the knowledge
     assert.equal(calls, 1, 'at send too: no call over the limit');
     assert.equal(r.sent, null); assert.equal(h.sent.length, 0, 'the untranslated question waits');
   } finally { process.env.KNOWLEDGE_LIMIT_STATE_DIR = previous; }
+});
+
+test('Z9: a new owner number waits for confirmation; questions keep going to the old one until the code comes from the new number', async () => {
+  const h = await pgHarness();
+  const first = await saveOwnerSettings(h.db, h.tenant, { phone: '972523695741' }, { id: '972500000009@c.us' });
+  let settings = { ...h.settings, ...(await h.notificationSettings()) } as unknown as OwnerSettings;
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', '972523695741@c.us', first.code, null, settings); await settleAllOutboundQueues();
+  const quietBefore = (await h.notificationSettings()).quiet_hours_start;
+  const next = await saveOwnerSettings(h.db, h.tenant, { phone: '972541112233' }, { id: '972500000009@c.us' });
+  invalidateOwnerSettings(h.db, h.tenant);
+  let loaded = await loadOwnerSettings(h.db, h.tenant);
+  assert.deepEqual([loaded.owner_phone, loaded.owner_chat_id, loaded.pending_owner_phone], ['972523695741', '972523695741@c.us', '972541112233']);
+  assert.equal(ownerDestination(loaded), '972523695741@c.us', 'questions and requests still go to the confirmed number');
+  assert.equal((await h.notificationSettings()).quiet_hours_start, quietBefore, 'a phone change without quiet hours leaves them as they are');
+  // The code from the old number does not confirm the new one.
+  settings = { ...h.settings, ...(await h.notificationSettings()) } as unknown as OwnerSettings;
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', '972523695741@c.us', next.code, null, settings); await settleAllOutboundQueues();
+  assert.equal((await h.notificationSettings()).owner_phone, '972523695741');
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', '972541112233@c.us', next.code, null, settings); await settleAllOutboundQueues();
+  invalidateOwnerSettings(h.db, h.tenant);
+  loaded = await loadOwnerSettings(h.db, h.tenant);
+  assert.deepEqual([loaded.owner_phone, loaded.owner_chat_id, loaded.pending_owner_phone], ['972541112233', '972541112233@c.us', null]);
 });

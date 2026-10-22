@@ -92,7 +92,7 @@ adminRouter.post("/waha/ack-number-change", async (request, response) => {
 adminRouter.get('/owner-settings', async (request,response) => {
   const settings=await loadOwnerSettings(supabase,queryTenantId(request.query.tenantId));
   response.setHeader('Cache-Control','no-store');
-  response.json({timeZone:settings.time_zone??DEFAULT_TIME_ZONE,phone:settings.owner_phone??'',quietStart:settings.quiet_hours_start?.slice(0,5)??'',quietEnd:settings.quiet_hours_end?.slice(0,5)??'',paired:!!settings.owner_chat_id});
+  response.json({timeZone:settings.time_zone??DEFAULT_TIME_ZONE,phone:settings.owner_phone??'',quietStart:settings.quiet_hours_start?.slice(0,5)??'',quietEnd:settings.quiet_hours_end?.slice(0,5)??'',paired:!!settings.owner_chat_id,pendingPhone:settings.pending_owner_phone??''});
 });
 adminRouter.post('/owner-settings', async (request,response) => {
   const tenantId=queryTenantId(request.query.tenantId);
