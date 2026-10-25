@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { OWNER_GROUPS, seedOwnerGroups } from './test-support/owner-groups.js';
 import test from 'node:test';
 import type { WhatsAppProvider } from '../providers/whatsapp/whatsapp-provider.interface.js';
 import { createTestDatabase, pgliteDatabaseClient } from './test-support/pglite-harness.js';
@@ -16,6 +17,7 @@ async function fixture() {
   const db = pgliteDatabaseClient(pg);
   const tenant = (await db.from('tenants').insert({ name: 'Business', business_name: 'Business', phone: '972500000009', status: 'active' }).select('id').single()).data as { id: string };
   await pg.query("insert into notification_settings(tenant_id,owner_phone,owner_chat_id,mode,time_zone,behavior) values($1,'972500000008','972500000008@c.us','mute_all','Asia/Jerusalem','{\"outbound_typing_min_seconds\":0,\"outbound_typing_max_seconds\":0,\"outbound_conversation_gap_min_seconds\":0,\"outbound_conversation_gap_max_seconds\":0,\"outbound_retry_delays_seconds\":[0,0,0]}'::jsonb)", [tenant.id]);
+  await seedOwnerGroups(pg, tenant.id);
   return { pg, db, tenantId: tenant.id, async close() { await stopOutboundQueue(db); await pg.close(); } };
 }
 
@@ -69,8 +71,9 @@ test('expired reminder is not sent and creates an owner notice', async () => {
   const h = await fixture();
   try {
     const sent: string[] = [];
-    const provider: WhatsAppProvider = { async getSessionStatus() { return { status: 'WORKING' }; },
-      async sendMessage(input) { sent.push(input.text); return { id: `id-${sent.length}` }; } };
+    // Z10: the notice goes to the owner's «Нужен ответ» group (the business account must be known for that).
+    const provider: WhatsAppProvider = { async getSessionStatus() { return { status: 'WORKING', me: { id: '972500000009@c.us' } }; },
+      async sendMessage(input) { sent.push(input.text); if (input.chatId !== '972500000001@c.us') assert.equal(input.chatId, OWNER_GROUPS.needsAnswer); return { id: `id-${sent.length}` }; } };
     await enqueueMessage(h.db, h.tenantId, provider,
       { session: 'one', chatId: '972500000001@c.us', text: 'Late reminder' },
       { kind: 'reminder', deadlineAt: new Date(Date.now() - 1_000) });

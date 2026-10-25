@@ -172,6 +172,21 @@ export class WahaAdminService {
     }
   }
 
+  /**
+   * Z10: «Подключаюсь с этого телефона» — a code to enter in WhatsApp → Linked devices → «Link with phone number».
+   * Only while the session waits for a scan (as the QR). A WAHA error is a code for the cabinet, never its text.
+   */
+  async pairingCode(tenantId: string, phone: string): Promise<{ code: string }> {
+    await this.requireTenant(tenantId);
+    if (!/^[1-9]\d{7,14}$/.test(phone)) throw new HttpError(400, "Invalid phone", { code: "pairing_phone_invalid" });
+    const session = sessionNameForTenant(tenantId);
+    const current = await this.readStatus(session);
+    if (!current.qrAvailable) throw new HttpError(409, "Pairing is unavailable in the current session state", { code: "pairing_unavailable" });
+    if (!this.provider.requestPairingCode) throw new HttpError(501, "Pairing by code is not supported", { code: "pairing_unavailable" });
+    try { return { code: await this.provider.requestPairingCode(session, phone) }; }
+    catch { console.error('waha_pairing_code_failed', { tenantId }); throw new HttpError(502, "Pairing code unavailable", { code: "pairing_failed" }); }
+  }
+
   async status(tenantId: string) {
     await this.requireTenant(tenantId);
     const session = sessionNameForTenant(tenantId);

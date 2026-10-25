@@ -5,6 +5,7 @@ import { usageSummary } from "../services/usage.service.js";
 import { supabase } from '../db/supabase.js';
 import { loadOwnerSettings, submitOwnerSettings } from '../services/owner-settings.service.js';
 import { getTenantRouting } from '../services/tenant.service.js';
+import { renameOwnerChannels } from '../services/owner-channels.service.js';
 import { createWhatsAppProvider } from '../providers/whatsapp/index.js';
 import { readSessionIdentity } from '../utils/incoming-policy.js';
 import { renderText } from '../services/templates.service.js';
@@ -73,6 +74,11 @@ adminRouter.get("/groups", async (request, response) => {
   response.json(await waha.groups(queryTenantId(request.query.tenantId)));
 });
 
+adminRouter.post("/waha/pairing-code", async (request, response) => {
+  const body = objectBody(request.body);
+  response.setHeader('Cache-Control', 'no-store');
+  response.json(await waha.pairingCode(queryTenantId(request.query.tenantId), typeof body.phone === 'string' ? body.phone.replace(/\D/g, '') : ''));
+});
 adminRouter.post("/waha/reconnect", async (request, response) => {
   response.json(await waha.reconnect(queryTenantId(request.query.tenantId)));
 });
@@ -173,7 +179,13 @@ adminRouter.post('/simulator/owner-answer',async(request,response)=>{const tenan
 // ADMIN_SECRET directly, exactly like PATCH /usage-limits. validateRuntimePatch still
 // rejects billing/system fields here unconditionally.
 adminRouter.patch('/tenant-settings',async(request,response)=>{
- const input=objectBody(request.body);
+ const input=objectBody(request.body),tenantId=queryTenantId(request.query.tenantId);
  if(Array.isArray(input.enabled_agents)&&input.enabled_agents.some(name=>!registry.list().some(a=>a.name===name)))throw new HttpError(400,'Unknown agent');
- response.json(await saveRuntimeSettings(supabase,queryTenantId(request.query.tenantId),input));
+ const saved=await saveRuntimeSettings(supabase,tenantId,input);
+ // Z10: the owner groups are named in the owner's language with the assistant name — rename them on a change.
+ if('owner_language' in input||'assistant_name' in input){
+  const session=(await getTenantRouting(supabase,tenantId))?.instance?.session_name;
+  if(typeof session==='string'&&session)try{await renameOwnerChannels(supabase,createWhatsAppProvider(),tenantId,session);}catch{console.error('owner_channel_rename_failed',{tenantId});}
+ }
+ response.json(saved);
 });

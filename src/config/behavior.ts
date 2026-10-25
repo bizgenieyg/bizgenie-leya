@@ -8,6 +8,8 @@ export const BEHAVIOR_DEFAULTS = {
   /** Task Z: the assistant comes back 1 hour after the owner's last message in the chat (owners do not type commands). */
   auto_resume_hours: 1,
   deferred_max_age_hours: 12,
+  /** Z10: how often an owner group is checked to still exist before a message goes to it (operator). */
+  owner_channel_check_minutes: 60,
   context_message_count: 10,
   context_retention_hours: 48,
   history_fetch_limit: 30,

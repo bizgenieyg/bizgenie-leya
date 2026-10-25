@@ -111,6 +111,7 @@ export function validateRuntimePatch(input:Record<string,unknown>) {
   else if(key==='link_timeout_seconds')behaviorPatch[key]=integer(key,value,1,60);
   else if(key==='link_max_bytes')behaviorPatch[key]=integer(key,value,10000,20*1024*1024);
   else if(key==='link_max_pages')behaviorPatch[key]=integer(key,value,0,10);
+  else if(key==='owner_channel_check_minutes')behaviorPatch[key]=integer(key,value,1,10080);
   else if(key==='audit_max_open_cards')behaviorPatch[key]=integer(key,value,1,50);
   else if(key==='reply_engine'){if(value!=='legacy'&&value!=='instruction')throw new HttpError(400,'Invalid reply engine');behaviorPatch[key]=value;}
   else if(key==='instruction_template'){if(value!==''&&!isTemplateKey(value))throw new HttpError(400,'Invalid instruction template');behaviorPatch[key]=value;}

@@ -78,6 +78,13 @@ export interface WhatsAppProvider {
   getChatMessages?(session: string, chatId: string, options: { limit: number; timeoutMs: number }): Promise<WhatsAppChatMessage[]>;
   /** GOWS: phone JID behind a `@lid` id (`{ pn: '972…@c.us' }`), or null. */
   getLidPhone?(session: string, lid: string, options: { timeoutMs: number }): Promise<string | null>;
+  /** Z10 owner groups (one per topic). */
+  createGroup?(session: string, input: { name: string; participants: string[] }): Promise<string>;
+  removeGroupParticipants?(session: string, groupId: string, participants: string[]): Promise<void>;
+  setGroupSubject?(session: string, groupId: string, subject: string): Promise<void>;
+  setGroupDescription?(session: string, groupId: string, description: string): Promise<void>;
+  setGroupPicture?(session: string, groupId: string, url: string): Promise<void>;
+  hasGroup?(session: string, groupId: string): Promise<boolean>;
 }
 
 /** Administrative lifecycle operations for sessions in the shared WAHA container. */
@@ -89,6 +96,8 @@ export interface WhatsAppSessionProvider {
   deleteSession(session: string): Promise<void>;
   getSessionStatus(session: string): Promise<SessionStatus>;
   getQrImage(session: string): Promise<QrImage>;
+  /** Z10: a code to link the business number from the same phone («Связать по номеру телефона»). */
+  requestPairingCode?(session: string, phone: string): Promise<string>;
   getGroups?(session: string): Promise<WhatsAppGroup[]>;
   getSessionConfig?(session: string): Promise<Record<string, unknown> | null>;
   updateSessionConfig?(session: string, config: Record<string, unknown>): Promise<void>;

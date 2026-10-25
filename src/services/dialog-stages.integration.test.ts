@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { isOwnerChat, seedOwnerGroups } from './test-support/owner-groups.js';
 import test from 'node:test';
 import type { WhatsAppProvider } from '../providers/whatsapp/whatsapp-provider.interface.js';
 import { createTestDatabase, pgliteDatabaseClient } from './test-support/pglite-harness.js';
@@ -18,6 +19,7 @@ async function fixture(options: { sector?: string } = {}) {
   const db = pgliteDatabaseClient(pg);
   const tenantId = ((await db.from('tenants').insert({ name: 'Юрия', business_name: 'BizGenie', language: 'ru', tier: 'basic', status: 'active', business_sector: options.sector ?? 'автоматизация' }).select('id').single()).data as { id: string }).id;
   await pg.query("insert into notification_settings(tenant_id,owner_phone,owner_chat_id,mode,time_zone,auto_replies_paused) values($1,'972500000002',$2,'mute_all','Asia/Jerusalem',false)", [tenantId, owner]);
+  await seedOwnerGroups(pg, tenantId);
   await pg.query("insert into plans(code,display_name,messages_per_month,voice_minutes_per_month,warning_percent,unlimited) values('basic','Базовый',500,60,80,false) on conflict(code) do nothing");
   await pg.query("insert into tenant_usage_limits(tenant_id,plan,messages_per_month,voice_minutes_per_month,warning_percent,messages_overridden,voice_overridden,warning_overridden) values($1,'basic',500,60,80,false,false,false)", [tenantId]);
   await pg.query("insert into assistant_profiles(tenant_id,assistant_name,allowed_languages,tone) values($1,'Гоша',array['ru'],'friendly_professional')", [tenantId]);
@@ -43,7 +45,7 @@ async function fixture(options: { sector?: string } = {}) {
   };
   const state = async () => (await pg.query<{ dialog_state: Record<string, unknown> }>('select dialog_state from conversations')).rows[0]?.dialog_state ?? {};
   return { pg, db, tenantId, sent, prompts, ai, send, state, reply: (...r: Array<Record<string, unknown> | Error>) => { replies = r; },
-    toClient: () => sent.filter(m => m.chatId === chat), toOwner: () => sent.filter(m => m.chatId === owner), async close() { await stopOutboundQueue(db); await pg.close(); } };
+    toClient: () => sent.filter(m => m.chatId === chat), toOwner: () => sent.filter(m => isOwnerChat(owner)(m.chatId)), async close() { await stopOutboundQueue(db); await pg.close(); } };
 }
 
 test('bare greeting: owner template, zero model calls; the known client gets the short form with the first name', async () => {

@@ -38,6 +38,8 @@ export async function loadOwnerSettings(db: DatabaseClient, tenantId: string): P
   cache.set(tenantId, { value, expiresAt: Date.now() + SETTINGS_TTL_MS });
   return value;
 }
+/** Whether the owner can be reached at all (a number is set). Z10: the messages themselves go to the owner's groups. */
+export function hasOwnerContact(settings: OwnerSettings): boolean { return !!(settings.owner_phone || settings.owner_chat_id); }
 export function ownerDestination(settings: OwnerSettings): string { return settings.owner_chat_id || toChatId(settings.owner_phone); }
 export function isBusinessOwner(from: string, settings: OwnerSettings): boolean {
   const canonical = (value: string) => value.replace(/@s\.whatsapp\.net$/, "@c.us");
@@ -120,9 +122,20 @@ export async function savePendingOwnerSettings(db: DatabaseClient, tenantId: str
 /** The owner-settings request: with a working business session — save and send the pairing code; without one —
  *  save the number only and say the code comes after the WhatsApp connection (Z6, onboarding before the QR). */
 export async function submitOwnerSettings(db: DatabaseClient, tenantId: string, input: Record<string,unknown>, provider: WhatsAppProvider, session: string | null,
-  send: (session: string, chatId: string, text: string) => Promise<void>): Promise<{ sent: true } | { sent: false; pending: 'whatsapp' }> {
+  send: (session: string, chatId: string, text: string) => Promise<void>): Promise<{ sent: true } | { sent: false; pending: 'whatsapp' } | { sent: false; sameNumber: true }> {
   const status = session ? await provider.getSessionStatus(session) : null;
   if (!session || status?.status !== 'WORKING') { await savePendingOwnerSettings(db, tenantId, input); return { sent: false, pending: 'whatsapp' }; }
+  // Z10: the business number itself — one number for business and personal. Nothing to confirm (the owner writes
+  // from this account), no code to oneself; the assistant writes to the owner's groups.
+  const me = readSessionIdentity(status.me), phone = normalizeInternationalPhone(input.phone);
+  if (phone && me.id && ownerIdentityField(toChatId(phone), me)) {
+    const optional = optionalOwnerFields(input), settings = await loadOwnerSettings(db, tenantId);
+    const { error } = await db.from("notification_settings").upsert({ tenant_id: tenantId, time_zone: settings.time_zone ?? DEFAULT_TIME_ZONE, ...optional,
+      owner_phone: phone, owner_chat_id: me.id.replace(/@s\.whatsapp\.net$/, "@c.us"), pending_owner_phone: null, owner_pairing_hash: null, owner_pairing_expires_at: null, mode: "mute_all" }, { onConflict: "tenant_id" });
+    if (error) throw new Error("Owner settings save failed");
+    invalidateOwnerSettings(db, tenantId);
+    return { sent: false, sameNumber: true };
+  }
   const saved = await saveOwnerSettings(db, tenantId, input, readSessionIdentity(status.me));
   const settings = await loadOwnerSettings(db, tenantId);
   const { renderText } = await import('./templates.service.js');

@@ -6,7 +6,7 @@ import { allowedRecipient,ownerIdentityField,readSessionIdentity } from '../util
 import { isWithinQuietHours } from './escalation.service.js';
 import { enqueueMessage } from '../workers/outbound-queue.js';
 import { behavior } from './runtime-settings.service.js';
-import { loadOwnerSettings,ownerDestination,type OwnerSettings } from './owner-settings.service.js';
+import { hasOwnerContact,loadOwnerSettings,type OwnerSettings } from './owner-settings.service.js';
 import { renderText } from './templates.service.js';
 import { zonedDateTimeFormat } from '../utils/time-zone.js';
 import { OWNER_SUMMARY_LEASE_MS,OWNER_SUMMARY_MAX_ATTEMPTS,OWNER_SUMMARY_RETRY_MS } from '../config/owner-summary.js';
@@ -99,7 +99,7 @@ async function claimSummary(db:DatabaseClient,tenantId:string,periodKey:string,n
 }
 export function summaryFailureState(attempts:number,now:Date){const retry=attempts<OWNER_SUMMARY_MAX_ATTEMPTS;return{retry,status:retry?'pending':'error',scheduled_at:retry?new Date(now.getTime()+OWNER_SUMMARY_RETRY_MS).toISOString():now.toISOString()};}
 export async function deliverOwnerSummaryIfDue(db:DatabaseClient,tenantId:string,session:string,provider:WhatsAppProvider,now=new Date()){
- const settings=await loadOwnerSettings(db,tenantId),due=summaryDue(settings,now);if(!due||isWithinQuietHours(settings,now))return;const to=ownerDestination(settings);if(!to||!allowedRecipient(to))return;const me=readSessionIdentity((await provider.getSessionStatus(session)).me);if(!me.id||ownerIdentityField(to,me))return;
+ const settings=await loadOwnerSettings(db,tenantId),due=summaryDue(settings,now);if(!due||isWithinQuietHours(settings,now))return;if(!hasOwnerContact(settings))return;/* Z10: summaries go to the «Отчёты» group. */const {ownerChat,ownerChatAllowed}=await import('./owner-channels.service.js');const to=await ownerChat(db,provider,tenantId,session,settings,'reports');if(!ownerChatAllowed(to))return;
  const claimed=await claimSummary(db,tenantId,due.periodKey,now);if(!claimed)return;const summary=await buildOwnerSummary(db,tenantId,new Date(now.getTime()-due.days*86400000),now),missing=summary.missing_knowledge.length?summary.missing_knowledge.map(x=>`${x.question} (${x.count})`).join('; '):'—';
  let sent=false;
  try{const language=behavior(settings).owner_language,suggestions=await summarySuggestionBlock(db,tenantId,settings,language);

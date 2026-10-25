@@ -5,7 +5,8 @@ import { createTaskAIProvider } from '../providers/ai/index.js';
 import type { EmbeddingProvider } from '../providers/embedding/embedding-provider.interface.js';
 import { createEmbeddingProvider } from '../providers/embedding/index.js';
 import { behavior } from './runtime-settings.service.js';
-import { isBusinessOwner, loadOwnerSettings, ownerDestination, type OwnerSettings } from './owner-settings.service.js';
+import { isBusinessOwner, loadOwnerSettings, hasOwnerContact, type OwnerSettings } from './owner-settings.service.js';
+import { ownerChat, ownerChatAllowed } from './owner-channels.service.js';
 import { renderText } from './templates.service.js';
 import { enqueueMessage, outboundIdsForProviderId } from '../workers/outbound-queue.js';
 import { scheduleWake } from '../workers/job-wake.js';
@@ -145,10 +146,9 @@ function dayStart(settings: OwnerSettings, now: Date): Date {
  */
 export async function runOwnerInterview(db: DatabaseClient, tenantId: string, provider: WhatsAppProvider, now = new Date(), deps: { taskAI?: AIProvider } = {}): Promise<{ sent: string | null; next: Date | null }> {
   const settings = await loadOwnerSettings(db, tenantId), config = behavior(settings);
-  const destination = ownerDestination(settings);
   const instance = await db.from('whatsapp_instances').select('session_name').eq('tenant_id', tenantId).maybeSingle();
   check(instance.error, 'Instance unavailable');
-  if (!destination || !allowedRecipient(destination) || !instance.data?.session_name) return { sent: null, next: null };
+  if (!hasOwnerContact(settings) || !instance.data?.session_name) return { sent: null, next: null };
   if (isWithinQuietHours(settings, now)) return { sent: null, next: nextQuietHoursEnd(settings, now) ?? new Date(now.getTime() + 3_600_000) };
   const waiting = await db.from('escalations').select('id', { count: 'exact', head: true }).eq('tenant_id', tenantId).in('status', ['queued', 'notifying', 'pending', 'reminding']);
   check(waiting.error, 'Escalations unavailable');
@@ -178,6 +178,9 @@ export async function runOwnerInterview(db: DatabaseClient, tenantId: string, pr
     if (question === null) return { sent: null, next: new Date(now.getTime() + 3_600_000) };
   }
   const text = renderText(settings, 'owner.interview_question', language, { question, left: queue.length });
+  // Z10: interview questions go to the «Нужен ответ» group.
+  const destination = await ownerChat(db, provider, tenantId, instance.data.session_name, settings, 'needs_answer');
+  if (!ownerChatAllowed(destination)) return { sent: null, next: null };
   const out = await enqueueMessage(db, tenantId, provider, { session: instance.data.session_name, chatId: destination, text }, { kind: 'owner_notice', dedupeKey: `interview:${next.id}:${next.postponed_count}` });
   if (!out.id) throw new Error('Interview question not delivered');
   check((await db.from('owner_questions').update({ status: 'sent', sent_at: now.toISOString(), owner_message_ids: [...next.owner_message_ids, out.id] }).eq('id', next.id)).error, 'Owner question update failed');
@@ -248,14 +251,14 @@ export async function answerOwnerQuestion(db: DatabaseClient, tenantId: string, 
  * Owner channel hook (before the "reply with a quote" hint): an answer to an interview question.
  * Returns true when the message was taken as such.
  */
-export async function handleInterviewReply(db: DatabaseClient, provider: WhatsAppProvider, tenantId: string, session: string, from: string, text: string, quoted: string | null, settings: OwnerSettings, deps: AnswerDeps = {}, now = new Date()): Promise<boolean> {
+export async function handleInterviewReply(db: DatabaseClient, provider: WhatsAppProvider, tenantId: string, session: string, from: string, text: string, quoted: string | null, settings: OwnerSettings, replyChat?: string, deps: AnswerDeps = {}, now = new Date()): Promise<boolean> {
   if (!isBusinessOwner(from, settings)) return false;
   const question = await questionForReply(db, tenantId, quoted);
   if (!question || !text.trim()) return false;
   const result = await answerOwnerQuestion(db, tenantId, question, text, 'whatsapp', deps, now);
   const language = lang(settings);
   const reply = result.status === 'answered' ? renderText(settings, 'owner.interview_recorded', language, { facts: result.facts.join('; ').slice(0, 900) }) : renderText(settings, 'owner.interview_postponed', language);
-  const out = await enqueueMessage(db, tenantId, provider, { session, chatId: from, text: reply }, { kind: 'owner_notice', dedupeKey: `interview-reply:${question.id}:${now.getTime()}` });
+  const out = await enqueueMessage(db, tenantId, provider, { session, chatId: replyChat ?? from, text: reply }, { kind: 'owner_notice', dedupeKey: `interview-reply:${question.id}:${now.getTime()}` });
   // A correction may quote "Записала": it points at the same question.
   if (out.id && result.status === 'answered') check((await db.from('owner_questions').update({ owner_message_ids: [...question.owner_message_ids, out.id] }).eq('id', question.id)).error, 'Owner question update failed');
   await ensureInterviewJob(db, tenantId, now);

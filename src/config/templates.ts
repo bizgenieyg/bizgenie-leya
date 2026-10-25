@@ -1,4 +1,11 @@
 export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
+  // Z10: the owner's groups by topic ({name} — the assistant name).
+  "owner.channel_needs_answer": {"ru": "{name} · Нужен ответ", "he": "{name} · צריך תשובה", "en": "{name} · Needs answer"},
+  "owner.channel_reports": {"ru": "{name} · Отчёты", "he": "{name} · דוחות", "en": "{name} · Reports"},
+  "owner.channel_needs_answer_description": {"ru": "Вопросы клиентов и заявки. Чтобы ответить клиенту — ответьте цитатой на сообщение.", "he": "שאלות של לקוחות ובקשות. כדי לענות ללקוח — יש להשיב בציטוט להודעה.", "en": "Client questions and requests. To answer a client, reply to the message with a quote."},
+  "owner.channel_reports_description": {"ru": "Сводки о работе ассистента.", "he": "סיכומים על עבודת העוזר.", "en": "Summaries of the assistant's work."},
+  "owner.channel_recreated": {"ru": "Прежняя группа недоступна — теперь пишу сюда.", "he": "הקבוצה הקודמת אינה זמינה — מעכשיו אכתוב כאן.", "en": "The previous group is unavailable — I'll write here from now on."},
+  "owner.channels_moved": {"ru": "Теперь пишу вам в группах «{needs_answer}» и «{reports}».", "he": "מעכשיו אכתוב בקבוצות „{needs_answer}” ו„{reports}”.", "en": "From now on I'll write in the groups “{needs_answer}” and “{reports}”."},
   "owner.summary": {
     "ru": "Сводка Леи: обращений — {inquiries}, новых клиентов — {new_clients}, закрыто Леей — {closed_by_bot}, передано владельцу — {escalated}, ждут ответа — {unanswered}. Не хватило знаний: {missing_knowledge}.",
     "he": "סיכום ליה: פניות — {inquiries}, לקוחות חדשים — {new_clients}, נסגרו על ידי ליה — {closed_by_bot}, הועברו לבעל העסק — {escalated}, ממתינים לתשובה — {unanswered}. ידע חסר: {missing_knowledge}.",

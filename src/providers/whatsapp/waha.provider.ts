@@ -207,6 +207,54 @@ export class WahaProvider implements WhatsAppProvider, WhatsAppSessionProvider {
     });
   }
 
+  /**
+   * Z10, connecting from the same phone: WAHA (GOWS) asks WhatsApp for a pairing code for `phone` (digits, no «+»).
+   * The session must be waiting for a QR scan; no device name is set (with it the code often fails).
+   */
+  async requestPairingCode(session: string, phone: string): Promise<string> {
+    const data = await this.request("POST", `/api/${encodeURIComponent(session)}/auth/request-code`, { phoneNumber: phone }, AbortSignal.timeout(20000));
+    const code = isRecord(data) && typeof data.code === "string" ? data.code.trim() : "";
+    if (!/^[A-Z0-9]{4}-?[A-Z0-9]{4}$/i.test(code)) throw new Error("WAHA returned no pairing code");
+    return code;
+  }
+
+  /** Z10 owner groups. `participants` may be empty; returns the group JID (…@g.us). */
+  async createGroup(session: string, input: { name: string; participants: string[] }): Promise<string> {
+    const data = await this.request("POST", `/api/${encodeURIComponent(session)}/groups`,
+      { name: input.name, participants: input.participants.map(id => ({ id })) }, AbortSignal.timeout(20000));
+    const id = groupIdFrom(data);
+    if (!id) throw new Error("WAHA returned no group id");
+    return id;
+  }
+
+  async removeGroupParticipants(session: string, groupId: string, participants: string[]): Promise<void> {
+    await this.request("POST", `/api/${encodeURIComponent(session)}/groups/${encodeURIComponent(groupId)}/participants/remove`,
+      { participants: participants.map(id => ({ id })) }, AbortSignal.timeout(15000));
+  }
+
+  async setGroupSubject(session: string, groupId: string, subject: string): Promise<void> {
+    await this.request("PUT", `/api/${encodeURIComponent(session)}/groups/${encodeURIComponent(groupId)}/subject`, { subject }, AbortSignal.timeout(15000));
+  }
+
+  async setGroupDescription(session: string, groupId: string, description: string): Promise<void> {
+    await this.request("PUT", `/api/${encodeURIComponent(session)}/groups/${encodeURIComponent(groupId)}/description`, { description }, AbortSignal.timeout(15000));
+  }
+
+  async setGroupPicture(session: string, groupId: string, url: string): Promise<void> {
+    await this.request("PUT", `/api/${encodeURIComponent(session)}/groups/${encodeURIComponent(groupId)}/picture`, { file: { url } }, AbortSignal.timeout(20000));
+  }
+
+  /** Whether the group still exists with this account in it: 404/403 (gone, or we were removed) → false; other errors throw. */
+  async hasGroup(session: string, groupId: string): Promise<boolean> {
+    try {
+      await this.request("GET", `/api/${encodeURIComponent(session)}/groups/${encodeURIComponent(groupId)}`, undefined, AbortSignal.timeout(15000));
+      return true;
+    } catch (error) {
+      if (error instanceof WahaHttpError && [403, 404].includes(error.status)) return false;
+      throw error;
+    }
+  }
+
   private async request(
     method: "GET" | "POST" | "PUT" | "DELETE",
     path: string,
@@ -295,6 +343,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * WAHA returns the sent-message id in a few shapes depending on engine/version:
  * a bare string, `{ id: "..." }`, or `{ id: { _serialized: "..." } }`.
  */
+/** The group JID from a WAHA create-group response (GOWS: `JID`, other engines: `id` / `gid._serialized`). */
+export function groupIdFrom(value: unknown): string {
+  if (!isRecord(value)) return "";
+  const gid = isRecord(value.gid) ? value.gid._serialized : undefined;
+  const candidate = [value.JID, value.id, gid].find(item => typeof item === "string" && item.endsWith("@g.us"));
+  return typeof candidate === "string" ? candidate : "";
+}
+
 export function extractMessageId(value: unknown): string {
   if (typeof value === "string") {
     return value;

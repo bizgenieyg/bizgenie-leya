@@ -1,5 +1,5 @@
 import { allowedRecipient } from '../utils/incoming-policy.js';
-import { ownerDestination } from '../services/owner-settings.service.js';
+import { ownerChat, ownerChatAllowed } from '../services/owner-channels.service.js';
 import { createEmbeddingProvider } from '../providers/embedding/index.js';
 import type { EmbeddingProvider } from '../providers/embedding/embedding-provider.interface.js';
 import { randomUUID } from 'node:crypto';
@@ -141,8 +141,8 @@ export async function handleWebhookEvent(tenantId: string, body: Record<string, 
       if (saved.error) throw new Error('Demo state save failed');
     },
     notifyOwner: async (text, dedupeKey) => {
-      const destination = ownerDestination(settings);
-      if (!destination || !allowedRecipient(destination)) { console.warn('owner_notice_skipped', { tenantId, reason: 'missing_owner_phone' }); return; }
+      const destination = await ownerChat(db, provider, tenantId, session, settings, 'needs_answer');
+      if (!destination || !ownerChatAllowed(destination)) { console.warn('owner_notice_skipped', { tenantId, reason: 'missing_owner_phone' }); return; }
       await enqueueMessage(db, tenantId, provider, { session, chatId: destination, text }, { kind: 'owner_notice', dedupeKey });
     },
     loadClientProfile: () => loadClientProfile(db, tenantId, client.id),

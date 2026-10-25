@@ -5,7 +5,7 @@ import type { OwnerSettings } from './owner-settings.service.js';
 import type { DatabaseClient } from '../db/supabase.js';
 import type { WhatsAppProvider } from '../providers/whatsapp/whatsapp-provider.interface.js';
 import { allowedRecipient,ownerIdentityField,readSessionIdentity } from '../utils/incoming-policy.js';
-import { loadOwnerSettings,ownerDestination } from './owner-settings.service.js';
+import { hasOwnerContact,loadOwnerSettings } from './owner-settings.service.js';
 import { enqueueMessage } from '../workers/outbound-queue.js';
 
 /** Service fallback is not a paid automatic answer; no Gemini call is needed. */
@@ -14,10 +14,10 @@ export async function deliverUsageNotices(db:DatabaseClient,tenantId:string,sess
   try {
     const {data:jobs,error}=await db.from('scheduled_jobs').select('id,payload').eq('tenant_id',tenantId).eq('job_type','usage_limit_notice').eq('status','pending').order('scheduled_at').limit(10);
     if(error)throw new Error('Usage notices unavailable');if(!jobs?.length)return;
-    const settings=await loadOwnerSettings(db,tenantId);const to=ownerDestination(settings);
-    if(!to||!allowedRecipient(to))return;
-    const me=readSessionIdentity((await provider.getSessionStatus(session)).me);
-    if(!me.id||ownerIdentityField(to,me)||ownerIdentityField(`${settings.owner_phone}@c.us`,me))return;
+    // Z10: usage notices go to the «Отчёты» group.
+    const settings=await loadOwnerSettings(db,tenantId);if(!hasOwnerContact(settings))return;
+    const {ownerChat,ownerChatAllowed}=await import('./owner-channels.service.js');const to=await ownerChat(db,provider,tenantId,session,settings,'reports');
+    if(!ownerChatAllowed(to))return;
     for(const job of jobs){
       const {data,error:claimError}=await db.from('scheduled_jobs').update({status:'sending'}).eq('tenant_id',tenantId).eq('id',job.id).eq('status','pending').select('id');
       if(claimError)throw new Error('Usage notice claim failed');if(!data?.length)continue;
@@ -52,9 +52,8 @@ export async function notifyUsageFailure(db:DatabaseClient,tenantId:string,sessi
  const interval=behavior(settings).usage_failure_alert_minutes*60000;
  try{
   if(!await reserveFailureAlert(tenantId,interval,now))return;
-  const to=ownerDestination(settings);if(!to||!allowedRecipient(to))return;
-  const me=readSessionIdentity((await provider.getSessionStatus(session)).me);
-  if(!me.id||ownerIdentityField(to,me)||ownerIdentityField(`${settings.owner_phone}@c.us`,me))return;
+  if(!hasOwnerContact(settings))return;
+  const {ownerChat,ownerChatAllowed}=await import('./owner-channels.service.js');const to=await ownerChat(db,provider,tenantId,session,settings,'reports');if(!ownerChatAllowed(to))return;
   await enqueueMessage(db,tenantId,provider,{session,chatId:to,text:renderText(settings,'owner.usage_failure',behavior(settings).owner_language)},{kind:'owner_notice',dedupeKey:`usage-failure:${Math.floor(now/interval)}`});
  }catch{console.error('usage_failure_alert_delivery_failed',{tenantId});}
 }

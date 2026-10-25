@@ -9,7 +9,7 @@ const ECHO_WINDOW_MS=60_000;
  * gets its WhatsApp id right after sendText; before even that, match a row still `sending`
  * to the same contact with the same text within the echo window.
  */
-async function isOwnQueuedSend(db:DatabaseClient,tenantId:string,id:string,chats:string[],text:string|null,now:Date):Promise<boolean>{
+export async function isOwnQueuedSend(db:DatabaseClient,tenantId:string,id:string,chats:string[],text:string|null,now:Date):Promise<boolean>{
   if(id&&(await outboundIdsForProviderId(db,tenantId,id)).length)return true;
   if(!text)return false;
   const sending=await db.from('outbound_messages').select('chat_id,text').eq('tenant_id',tenantId).eq('status','sending')

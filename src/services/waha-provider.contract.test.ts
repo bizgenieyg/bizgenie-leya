@@ -222,3 +222,37 @@ test("group directory falls back to names when chats fail or return a non-array"
     }
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test('Z10: WAHA GOWS pairing code and owner group endpoints (paths, payloads, timeouts; no device name)', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ method: string; url: string; body: unknown; signal: AbortSignal | null | undefined }> = [];
+  let missing = false;
+  globalThis.fetch = async (url, init) => {
+    calls.push({ method: String(init?.method), url: String(url).replace('http://waha.internal', ''), body: init?.body ? JSON.parse(String(init.body)) : undefined, signal: init?.signal });
+    if (String(url).endsWith('/auth/request-code')) return Response.json({ code: 'ABCD-EFGH' });
+    if (String(url).endsWith('/groups') && init?.method === 'POST') return Response.json({ JID: '120363111111111@g.us' });
+    if (missing) return new Response('{}', { status: 404 });
+    return Response.json({});
+  };
+  try {
+    const provider = new WahaProvider('http://waha.internal');
+    assert.equal(await provider.requestPairingCode('business', '972522164724'), 'ABCD-EFGH');
+    assert.equal(await provider.createGroup('business', { name: 'Мира · Нужен ответ', participants: [] }), '120363111111111@g.us');
+    await provider.removeGroupParticipants('business', '120363111111111@g.us', ['972507771234@c.us']);
+    await provider.setGroupSubject('business', '120363111111111@g.us', 'Мира · Отчёты');
+    await provider.setGroupDescription('business', '120363111111111@g.us', 'text');
+    await provider.setGroupPicture('business', '120363111111111@g.us', 'https://cdn.test/leya.jpg');
+    assert.equal(await provider.hasGroup('business', '120363111111111@g.us'), true);
+    missing = true;
+    assert.equal(await provider.hasGroup('business', '120363111111111@g.us'), false, '404 → gone');
+    const g = encodeURIComponent('120363111111111@g.us');
+    assert.deepEqual(calls.map(c => `${c.method} ${c.url}`), [
+      'POST /api/business/auth/request-code', 'POST /api/business/groups', `POST /api/business/groups/${g}/participants/remove`,
+      `PUT /api/business/groups/${g}/subject`, `PUT /api/business/groups/${g}/description`, `PUT /api/business/groups/${g}/picture`,
+      `GET /api/business/groups/${g}`, `GET /api/business/groups/${g}`]);
+    assert.deepEqual(calls[0]!.body, { phoneNumber: '972522164724' });
+    assert.deepEqual(calls[1]!.body, { name: 'Мира · Нужен ответ', participants: [] });
+    assert.deepEqual(calls[2]!.body, { participants: [{ id: '972507771234@c.us' }] });
+    assert.ok(calls.every(c => c.signal instanceof AbortSignal));
+  } finally { globalThis.fetch = originalFetch; }
+});

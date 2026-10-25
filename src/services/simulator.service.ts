@@ -4,7 +4,7 @@ import type { AIProvider } from '../providers/ai/ai-provider.interface.js';
 import type { DatabaseClient } from '../db/supabase.js';
 import type { ClientRow, ConversationRow } from './tenant.service.js';
 import type { ConversationMemory } from './context.service.js';
-import { loadOwnerSettings, ownerDestination } from './owner-settings.service.js';
+import { hasOwnerContact, loadOwnerSettings } from './owner-settings.service.js';
 import { behavior } from './runtime-settings.service.js';
 import { meterAI } from './metered-providers.js';
 import { recordUsageEvent, usageAllowsMessage } from './usage.service.js';
@@ -97,8 +97,7 @@ export async function simulateCustomerMessage(db: DatabaseClient, tenantId: stri
     sendToClient: async reply => { sentReply = reply; return null; },
     persistAssistantMessage: async answer => { await saveReply(answer); },
     createEscalation: async (language, _questions, answered, options) => {
-      const destination = ownerDestination(settings);
-      if (!destination || !allowedRecipient(destination)) return null;
+      if (!hasOwnerContact(settings)) return null;
       if (options?.clientText) { sentReply = options.clientText; await saveReply(options.clientText); return options.clientText; }
       const waiting = escalationWaitingMessage(text, settings, client.time_zone, language, now);
       const reply = answered ? `${clientText(answered)}\n\n${withoutRepeatedIntroduction(waiting.text, true)}` : withoutRepeatedIntroduction(waiting.text, memory.introduced);

@@ -18,7 +18,8 @@ import type { WhatsAppProvider } from '../providers/whatsapp/whatsapp-provider.i
 import { allowedRecipient, ownerIdentityField, readSessionIdentity } from '../utils/incoming-policy.js';
 import { clientText, isDeferredAnswer, ownerAnswerText, replyId, waitingText, withoutRepeatedIntroduction } from '../utils/assistant-text.js';
 import { buildEscalationText, isWithinQuietHours, nextQuietHoursEnd } from './escalation.service.js';
-import { invalidateOwnerSettings, isBusinessOwner, loadOwnerSettings, ownerDestination, pairOwner, type OwnerSettings } from './owner-settings.service.js';
+import { hasOwnerContact, invalidateOwnerSettings, isBusinessOwner, loadOwnerSettings, ownerDestination, pairOwner, type OwnerSettings } from './owner-settings.service.js';
+import { ownerChat, ownerChatAllowed } from './owner-channels.service.js';
 import { nextEscalationDeadline } from './escalation-deadline.js';
 import { scheduleWake } from '../workers/job-wake.js';
 
@@ -39,7 +40,7 @@ async function claim(db:DatabaseClient,e:Escalation,from:string,to:string):Promi
   const {data,error}=await db.from('escalations').update({status:to}).eq('tenant_id',e.tenant_id).eq('id',e.id).eq('status',from).select('id');check(error);return !!data?.length;
 }
 async function send(db:DatabaseClient,tenantId:string,provider:WhatsAppProvider,session:string,chatId:string,text:string,kind:OutboundKind='owner_notice',dedupeKey?:string,inboundMessageIds:string[]=[]):Promise<string> {
-  if(!allowedRecipient(chatId)) throw new Error('Recipient policy blocked escalation');
+  if(!ownerChatAllowed(chatId)) throw new Error('Recipient policy blocked escalation');
   const result=await enqueueMessage(db,tenantId,provider,{session,chatId,text:clientText(text)},{kind,...(dedupeKey?{dedupeKey}:{}),inboundMessageIds});
   if(!result.id) throw new Error('Message delivery not confirmed');
   return result.id;
@@ -158,13 +159,9 @@ export async function createOwnerRequest(db:DatabaseClient,provider:WhatsAppProv
 }
 export async function notifyOwner(db:DatabaseClient,provider:WhatsAppProvider,e:Escalation,settings:OwnerSettings):Promise<boolean> {
   const now=new Date(),stale=await obsolete(db,e,settings,now);if(stale){await closeObsolete(db,e,stale,now);return false;}
-  const destination=ownerDestination(settings);
-  if(!destination||!allowedRecipient(destination)) return false;
-  // A business-line change must never turn notifications into self-chat.
-  const me=readSessionIdentity((await provider.getSessionStatus(e.session)).me);
-  if(!me.id || ownerIdentityField(destination,me) || ownerIdentityField(`${settings.owner_phone}@c.us`,me)) {
-    console.warn('escalation_owner_identity_unavailable_or_self');return false;
-  }
+  // Z10: questions and requests go to the «Нужен ответ» group (never a chat with oneself, also with one number).
+  const destination=await ownerChat(db,provider,e.tenant_id,e.session,settings,'needs_answer');
+  if(!ownerChatAllowed(destination)){console.warn('escalation_owner_channel_unavailable');return false;}
   if(!await claim(db,e,'queued','notifying')) return false;
   let pendingSince:Date;
   try {
@@ -189,7 +186,7 @@ export async function notifyOwner(db:DatabaseClient,provider:WhatsAppProvider,e:
  * the answered part (if any) followed by the waiting text.
  */
 export async function createEscalation(db:DatabaseClient,provider:WhatsAppProvider,input:Omit<Escalation,'id'|'status'|'owner_message_ids'|'answer'|'learning_state'|'learning_message_ids'>,settings:OwnerSettings,clientZone?:string|null,options:{questions?:string[];answered?:string|null;kind?:'question'|'request';clientText?:string;modelUnavailable?:boolean}={}) {
-  if(!ownerDestination(settings)) {console.warn('webhook_escalation_skipped',{reason:'missing_owner_phone'});return;}
+  if(!hasOwnerContact(settings)) {console.warn('webhook_escalation_skipped',{reason:'missing_owner_phone'});return;}
   if(!allowedRecipient(ownerDestination(settings))) return;
   const questions=options.questions?.length?options.questions:[input.question];
   const batchId=questions.length>1?randomUUID():null;
@@ -225,7 +222,9 @@ export function escalationWaitingMessage(question:string,settings:OwnerSettings,
     ...(quiet&&at?{quietHours:{active:true as const,until:at.toISOString()}}:{}),
   };
 }
-export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProvider,tenantId:string,session:string,from:string,text:string,quoted:string|null,settings:OwnerSettings,ai?:AIProvider|null,inboundMessageId?:string|null):Promise<boolean> {
+/** `replyChat` (Z10): where the owner's commands are answered — the owner group the message came from; the sender's chat otherwise. */
+export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProvider,tenantId:string,session:string,from:string,text:string,quoted:string|null,settings:OwnerSettings,ai?:AIProvider|null,inboundMessageId?:string|null,replyChat?:string):Promise<boolean> {
+  const reply=replyChat??from;
   if(await pairOwner(db,tenantId,from,text,settings)) return true;
   if(!isBusinessOwner(from,settings)) return false;
   const command=text.trim().toLowerCase().replace(/[.!]+$/,'');
@@ -234,7 +233,7 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
     const {error}=await db.from('notification_settings').update({auto_replies_paused:paused}).eq('tenant_id',tenantId);check(error);
     invalidateOwnerSettings(db,tenantId);
     if(!paused) await rescheduleTenantEscalationTimeouts(db,tenantId,await loadOwnerSettings(db,tenantId),new Date());
-    await send(db,tenantId,provider,session,from,paused?renderText(settings,'owner.owner_reply_5',behavior(settings).owner_language):renderText(settings,'owner.owner_reply_6',behavior(settings).owner_language));return true;
+    await send(db,tenantId,provider,session,reply,paused?renderText(settings,'owner.owner_reply_5',behavior(settings).owner_language):renderText(settings,'owner.owner_reply_6',behavior(settings).owner_language));return true;
   }
   if(command==='диалоги') {
     const result=await db.from('conversations').select('id,client_id,bot_paused').eq('tenant_id',tenantId).eq('status','active').order('last_message_at',{ascending:false}).limit(20);check(result.error);
@@ -243,19 +242,19 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
       const client=await db.from('clients').select('name').eq('tenant_id',tenantId).eq('id',conversation.client_id).maybeSingle();check(client.error);
       lines.push(renderText(settings,'owner.dialog_line',behavior(settings).owner_language,{name:client.data?.name||'',paused:conversation.bot_paused?' ⏸':'',id:conversation.id}));
     }
-    await send(db,tenantId,provider,session,from,lines.length?lines.join('\n\n'):renderText(settings,'owner.short_0',behavior(settings).owner_language));return true;
+    await send(db,tenantId,provider,session,reply,lines.length?lines.join('\n\n'):renderText(settings,'owner.short_0',behavior(settings).owner_language));return true;
   }
   const direct=/^(пауза диалог|продолжить диалог|беру на себя) ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.exec(command);
   if(direct) {
     const paused=direct[1]!=='продолжить диалог';
     const result=await db.from('conversations').update({bot_paused:paused}).eq('tenant_id',tenantId).eq('id',direct[2]!).select('id');check(result.error);
     if(!paused&&result.data?.length) await rescheduleTenantEscalationTimeouts(db,tenantId,settings,new Date());
-    await send(db,tenantId,provider,session,from,result.data?.length?(paused?renderText(settings,'owner.owner_reply_12',behavior(settings).owner_language):renderText(settings,'owner.short_1',behavior(settings).owner_language)):renderText(settings,'owner.short_2',behavior(settings).owner_language));return true;
+    await send(db,tenantId,provider,session,reply,result.data?.length?(paused?renderText(settings,'owner.owner_reply_12',behavior(settings).owner_language):renderText(settings,'owner.short_1',behavior(settings).owner_language)):renderText(settings,'owner.short_2',behavior(settings).owner_language));return true;
   }
   // Task Z: an answer to an owner-interview question (by quote, or the only question out when no client waits).
   const {handleInterviewReply}=await import('./owner-interview.service.js');
-  if(await handleInterviewReply(db,provider,tenantId,session,from,text,quoted,settings))return true;
-  if(!quoted) {await send(db,tenantId,provider,session,from,renderText(settings,'owner.owner_reply_15',behavior(settings).owner_language));return true;}
+  if(await handleInterviewReply(db,provider,tenantId,session,from,text,quoted,settings,reply))return true;
+  if(!quoted) {await send(db,tenantId,provider,session,reply,renderText(settings,'owner.owner_reply_15',behavior(settings).owner_language));return true;}
   // Stored ids are outbound queue row ids (legacy rows: WhatsApp ids); a quote carries the WhatsApp id.
   const outboundIds=await outboundIdsForProviderId(db,tenantId,quoted);
   if(await handleSuggestionReply(db,tenantId,outboundIds,text))return true;
@@ -269,7 +268,7 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
     if(learned.learning_state!=='awaiting') return true;
     if(['да','сохранить','yes','כן'].includes(command)){
       const {error}=await db.rpc('confirm_escalation_learning',{p_tenant_id:tenantId,p_escalation_id:learned.id});check(error);
-      await send(db,tenantId,provider,session,from,renderText(settings,'owner.short_3',behavior(settings).owner_language));
+      await send(db,tenantId,provider,session,reply,renderText(settings,'owner.short_3',behavior(settings).owner_language));
     }else if(['нет','no','לא'].includes(command)){await patch(db,learned,{learning_state:'declined'});}
     return true;
   }
@@ -279,12 +278,12 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
     const paused=command!=='продолжить';
     const {error}=await db.from('conversations').update({bot_paused:paused}).eq('tenant_id',tenantId).eq('id',e.conversation_id);check(error);
     if(!paused) await rescheduleTenantEscalationTimeouts(db,tenantId,settings,new Date());
-    await send(db,tenantId,provider,session,from,paused?renderText(settings,'owner.owner_reply_22',behavior(settings).owner_language):renderText(settings,'owner.owner_reply_23',behavior(settings).owner_language));return true;
+    await send(db,tenantId,provider,session,reply,paused?renderText(settings,'owner.owner_reply_22',behavior(settings).owner_language):renderText(settings,'owner.owner_reply_23',behavior(settings).owner_language));return true;
   }
   if(e.status!=='pending') return true;
-  if(isDeferredAnswer(text)) {await send(db,tenantId,provider,session,from,renderText(settings,'owner.owner_reply_24',behavior(settings).owner_language));return true;}
+  if(isDeferredAnswer(text)) {await send(db,tenantId,provider,session,reply,renderText(settings,'owner.owner_reply_24',behavior(settings).owner_language));return true;}
   if(settings.auto_replies_paused||await conversationPaused(db,tenantId,e.conversation_id,settings)){
-    await send(db,tenantId,provider,session,from,renderText(settings,'owner.owner_reply_25',behavior(settings).owner_language));return true;
+    await send(db,tenantId,provider,session,reply,renderText(settings,'owner.owner_reply_25',behavior(settings).owner_language));return true;
   }
   const answer=clientText(text);if(!answer) return true;
   if(!allowedRecipient(e.client_chat_id)) return true;
@@ -309,7 +308,7 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
     await patch(db,e,{status:'delivery_uncertain'});
     await cancelEscalationTimeout(db,e);
     console.error('escalation_client_delivery_uncertain',{tenantId,escalationId:e.id});
-    await send(db,tenantId,provider,session,from,renderText(settings,'owner.owner_reply_26',behavior(settings).owner_language));return true;
+    await send(db,tenantId,provider,session,reply,renderText(settings,'owner.owner_reply_26',behavior(settings).owner_language));return true;
   }
   return true;
 }
@@ -354,10 +353,10 @@ export async function onOwnerAnswerDeliveryOutcome(db:DatabaseClient,provider:Wh
   const delivered=(found.data??[]) as Escalation[];if(!delivered.length)return;
   // Sent: each Q/A pair is only *considered* for the knowledge base; the owner sees it in the next summary.
   if(outcome==='sent'){for(const e of delivered)await proposeKnowledgeSuggestion(db,e);return;}
-  const settings=await loadOwnerSettings(db,row.tenant_id),owner=ownerDestination(settings);
+  const settings=await loadOwnerSettings(db,row.tenant_id),owner=await ownerChat(db,provider,row.tenant_id,row.session,settings,'needs_answer');
   for(const e of delivered)await patch(db,e,{status:'delivery_uncertain'});
   console.error('escalation_client_delivery_uncertain',{tenantId:row.tenant_id,escalationId:delivered[0]!.id});
-  if(owner&&allowedRecipient(owner))await send(db,row.tenant_id,provider,row.session,owner,renderText(settings,'owner.owner_reply_26',behavior(settings).owner_language));
+  if(ownerChatAllowed(owner))await send(db,row.tenant_id,provider,row.session,owner,renderText(settings,'owner.owner_reply_26',behavior(settings).owner_language));
 }
 export async function runDueScheduledEscalations(db:DatabaseClient,providerFor:()=>WhatsAppProvider,now=new Date(),tenantId?:string,jobId?:string):Promise<number> {
   let jobs=db.from('scheduled_jobs').select('id,tenant_id,payload').eq('job_type',JOB)
@@ -412,8 +411,8 @@ export async function runEscalationTimeouts(db:DatabaseClient,providerFor:()=>Wh
     }catch{await patch(db,e,{status:'delivery_uncertain'});console.error('escalation_timeout_delivery_uncertain',{tenantId:e.tenant_id,escalationId:e.id});}
     await cancelEscalationTimeout(db,e,now);
    }else if(!e.reminded_at&&elapsed>=config.escalation_remind_minutes*60000){
-    const to=ownerDestination(settings),me=readSessionIdentity((await provider.getSessionStatus(e.session)).me);
-    if(!to||!me.id||ownerIdentityField(to,me)||ownerIdentityField(`${settings.owner_phone}@c.us`,me))continue;
+    const to=await ownerChat(db,provider,e.tenant_id,e.session,settings,'needs_answer');
+    if(!ownerChatAllowed(to))continue;
     if(!await claim(db,e,'pending','reminding'))continue;
     try{const phone=formatPhone(await escalationPhone(db,e)),remind=renderText(settings,'owner.remind',config.owner_language,{name:e.client_name,phone:phone??'',question:e.question});
      const id=await send(db,e.tenant_id,provider,e.session,to,phone?remind:remind.replace(/\s*\(\s*\)/,''),'reminder',`escalation:${e.id}:remind`);

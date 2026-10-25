@@ -5,6 +5,7 @@ import { voiceUsage } from '../services/voice-usage.service.js';
 import { logSystemEvent } from '../services/logging.service.js';
 import { handleWebhookEvent } from './webhook.worker.js';
 import { observeOwnerOutgoing } from '../services/outgoing-owner.service.js';
+import { handleOwnerGroupMessage } from '../services/owner-group-inbound.service.js';
 import { createWhatsAppProvider } from '../providers/whatsapp/index.js';
 import { getTenantRouting } from '../services/tenant.service.js';
 import { handleVoiceUsage } from '../services/voice-usage.service.js';
@@ -87,6 +88,8 @@ async function processRows(db: DatabaseClient, rows: InboundRow[]): Promise<void
       voiceAdmission, messages.length > 1 ? messages : undefined, eventIds);
     return;
   }
+  // Z10: a message in one of the owner's groups (any direction) is the owner's — before the group/outgoing rules drop it.
+  if (decision.reason === 'non_private_chat' && await handleOwnerGroupMessage(db, first.tenant_id, first.payload)) return;
   if (decision.reason === 'outgoing_message') await observeOwnerOutgoing(db, first.tenant_id, first.payload);
   else logRejectedIncoming(decision);
 }

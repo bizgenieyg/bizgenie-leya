@@ -27,10 +27,12 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-only';
 process.env.GEMINI_API_KEY = '';
 
 const owner = '972500000002@c.us';
+// Z10: questions, reminders and interview go to the «Нужен ответ» group; summaries to «Отчёты».
+const needsAnswer = '120363000000001@g.us', reports = '120363000000002@g.us';
 const customer = '261885798707406@lid';
 const defaultsFor = (tenant: string): OwnerSettings => ({ owner_phone: '972500000002', owner_chat_id: owner, mode: 'mute_all', time_zone: 'Asia/Jerusalem', quiet_hours_start: null, quiet_hours_end: null, auto_replies_paused: false });
 
-async function pgHarness() {
+async function pgHarness({ withGroups = true }: { withGroups?: boolean } = {}) {
   const pg: PGlite = await createTestDatabase();
   const db = pgliteDatabaseClient(pg);
   const tenant = (await db.from('tenants').insert({ name: 'Business', business_name: 'Business', phone: '972500000001', language: 'ru', tier: 'basic', status: 'active' }).select('id').single()).data as { id: string };
@@ -38,10 +40,14 @@ async function pgHarness() {
   await pg.query('insert into notification_settings(tenant_id,owner_phone,owner_chat_id,mode,time_zone,auto_replies_paused) values($1,$2,$3,$4,$5,false)', [tenantId, '972500000002', owner, 'mute_all', 'Asia/Jerusalem']);
   await pg.query("insert into plans(code,display_name,messages_per_month,voice_minutes_per_month,warning_percent,unlimited) values('basic','Базовый',500,60,80,false) on conflict(code) do nothing");
   await pg.query('insert into tenant_usage_limits(tenant_id,plan,messages_per_month,voice_minutes_per_month,warning_percent,messages_overridden,voice_overridden,warning_overridden) values($1,\'basic\',500,60,80,false,false,false)', [tenantId]);
+  // Z10: an owner who already has both groups (most tests); the Z10 tests below start without them.
+  if (withGroups) await pg.query("insert into owner_channels(tenant_id,topic,chat_id) values($1,'needs_answer',$2),($1,'reports',$3)", [tenantId, needsAnswer, reports]);
   const clientRow = (await db.from('clients').insert({ tenant_id: tenantId, phone: customer, whatsapp_jid: customer, name: 'Клиент' }).select('id').single()).data as { id: string };
   const conversation = (await db.from('conversations').insert({ tenant_id: tenantId, client_id: clientRow.id, status: 'active', bot_paused: false }).select('id').single()).data as { id: string };
 
   const sent: { chatId: string; text: string; id: string; replyTo?: string }[] = [];
+  const groups: { id: string; name: string; participants: string[]; removed: string[] }[] = [];
+  const groupOptions = { refuseEmpty: false, gone: new Set<string>() };
   let failClient = false;
   const provider: WhatsAppProvider = {
     async getSessionStatus() { return { status: 'WORKING', me: { id: '972500000009@c.us', lid: '99999999@lid' } }; },
@@ -51,12 +57,18 @@ async function pgHarness() {
       sent.push({ ...input, id });
       return { id };
     },
+    // Z10: owner groups by topic.
+    async createGroup(_session, input) { if (groupOptions.refuseEmpty && !input.participants.length) throw new Error('participants required'); const id = `1203630000000${groups.length}@g.us`; groups.push({ id, ...input, removed: [] as string[] }); return id; },
+    async removeGroupParticipants(_session, id, participants) { groups.find(g => g.id === id)!.removed.push(...participants); },
+    async setGroupDescription() {},
+    async setGroupSubject(_session, id, subject) { groups.find(g => g.id === id)!.name = subject; },
+    async hasGroup(_session, id) { return !groupOptions.gone.has(id); },
   };
 
   const admissionCount = async () => Number((await pg.query<{ count: string }>("select count(*)::text as count from usage_events where tenant_id=$1 and event_type='message_received'", [tenantId])).rows[0]!.count);
   const settings = defaultsFor(tenantId);
   return {
-    pg, db, tenant: tenantId, conversationId: conversation.id, clientId: clientRow.id, provider, sent, settings,
+    pg, db, tenant: tenantId, conversationId: conversation.id, clientId: clientRow.id, provider, sent, settings, groups, groupOptions,
     admissions: admissionCount,
     deny: async () => { await pg.query("update tenant_usage_limits set messages_per_month=0,messages_overridden=true where tenant_id=$1", [tenantId]); },
     fail: () => { failClient = true; },
@@ -79,7 +91,7 @@ test('owner reply: short GOWS ID, delivery before closure, quoted confirmation o
   const input = { tenant_id: h.tenant, conversation_id: h.conversationId, client_chat_id: customer, client_name: 'Тестовый клиент', question: 'Можно завтра?', session: 'session', inbound_id: 'incoming' };
   await createEscalation(h.db, h.provider, input, h.settings); await settleAllOutboundQueues();
   assert.equal((await h.pg.query<{count:number}>("select count(*)::int as count from scheduled_jobs where job_type='escalation_timeout' and status='pending'")).rows[0]!.count, 1);
-  assert.equal(h.sent.length, 2); assert.match(h.sent[0]!.text, /ассистент владельца/); assert.equal(h.sent[1]!.chatId, owner);
+  assert.equal(h.sent.length, 2); assert.match(h.sent[0]!.text, /ассистент владельца/); assert.equal(h.sent[1]!.chatId, needsAnswer);
   let e = await h.escalation((await h.pg.query<{ id: string }>('select id from escalations limit 1')).rows[0]!.id);
   assert.equal(e.status, 'pending');
   assert.match(h.sent[1]!.text, /Тестовый клиент/);
@@ -120,7 +132,7 @@ test('createEscalation with an all-day-off schedule promises a callback and esca
   assert.equal(h.sent.length, 2);
   assert.match(h.sent[0]!.text, /свяжется с вами/);
   assert.doesNotMatch(h.sent[0]!.text, /\d{1,2}:\d{2}/);
-  assert.equal(h.sent[1]!.chatId, owner);
+  assert.equal(h.sent[1]!.chatId, needsAnswer);
   const job = (await h.pg.query<{ scheduled_at: string }>('select scheduled_at from scheduled_jobs limit 1')).rows[0]!;
   assert.ok(new Date(job.scheduled_at).getTime() - before < 5 * 60 * 1000);
 });
@@ -562,7 +574,7 @@ test('owner interview: launch questions first, one at a time; a quoted answer �
   await h.run('2026-09-30T09:00:00Z');
   assert.equal(h.sent.length, 1);
   assert.match(h.sent[0]!.text, /В какие дни вы принимаете\?/, 'launch before normal');
-  assert.equal(h.sent[0]!.chatId, owner);
+  assert.equal(h.sent[0]!.chatId, needsAnswer);
   assert.equal((await h.run('2026-09-30T09:05:00Z')).sent, null, 'the next one waits for the answer');
   await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'Вс–чт с 10 до 19, пятница до 14', h.sent[0]!.id, h.settings); await settleAllOutboundQueues();
   const answered = await h.question('В какие дни вы принимаете?');
@@ -654,7 +666,12 @@ test('Z6 onboarding: owner number before the QR is saved without a code; after t
   await handleOwnerMessage(h.db, provider, h.tenant, 'session', '88888888@lid', code!, null, settings); await settleAllOutboundQueues();
   row = await h.notificationSettings();
   assert.equal(row.owner_chat_id, '88888888@lid', 'paired'); assert.equal(row.owner_pairing_hash, null);
-  await assert.rejects(submitOwnerSettings(h.db, h.tenant, { phone: '972500000009', timeZone: 'Asia/Jerusalem' }, provider, 'session', send), /отличаться/, 'the business number check runs once connected');
+  // Z10: the business number itself = one number for business and personal: saved as the owner, no code to oneself.
+  const sentBefore = h.sent.length;
+  assert.deepEqual(await submitOwnerSettings(h.db, h.tenant, { phone: '972500000009', timeZone: 'Asia/Jerusalem' }, provider, 'session', send), { sent: false, sameNumber: true });
+  row = await h.notificationSettings();
+  assert.deepEqual([row.owner_phone, row.owner_chat_id, row.owner_pairing_hash], ['972500000009', '972500000009@c.us', null]);
+  await settleAllOutboundQueues(); assert.equal(h.sent.length, sentBefore, 'nothing is sent to the own chat');
 });
 
 test('Z8: interview questions follow owner_language — a gap question queued in Russian is sent and shown in Hebrew', async () => {
@@ -757,4 +774,118 @@ test('Z9 review: with WhatsApp stopped a new number does not replace the confirm
   const settings = { ...h.settings, ...(await h.notificationSettings()) } as unknown as OwnerSettings;
   await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', '972541112233@c.us', next.code, null, settings); await settleAllOutboundQueues();
   assert.equal((await h.notificationSettings()).owner_phone, '972541112233');
+});
+
+// ---------------------------------------------------------------- Z10: owner groups by topic
+const businessId = '972500000009@c.us';
+const groupMessage = (chat: string, text: string, options: { from?: string; fromMe?: boolean; source?: string; id?: string; quoted?: string } = {}) => ({
+  event: 'message.any', session: 'session', me: { id: businessId },
+  payload: { id: options.id ?? `false_${chat}_G${Math.random().toString(36).slice(2)}`, from: chat, fromMe: options.fromMe === true, body: text, hasMedia: false,
+    ...(options.source ? { source: options.source } : {}), ...(options.fromMe ? {} : { participant: options.from ?? owner }),
+    ...(options.quoted ? { replyTo: { id: options.quoted } } : {}),
+    _data: { Info: { Chat: chat, IsGroup: true, IsFromMe: options.fromMe === true, ...(options.fromMe ? {} : { Sender: options.from ?? owner }) } } },
+});
+async function escalate(h: Awaited<ReturnType<typeof pgHarness>>, question = 'Можно завтра?', inbound = randomUUID()) {
+  await createEscalation(h.db, h.provider, { tenant_id: h.tenant, conversation_id: h.conversationId, client_chat_id: customer, client_name: 'Клиент', question, session: 'session', inbound_id: inbound },
+    { ...h.settings, ...(await h.notificationSettings()) } as unknown as OwnerSettings); await settleAllOutboundQueues();
+}
+const channels = async (h: Awaited<ReturnType<typeof pgHarness>>) => (await h.pg.query<{ topic: string; chat_id: string; status: string }>('select topic,chat_id,status from owner_channels where tenant_id=$1 order by created_at', [h.tenant])).rows;
+
+test('Z10: separate numbers — the «Нужен ответ» group is created at the first question with the owner in it; the private chat hears once where messages go', async () => {
+  const h = await pgHarness({ withGroups: false });
+  await h.pg.query("insert into assistant_profiles(tenant_id,assistant_name) values($1,'Мира') on conflict (tenant_id) do update set assistant_name='Мира'", [h.tenant]);
+  await h.pg.query(`update notification_settings set behavior=coalesce(behavior,'{}'::jsonb)||'{"owner_language":"ru"}' where tenant_id=$1`, [h.tenant]);
+  assert.equal(h.groups.length, 0, 'nothing is created in advance');
+  await escalate(h);
+  assert.equal(h.groups.length, 1, 'only the topic that has a message');
+  assert.deepEqual([h.groups[0]!.name, h.groups[0]!.participants], ['Мира · Нужен ответ', [owner]]);
+  assert.deepEqual((await channels(h)).map(c => [c.topic, c.status]), [['needs_answer', 'active']]);
+  const notice = h.sent.find(m => m.chatId === h.groups[0]!.id);
+  assert.match(notice!.text, /Можно завтра\?/, 'the question is in the group');
+  const moved = h.sent.filter(m => m.chatId === owner);
+  assert.equal(moved.length, 1); assert.match(moved[0]!.text, /«Мира · Нужен ответ» и «Мира · Отчёты»/);
+  await escalate(h, 'А в субботу?');
+  assert.equal(h.groups.length, 1, 'the stored group is reused');
+  assert.equal(h.sent.filter(m => m.chatId === owner).length, 1, 'the private-chat line is sent once');
+});
+
+test('Z10: one number for business and personal — a group without participants; nothing goes to the chat with oneself', async () => {
+  const h = await pgHarness({ withGroups: false });
+  await h.pg.query("update notification_settings set owner_phone='972500000009', owner_chat_id=$2 where tenant_id=$1", [h.tenant, businessId]);
+  await escalate(h);
+  assert.equal(h.groups.length, 1); assert.deepEqual(h.groups[0]!.participants, []);
+  assert.equal(h.groups[0]!.name, 'Leya · Needs answer', 'no owner language set → English');
+  assert.ok(!h.sent.some(m => m.chatId === businessId), 'never a message to oneself');
+  assert.ok(h.sent.some(m => m.chatId === h.groups[0]!.id));
+  const created = (await h.pg.query<{ details: { path: string } }>("select details from system_logs where tenant_id=$1 and event='owner_channel_created'", [h.tenant])).rows;
+  assert.equal(created[0]?.details.path, 'no_participants');
+});
+
+test('Z10: one number, WhatsApp wants a participant — the operator bootstrap number is added and removed at once; without it nothing is sent', async () => {
+  const h = await pgHarness({ withGroups: false });
+  h.groupOptions.refuseEmpty = true;
+  await h.pg.query("update notification_settings set owner_phone='972500000009', owner_chat_id=$2 where tenant_id=$1", [h.tenant, businessId]);
+  await h.pg.query("insert into system_config(key,value) values('group_bootstrap_number','null'::jsonb) on conflict(key) do update set value='null'::jsonb");
+  await escalate(h);
+  assert.equal(h.groups.length, 0, 'no bootstrap number → no group');
+  assert.ok(!h.sent.some(m => m.chatId === businessId), 'and still nothing to oneself');
+  await h.pg.query(`update system_config set value='"+972 50-777-1234"'::jsonb where key='group_bootstrap_number'`);
+  await escalate(h, 'Ещё вопрос');
+  assert.equal(h.groups.length, 1);
+  assert.deepEqual([h.groups[0]!.participants, h.groups[0]!.removed], [['972507771234@c.us'], ['972507771234@c.us']]);
+  const created = (await h.pg.query<{ details: { path: string } }>("select details from system_logs where tenant_id=$1 and event='owner_channel_created'", [h.tenant])).rows;
+  assert.equal(created.at(-1)?.details.path, 'bootstrap');
+});
+
+test('Z10: a group that is gone (or the assistant was removed) is created again, with one line about it', async () => {
+  const h = await pgHarness();
+  await h.pg.query("update owner_channels set checked_at=now()-interval '2 days' where tenant_id=$1", [h.tenant]);
+  h.groupOptions.gone.add(needsAnswer);
+  await escalate(h);
+  const rows = await channels(h);
+  assert.deepEqual(rows.filter(r => r.topic === 'needs_answer').map(r => r.status).sort(), ['active', 'lost']);
+  const fresh = rows.find(r => r.topic === 'needs_answer' && r.status === 'active')!.chat_id;
+  const inFresh = h.sent.filter(m => m.chatId === fresh);
+  assert.equal(inFresh.length, 2); assert.match(inFresh[0]!.text, /Previous group is unavailable|Прежняя группа|previous group/i);
+  assert.ok(!h.sent.some(m => m.chatId === needsAnswer), 'nothing to the lost group');
+  assert.ok(!h.sent.some(m => m.chatId === owner), 'no private-chat line for a recreated group');
+});
+
+test('Z10: the owner answers in the group with a quote → the client gets it; the assistant\'s own messages in the group are not the owner', async () => {
+  const h = await pgHarness();
+  await h.pg.query("insert into whatsapp_instances(tenant_id,waha_url,session_name,status) values($1,'http://waha','session','WORKING') on conflict (tenant_id) do update set session_name='session'", [h.tenant]);
+  const { handleOwnerGroupMessage } = await import('./owner-group-inbound.service.js');
+  await escalate(h);
+  const notice = h.sent.find(m => m.chatId === needsAnswer)!;
+  // Separate numbers: the owner is a participant.
+  assert.equal(await handleOwnerGroupMessage(h.db, h.tenant, groupMessage(needsAnswer, 'Да, можно', { quoted: notice.id }), h.provider), true);
+  await settleAllOutboundQueues();
+  assert.ok(h.sent.some(m => m.chatId === customer && /можно/i.test(m.text)), 'the answer reaches the client');
+  // A group that is not an owner group, or someone else in the group, is not the owner.
+  assert.equal(await handleOwnerGroupMessage(h.db, h.tenant, groupMessage('120363999999999@g.us', 'Да'), h.provider), false);
+  assert.equal(await handleOwnerGroupMessage(h.db, h.tenant, groupMessage(needsAnswer, 'Пауза всё', { from: '972533333333@c.us' }), h.provider), false);
+  // One number: the owner writes from the business account — outgoing; the assistant's own sends are skipped.
+  await h.pg.query("update notification_settings set owner_phone='972500000009', owner_chat_id=$2 where tenant_id=$1", [h.tenant, businessId]);
+  invalidateOwnerSettings(h.db, h.tenant);
+  const own = h.sent.at(-1)!;
+  assert.equal(await handleOwnerGroupMessage(h.db, h.tenant, groupMessage(needsAnswer, 'что угодно', { fromMe: true, source: 'api' }), h.provider), false, 'an API send is the assistant');
+  assert.equal(await handleOwnerGroupMessage(h.db, h.tenant, groupMessage(needsAnswer, own.text, { fromMe: true, id: own.id }), h.provider), false, 'a known sent id is the assistant');
+  const before = h.sent.length;
+  assert.equal(await handleOwnerGroupMessage(h.db, h.tenant, groupMessage(needsAnswer, 'Пауза всё', { fromMe: true, source: 'app' }), h.provider), true, 'the owner typed it');
+  await settleAllOutboundQueues();
+  assert.equal((await h.notificationSettings()).auto_replies_paused, true);
+  assert.ok(h.sent.slice(before).every(m => m.chatId === needsAnswer), 'the reply goes to the group, not to oneself');
+});
+
+test('Z10: a new owner language or assistant name renames the existing groups', async () => {
+  const h = await pgHarness({ withGroups: false });
+  await h.pg.query("insert into assistant_profiles(tenant_id,assistant_name) values($1,'Мира') on conflict (tenant_id) do update set assistant_name='Мира'", [h.tenant]);
+  await escalate(h);
+  assert.equal(h.groups[0]!.name, 'Мира · Needs answer');
+  const { saveRuntimeSettings } = await import('./runtime-settings.service.js');
+  const { renameOwnerChannels } = await import('./owner-channels.service.js');
+  await h.pg.query("select public.ensure_tenant_usage_limits($1)", [h.tenant]).catch(() => undefined);
+  await saveRuntimeSettings(h.db, h.tenant, { owner_language: 'he', assistant_name: 'Лея' });
+  await renameOwnerChannels(h.db, h.provider, h.tenant, 'session');
+  assert.equal(h.groups[0]!.name, 'Лея · צריך תשובה');
 });

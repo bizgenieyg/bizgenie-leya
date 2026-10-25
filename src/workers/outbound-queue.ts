@@ -9,7 +9,7 @@ import { renderText } from '../services/templates.service.js';
 import { logSystemEvent } from '../services/logging.service.js';
 import { recordUsageEvent } from '../services/usage.service.js';
 import { intlTimeZone } from '../config/time-zones.js';
-import { allowedRecipient } from '../utils/incoming-policy.js';
+import { allowedRecipient, isGroupChatJid } from '../utils/incoming-policy.js';
 import { replyId } from '../utils/assistant-text.js';
 import { senderKey } from '../utils/whatsapp-id.js';
 import { BEHAVIOR_DEFAULTS } from '../config/behavior.js';
@@ -62,7 +62,8 @@ function delay(ms: number): Promise<void> { return new Promise(resolve => { setT
  */
 export async function enqueueMessage(db: DatabaseClient, tenantId: string, provider: WhatsAppProvider,
   input: SendMessageInput, options: EnqueueOptions = {}): Promise<{ id: string }> {
-  if (!allowedRecipient(input.chatId) || !input.text.trim()) throw new Error('Outbound recipient or text invalid');
+  // Z10: an owner group (its id comes from owner_channels, gated by the owner's number) or an allowed number.
+  if (!(isGroupChatJid(input.chatId) || allowedRecipient(input.chatId)) || !input.text.trim()) throw new Error('Outbound recipient or text invalid');
   const kind = options.kind ?? 'reply';
   const dedupeKey = options.dedupeKey ?? randomUUID();
   const payload = { tenant_id: tenantId, session: input.session, chat_id: input.chatId, text: input.text,
@@ -312,7 +313,9 @@ export class OutboundProcessor {
     if (row.kind === 'owner_answer_delivery') await this.ownerAnswerOutcome(row, 'failed');
     if (!row.deadline_at || row.kind === 'owner_notice') return;
     const settings = await loadOwnerSettings(this.db, row.tenant_id);
-    const to = ownerDestination(settings);
+    // Z10: «Нужен ответ» group of the owner.
+    const { ownerChat } = await import('../services/owner-channels.service.js');
+    const to = await ownerChat(this.db, this.provider, row.tenant_id, row.session, settings, 'needs_answer');
     if (!to) return;
     const client = await this.db.from('clients').select('name,phone').eq('tenant_id',row.tenant_id).eq('whatsapp_jid',row.chat_id).maybeSingle();
     const name = typeof client.data?.name === 'string' && client.data.name.trim() ? client.data.name.trim()
