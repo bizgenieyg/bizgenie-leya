@@ -8,7 +8,7 @@ import { activeFacts, factsMarkdown } from './business-facts.service.js';
 import { activeInstructionFor, resolveTemplate, activeDemoInstruction, fillPlaceholders, loadCore } from './instructions.service.js';
 import { checkedNumbers, hasLabel, labelValue, missingFields, parseLabels, parseRequestValue, unbackedNumbers, unsafeClientText, type ParsedReply } from './instruction-checks.js';
 import { agreement, isDirectRequest } from './client-consent.js';
-import { CLAIMED_PASSED_PATTERN } from '../config/consent.js';
+import { CLAIMED_BOOKED_PATTERN, CLAIMED_PASSED_PATTERN } from '../config/consent.js';
 import { ASSISTANT_NAME_DEFAULT, DEMO_EXAMPLE_MARKERS, REQUEST_INTENT_TURNS } from '../config/instructions.js';
 import { renderText } from './templates.service.js';
 import { activeRules, rulesBlock } from './owner-rules.service.js';
@@ -114,6 +114,8 @@ export async function answerByInstruction(turn: InstructionTurn): Promise<Instru
       if (!consent) issues.push({ code: 'request_consent', note: 'Клиент не просил и не соглашался на предложение: заявку [[REQUEST]] не ставь, не пиши, что передала или что свяжутся. Если уместно — предложи и спроси согласия.' });
       else if (missing.length) issues.push({ code: 'request_fields', note: `Для заявки не хватает данных: ${missing.join(', ')}. Спроси их у клиента (по одному), заявку пока не ставь и не пиши, что передала.` });
     }
+    // Z11 (eval M11): the assistant never makes the booking or confirms the time itself — the owner does.
+    if (CLAIMED_BOOKED_PATTERN.test(parsed.text)) issues.push({ code: 'claimed_booked', note: `Не пиши, что записала клиента или подтвердила время: это делает владелец. Спроси недостающее или предложи передать запрос владельцу ([[OFFER: …]]); если клиент уже согласился — поставь [[REQUEST]] и скажи, что владелец подтвердит время.` });
     const newDemo = labelValue(parsed, 'DEMO_START');
     const newDemoKnown = await knownDemo(newDemo);
     // Z3: the numbers of this answer belong to the business it speaks for. [[DEMO_END]] — back to the tenant's facts;
@@ -147,6 +149,8 @@ export async function answerByInstruction(turn: InstructionTurn): Promise<Instru
   let clientText = parsed.text;
   let request = checked.request;
   if (left.has('unsafe')) clientText = renderText(settings, 'client.instruction_fallback', language);
+  // Still «записала» after the regeneration: the owner confirms the time — say so instead.
+  else if (left.has('claimed_booked')) clientText = askOwnerText();
   if (left.has('request_consent') || left.has('request_fields')) {
     request = null;
     if (CLAIMED_PASSED_PATTERN.test(clientText)) clientText = renderText(settings, 'client.instruction_fallback', language);

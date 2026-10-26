@@ -38,5 +38,10 @@ export const CALL_TO_ACTION_PATTERN = /(?<![\p{L}])(?:демо|запис|соз
 export const OFFER_QUESTION_PATTERN = /(?<![\p{L}])(?:покаж|встреч|демо|созвон|свяж|связать|переда|рассчита|запис|להראות|אראה|פגישה|דמו|לקבוע|לתאם|להעביר|לחשב|show|meet|demo|call|book|schedule|pass|calculate)/iu;
 /** A reply that says the request is already passed or someone will contact (only true when code created it). */
 export const CLAIMED_PASSED_PATTERN = /(?<![\p{L}])(?:свяжется|свяжутся|передал|передала|передано|передам|получит[^.!?]{0,20}(?:заявк|просьб|запрос|сообщени)|ייצור|יחזור|העברתי|הועבר|will (?:contact|call|get in touch)|passed (?:it|this|your)|forwarded)/iu;
+/**
+ * Z11 (eval M11): a reply that says the booking is already made or the time confirmed — only the owner does that
+ * («среду после обеда записала»). Questions («Записать вас на среду?») and the client's own words do not match.
+ */
+export const CLAIMED_BOOKED_PATTERN = /(?<![\p{L}])(?:записала|записал(?!\p{L})|вы записаны|записаны на|забронировала|забронировал(?!\p{L})|подтверждаю (?:запись|время)|подтвердила (?:запись|время)|רשמתי|קבעתי לך|קבעתי לכם|התור נקבע|booked you|you(?:'re| are) booked|i(?:'ve| have) booked|confirmed your (?:booking|appointment)|your appointment is (?:set|confirmed))/iu;
 /** The client showed interest by asking about price, terms or how to start (task X: an offer may follow). */
 export const INTEREST_PATTERN = /(?<![\p{L}])(?:цен|стоит|стоимост|сколько|срок|как начать|как подключ|подключ|когда можно|попробова|пробн|כמה עולה|מחיר|מתי|איך מתחילים|לנסות|price|cost|how much|how long|how to start|get started|trial)/iu;

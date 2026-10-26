@@ -437,3 +437,22 @@ test('Z11: the owner rules are a block after the instruction and before the fact
     assert.match(system, /Правила бизнеса важнее инструкции; правила ядра важнее правил бизнеса\./);
   } finally { await f.pg.close(); }
 });
+
+test('Z11 review (eval M11): «записала» / «вы записаны» is never sent — the reply is rewritten; still so → the owner will confirm', async () => {
+  const { CLAIMED_BOOKED_PATTERN } = await import('../config/consent.js');
+  for (const t of ['Отлично, среду после обеда записала.', 'Вы записаны на четверг.', 'רשמתי אותך ליום רביעי', "Great, you're booked for Wednesday", 'I have booked you for 3pm'])
+    assert.match(t, CLAIMED_BOOKED_PATTERN, t);
+  for (const t of ['Записать вас на среду после обеда?', 'Хочу записаться', 'Ольга подтвердит время.', 'Can I book you for Wednesday?'])
+    assert.doesNotMatch(t, CLAIMED_BOOKED_PATTERN, t);
+  const f = await fixture();
+  try {
+    f.reply('Отлично, среду после обеда записала. В каком филиале удобнее?', 'Передам Юрию запрос на среду после обеда — он подтвердит время. Хорошо?\n[[OFFER: запись на среду]]');
+    const fixed = await f.say('хочу записаться в среду после обеда');
+    assert.equal(f.prompts.length, 2, 'regenerated once');
+    assert.match(f.prompts[1]!.system, /Не пиши, что записала клиента или подтвердила время/);
+    assert.match(String(fixed.reply), /подтвердит время/); assert.doesNotMatch(String(fixed.reply), /записала/);
+    f.reply('Записала вас на среду.', 'Всё, вы записаны на среду!');
+    const fallback = await f.say('а на четверг?');
+    assert.equal(fallback.reply, 'Уточню: Юрий ответит, и я сразу вернусь к вам.', 'twice → the owner will answer');
+  } finally { await f.pg.close(); }
+});
