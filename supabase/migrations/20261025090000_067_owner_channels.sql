@@ -9,7 +9,10 @@ create table if not exists public.owner_channels (
   tenant_id uuid not null references public.tenants(id) on delete cascade,
   topic text not null check (topic ~ '^[a-z][a-z0-9_]{0,40}$'),
   chat_id text not null check (chat_id ~ '^[0-9-]+@g\.us$'),
-  status text not null default 'active' check (status in ('active','lost')),
+  -- The owner's personal chat the group was made for (null: one number for business and personal). A different
+  -- confirmed owner number retires the group (status 'retired') and a new one is created with the new owner.
+  owner_chat text,
+  status text not null default 'active' check (status in ('active','lost','retired')),
   created_at timestamptz not null default now(),
   checked_at timestamptz not null default now()
 );

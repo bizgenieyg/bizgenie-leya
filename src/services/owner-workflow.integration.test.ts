@@ -41,7 +41,7 @@ async function pgHarness({ withGroups = true }: { withGroups?: boolean } = {}) {
   await pg.query("insert into plans(code,display_name,messages_per_month,voice_minutes_per_month,warning_percent,unlimited) values('basic','Базовый',500,60,80,false) on conflict(code) do nothing");
   await pg.query('insert into tenant_usage_limits(tenant_id,plan,messages_per_month,voice_minutes_per_month,warning_percent,messages_overridden,voice_overridden,warning_overridden) values($1,\'basic\',500,60,80,false,false,false)', [tenantId]);
   // Z10: an owner who already has both groups (most tests); the Z10 tests below start without them.
-  if (withGroups) await pg.query("insert into owner_channels(tenant_id,topic,chat_id) values($1,'needs_answer',$2),($1,'reports',$3)", [tenantId, needsAnswer, reports]);
+  if (withGroups) await pg.query("insert into owner_channels(tenant_id,topic,chat_id,owner_chat) values($1,'needs_answer',$2,$4),($1,'reports',$3,$4)", [tenantId, needsAnswer, reports, owner]);
   const clientRow = (await db.from('clients').insert({ tenant_id: tenantId, phone: customer, whatsapp_jid: customer, name: 'Клиент' }).select('id').single()).data as { id: string };
   const conversation = (await db.from('conversations').insert({ tenant_id: tenantId, client_id: clientRow.id, status: 'active', bot_paused: false }).select('id').single()).data as { id: string };
 
@@ -888,4 +888,37 @@ test('Z10: a new owner language or assistant name renames the existing groups', 
   await saveRuntimeSettings(h.db, h.tenant, { owner_language: 'he', assistant_name: 'Лея' });
   await renameOwnerChannels(h.db, h.provider, h.tenant, 'session');
   assert.equal(h.groups[0]!.name, 'Лея · צריך תשובה');
+});
+
+test('Z10 review: a confirmed new owner number gets a new group; the old number is taken out of the old one and gets nothing more', async () => {
+  const h = await pgHarness({ withGroups: false });
+  await escalate(h);
+  const first = h.groups[0]!;
+  assert.deepEqual(first.participants, [owner]);
+  // The new number is confirmed (Z9 pairing): owner_phone / owner_chat_id switch to it.
+  const next = '972541112233@c.us';
+  await h.pg.query("update notification_settings set owner_phone='972541112233', owner_chat_id=$2, pending_owner_phone=null where tenant_id=$1", [h.tenant, next]);
+  invalidateOwnerSettings(h.db, h.tenant);
+  const before = h.sent.length;
+  await escalate(h, 'Новый вопрос');
+  assert.equal(h.groups.length, 2, 'a new group');
+  assert.deepEqual(h.groups[1]!.participants, [next]);
+  assert.deepEqual(first.removed, [owner], 'the previous number is removed from the old group');
+  const after = h.sent.slice(before);
+  assert.ok(after.some(m => m.chatId === h.groups[1]!.id && /Новый вопрос/.test(m.text)));
+  assert.ok(!after.some(m => m.chatId === first.id || m.chatId === owner), 'nothing more to the old group or the old number');
+  assert.deepEqual((await channels(h)).map(c => [c.chat_id, c.status]), [[first.id, 'retired'], [h.groups[1]!.id, 'active']]);
+});
+
+test('Z10 review: two first messages at once create one group (also when re-creating a lost one)', async () => {
+  const h = await pgHarness({ withGroups: false });
+  const { ownerChannel } = await import('./owner-channels.service.js');
+  const settings = { ...h.settings, ...(await h.notificationSettings()) } as unknown as OwnerSettings;
+  const deps = { send: async () => {} };
+  const ids = await Promise.all([1, 2, 3].map(() => ownerChannel(h.db, h.provider, h.tenant, 'session', settings, 'needs_answer', deps)));
+  assert.equal(h.groups.length, 1); assert.equal(new Set(ids).size, 1);
+  await h.pg.query("update owner_channels set checked_at=now()-interval '2 days' where tenant_id=$1", [h.tenant]);
+  h.groupOptions.gone.add(h.groups[0]!.id);
+  const again = await Promise.all([1, 2].map(() => ownerChannel(h.db, h.provider, h.tenant, 'session', settings, 'needs_answer', deps)));
+  assert.equal(h.groups.length, 2, 'one replacement'); assert.equal(new Set(again).size, 1);
 });

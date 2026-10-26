@@ -31,7 +31,7 @@ async function fixture(behavior: Record<string, unknown> = {}) {
   const db = pgliteDatabaseClient(pg);
   const tenantId = ((await db.from('tenants').insert({ name: 'Юрий', business_name: 'BizGenie', language: 'ru', tier: 'basic', status: 'active' }).select('id').single()).data as { id: string }).id;
   await pg.query("insert into notification_settings(tenant_id,owner_phone,owner_chat_id,mode,time_zone,auto_replies_paused,behavior) values($1,'972500000002',$2,'mute_all','Asia/Jerusalem',false,$3)", [tenantId, owner, JSON.stringify(behavior)]);
-  await seedOwnerGroups(pg, tenantId);
+  await seedOwnerGroups(pg, tenantId, owner);
   await pg.query("insert into plans(code,display_name,messages_per_month,voice_minutes_per_month,warning_percent,unlimited) values('basic','Базовый',500,60,80,false) on conflict(code) do nothing");
   await pg.query("insert into tenant_usage_limits(tenant_id,plan,messages_per_month,voice_minutes_per_month,warning_percent,messages_overridden,voice_overridden,warning_overridden) values($1,'basic',500,60,80,false,false,false)", [tenantId]);
   await pg.query("insert into assistant_profiles(tenant_id,assistant_name,allowed_languages,tone) values($1,'Leya',array['ru'],'friendly_professional')", [tenantId]);

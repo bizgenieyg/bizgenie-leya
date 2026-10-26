@@ -30,7 +30,7 @@ export function ownerMode(settings: OwnerSettings, me: SessionIdentity): OwnerMo
   return { kind: 'separate', ownerChat: ownerDestination(settings) };
 }
 
-type Channel = { id: string; chat_id: string; topic: string; checked_at: string };
+type Channel = { id: string; chat_id: string; topic: string; checked_at: string; owner_chat: string | null };
 type Deps = { send: (session: string, chatId: string, text: string, dedupeKey: string) => Promise<void>; now?: Date };
 
 /** The language of group names and service lines: the owner's language as set, English when there is none. */
@@ -52,8 +52,23 @@ async function systemValue(db: DatabaseClient, key: string): Promise<string> {
   return typeof row.data?.value === 'string' ? row.data.value.trim() : '';
 }
 
+// Z10 review: one creation at a time per tenant and topic — two first messages must not create two groups (an extra
+// group cannot be deleted through the API). leya-api runs as a single process (cluster mode is forbidden), so an
+// in-process lock covers every caller; the unique index stays as the last guard.
+const creating = new Map<string, Promise<string | null>>();
+
 /** The chat of `topic` for this tenant: the stored group (checked every owner_channel_check_minutes), or a new one. */
 export async function ownerChannel(db: DatabaseClient, provider: WhatsAppProvider, tenantId: string, session: string,
+  settings: OwnerSettings, topic: OwnerTopic, deps: Deps): Promise<string | null> {
+  const key = `${tenantId}:${topic}`;
+  const running = creating.get(key);
+  if (running) { await running.catch(() => null); }
+  const next = resolveChannel(db, provider, tenantId, session, settings, topic, deps);
+  creating.set(key, next);
+  try { return await next; } finally { if (creating.get(key) === next) creating.delete(key); }
+}
+
+async function resolveChannel(db: DatabaseClient, provider: WhatsAppProvider, tenantId: string, session: string,
   settings: OwnerSettings, topic: OwnerTopic, deps: Deps): Promise<string | null> {
   const now = deps.now ?? new Date();
   const me = readSessionIdentity((await provider.getSessionStatus(session)).me);
@@ -61,11 +76,19 @@ export async function ownerChannel(db: DatabaseClient, provider: WhatsAppProvide
   if (mode.kind === 'none' || !me.id) return null;
   // The recipient allowlist (test environments) applies to the owner's number: its groups go only where the owner may.
   if (!allowedRecipient(ownerDestination(settings))) return null;
-  const found = await db.from('owner_channels').select('id,chat_id,topic,checked_at').eq('tenant_id', tenantId).eq('topic', topic).eq('status', 'active').maybeSingle();
+  const found = await db.from('owner_channels').select('id,chat_id,topic,checked_at,owner_chat').eq('tenant_id', tenantId).eq('topic', topic).eq('status', 'active').maybeSingle();
   if (found.error) throw new Error('Owner channel lookup failed');
   const current = found.data as Channel | null;
-  let recreated = false;
-  if (current) {
+  let recreated = false, previousOwner: string | null = null;
+  const ownerChat = mode.kind === 'separate' ? mode.ownerChat : null;
+  // Z10 review: the owner number changed (confirmed) — the old group belongs to the previous owner. It is retired, the
+  // previous number is taken out of it (best effort), and a new group is created with the current owner.
+  if (current && (current.owner_chat ?? null) !== ownerChat) {
+    const retired = await db.from('owner_channels').update({ status: 'retired' }).eq('id', current.id);
+    if (retired.error) throw new Error('Owner channel update failed');
+    if (current.owner_chat) { try { await provider.removeGroupParticipants?.(session, current.chat_id, [current.owner_chat]); } catch { console.warn('owner_channel_previous_owner_remove_failed'); } }
+    previousOwner = current.owner_chat ?? null;
+  } else if (current) {
     const fresh = now.getTime() - Date.parse(current.checked_at) < behavior(settings).owner_channel_check_minutes * 60_000;
     if (fresh || !provider.hasGroup) return current.chat_id;
     let present = true;
@@ -81,7 +104,7 @@ export async function ownerChannel(db: DatabaseClient, provider: WhatsAppProvide
     recreated = true;
   }
   if (!provider.createGroup) return null;
-  const earlier = await db.from('owner_channels').select('id').eq('tenant_id', tenantId).limit(1);
+  const earlier = await db.from('owner_channels').select('id').eq('tenant_id', tenantId).neq('status', 'retired').limit(1);
   if (earlier.error) throw new Error('Owner channel lookup failed');
   const name = await assistantName(db, tenantId);
   const subject = await channelName(db, tenantId, settings, topic, name);
@@ -98,9 +121,9 @@ export async function ownerChannel(db: DatabaseClient, provider: WhatsAppProvide
       path = 'bootstrap';
     }
   }
-  const saved = await db.from('owner_channels').insert({ tenant_id: tenantId, topic, chat_id: chatId, status: 'active', created_at: now.toISOString(), checked_at: now.toISOString() });
+  const saved = await db.from('owner_channels').insert({ tenant_id: tenantId, topic, chat_id: chatId, owner_chat: ownerChat, status: 'active', created_at: now.toISOString(), checked_at: now.toISOString() });
   if (saved.error) throw new Error('Owner channel save failed');
-  await logSystemEvent(db, { tenantId, level: 'info', event: 'owner_channel_created', details: { topic, path, recreated } });
+  await logSystemEvent(db, { tenantId, level: 'info', event: 'owner_channel_created', details: { topic, path, recreated, owner_changed: previousOwner !== null } });
   const language = channelLanguage(settings);
   // Cosmetics: a failed description or picture never blocks the message.
   try { await provider.setGroupDescription?.(session, chatId, renderText(settings, `owner.channel_${topic}_description`, language)); } catch { console.warn('owner_channel_description_failed'); }

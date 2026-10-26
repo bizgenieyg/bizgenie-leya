@@ -17,7 +17,7 @@ async function fixture() {
   const db = pgliteDatabaseClient(pg);
   const tenant = (await db.from('tenants').insert({ name: 'Business', business_name: 'Business', phone: '972500000009', status: 'active' }).select('id').single()).data as { id: string };
   await pg.query("insert into notification_settings(tenant_id,owner_phone,owner_chat_id,mode,time_zone,behavior) values($1,'972500000008','972500000008@c.us','mute_all','Asia/Jerusalem','{\"outbound_typing_min_seconds\":0,\"outbound_typing_max_seconds\":0,\"outbound_conversation_gap_min_seconds\":0,\"outbound_conversation_gap_max_seconds\":0,\"outbound_retry_delays_seconds\":[0,0,0]}'::jsonb)", [tenant.id]);
-  await seedOwnerGroups(pg, tenant.id);
+  await seedOwnerGroups(pg, tenant.id, '972500000008@c.us');
   return { pg, db, tenantId: tenant.id, async close() { await stopOutboundQueue(db); await pg.close(); } };
 }
 
