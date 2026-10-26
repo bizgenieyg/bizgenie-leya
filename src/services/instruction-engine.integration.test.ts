@@ -93,7 +93,8 @@ test('a direct request with missing required fields asks for them; collected ove
     assert.equal(first.reply, 'В каком городе и в какой день вам удобно?');
     f.reply('Хорошо. Какой день удобен?');
     await f.say('в Ашдоде');
-    f.reply('Записала: консультация в Ашдоде в среду. Юрий подберёт время и напишет.\n[[REQUEST: consultation | city=Ашдод; when=среда]]');
+    // Z11 (M11): not «записала» — the owner confirms the time.
+    f.reply('Консультация в Ашдоде в среду — Юрий подберёт время и напишет.\n[[REQUEST: consultation | city=Ашдод; when=среда]]');
     await f.say('в среду');
     assert.equal(await f.requests(), 1, 'the direct request two turns earlier still counts');
   } finally { await f.pg.close(); }
