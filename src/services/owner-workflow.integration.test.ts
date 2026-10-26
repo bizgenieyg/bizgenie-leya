@@ -922,3 +922,31 @@ test('Z10 review: two first messages at once create one group (also when re-crea
   const again = await Promise.all([1, 2].map(() => ownerChannel(h.db, h.provider, h.tenant, 'session', settings, 'needs_answer', deps)));
   assert.equal(h.groups.length, 2, 'one replacement'); assert.equal(new Set(again).size, 1);
 });
+
+test('Z10 review: a request with settings loaded before the new number was confirmed does not bring the old owner back', async () => {
+  const h = await pgHarness({ withGroups: false });
+  const { ownerChannel } = await import('./owner-channels.service.js');
+  const stale = { ...h.settings, ...(await h.notificationSettings()) } as unknown as OwnerSettings;
+  const next = '972541112233@c.us';
+  await h.pg.query("update notification_settings set owner_phone='972541112233', owner_chat_id=$2 where tenant_id=$1", [h.tenant, next]);
+  invalidateOwnerSettings(h.db, h.tenant);
+  const fresh = { ...h.settings, ...(await h.notificationSettings()) } as unknown as OwnerSettings;
+  const deps = { send: async () => {} };
+  const id = await ownerChannel(h.db, h.provider, h.tenant, 'session', fresh, 'needs_answer', deps);
+  assert.equal(await ownerChannel(h.db, h.provider, h.tenant, 'session', stale, 'needs_answer', deps), id, 'the stale request gets the current group');
+  assert.equal(h.groups.length, 1); assert.deepEqual(h.groups[0]!.participants, [next]); assert.deepEqual(h.groups[0]!.removed, []);
+});
+
+test('Z10 review: the creation queue holds when the first creation fails — the waiting calls create one group, one after another', async () => {
+  const h = await pgHarness({ withGroups: false });
+  const { ownerChannel } = await import('./owner-channels.service.js');
+  const settings = { ...h.settings, ...(await h.notificationSettings()) } as unknown as OwnerSettings;
+  const create = h.provider.createGroup!.bind(h.provider);
+  let calls = 0;
+  h.provider.createGroup = async (session, input) => { calls++; await new Promise(resolve => setTimeout(resolve, 20)); if (calls === 1) throw new Error('WAHA down'); return create(session, input); };
+  const results = await Promise.allSettled([1, 2, 3].map(() => ownerChannel(h.db, h.provider, h.tenant, 'session', settings, 'needs_answer', { send: async () => {} })));
+  assert.deepEqual(results.map(r => r.status), ['rejected', 'fulfilled', 'fulfilled']);
+  assert.equal(h.groups.length, 1, 'one group after the failure');
+  const ids = results.flatMap(r => r.status === 'fulfilled' ? [r.value] : []);
+  assert.equal(new Set(ids).size, 1);
+});

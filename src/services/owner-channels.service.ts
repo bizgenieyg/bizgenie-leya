@@ -55,22 +55,28 @@ async function systemValue(db: DatabaseClient, key: string): Promise<string> {
 // Z10 review: one creation at a time per tenant and topic — two first messages must not create two groups (an extra
 // group cannot be deleted through the API). leya-api runs as a single process (cluster mode is forbidden), so an
 // in-process lock covers every caller; the unique index stays as the last guard.
-const creating = new Map<string, Promise<string | null>>();
+const tails = new Map<string, Promise<unknown>>();
 
 /** The chat of `topic` for this tenant: the stored group (checked every owner_channel_check_minutes), or a new one. */
 export async function ownerChannel(db: DatabaseClient, provider: WhatsAppProvider, tenantId: string, session: string,
   settings: OwnerSettings, topic: OwnerTopic, deps: Deps): Promise<string | null> {
+  // A real queue: each call starts only after the previous one finished (also when it failed), one at a time.
   const key = `${tenantId}:${topic}`;
-  const running = creating.get(key);
-  if (running) { await running.catch(() => null); }
-  const next = resolveChannel(db, provider, tenantId, session, settings, topic, deps);
-  creating.set(key, next);
-  try { return await next; } finally { if (creating.get(key) === next) creating.delete(key); }
+  const previous = tails.get(key) ?? Promise.resolve();
+  const run = previous.catch(() => undefined).then(() => resolveChannel(db, provider, tenantId, session, settings, topic, deps));
+  const tail = run.catch(() => undefined);
+  tails.set(key, tail);
+  try { return await run; } finally { if (tails.get(key) === tail) tails.delete(key); }
 }
 
 async function resolveChannel(db: DatabaseClient, provider: WhatsAppProvider, tenantId: string, session: string,
   settings: OwnerSettings, topic: OwnerTopic, deps: Deps): Promise<string | null> {
   const now = deps.now ?? new Date();
+  // Z10 review: the owner is read from the database inside the queue — settings loaded by the caller earlier may
+  // still hold the previous number (a request that started before the new number was confirmed).
+  const current_owner = await db.from('notification_settings').select('owner_phone,owner_chat_id').eq('tenant_id', tenantId).maybeSingle();
+  if (current_owner.error) throw new Error('Owner settings lookup failed');
+  settings = { ...settings, owner_phone: current_owner.data?.owner_phone ?? null, owner_chat_id: current_owner.data?.owner_chat_id ?? null };
   const me = readSessionIdentity((await provider.getSessionStatus(session)).me);
   const mode = ownerMode(settings, me);
   if (mode.kind === 'none' || !me.id) return null;
