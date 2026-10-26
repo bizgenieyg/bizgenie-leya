@@ -149,12 +149,15 @@ export async function answerByInstruction(turn: InstructionTurn): Promise<Instru
   let clientText = parsed.text;
   let request = checked.request;
   if (left.has('unsafe')) clientText = renderText(settings, 'client.instruction_fallback', language);
-  // Still «записала» after the regeneration: the owner confirms the time — say so instead.
+  // Still «записала» after the regeneration: the owner confirms the time — say so instead (and pass it, below).
   else if (left.has('claimed_booked')) clientText = askOwnerText();
   if (left.has('request_consent') || left.has('request_fields')) {
     request = null;
     if (CLAIMED_PASSED_PATTERN.test(clientText)) clientText = renderText(settings, 'client.instruction_fallback', language);
   }
+  // Z11 review: «{owner} ответит» must be true — without a valid request or HUMAN the question goes to the owner (ASK_OWNER).
+  if (left.has('claimed_booked') && !(request && hasLabel(parsed, 'REQUEST')) && !hasLabel(parsed, 'HUMAN'))
+    return finishOutcome({ kind: 'ask_owner', text: askOwnerText(), question: text.slice(0, 1000) }, parsed, demo, attempts, [...left]);
   // Wrong numbers or still the wrong language after the regeneration: the template in the client's language + ASK_OWNER.
   if (left.has('numbers') || left.has('language')) {
     if (left.has('language')) console.warn('instruction_wrong_language', { tenantId, language });

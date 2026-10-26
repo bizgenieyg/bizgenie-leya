@@ -455,5 +455,7 @@ test('Z11 review (eval M11): «записала» / «вы записаны» is
     f.reply('Записала вас на среду.', 'Всё, вы записаны на среду!');
     const fallback = await f.say('а на четверг?');
     assert.equal(fallback.reply, 'Уточню: Юрий ответит, и я сразу вернусь к вам.', 'twice → the owner will answer');
+    // «Юрий ответит» is true: the question is passed to the owner (escalated), not a plain reply.
+    assert.equal(fallback.outcome, 'escalated');
   } finally { await f.pg.close(); }
 });
