@@ -7,8 +7,12 @@ import { behavior } from '../services/runtime-settings.service.js';
 import { loadOwnerSettings } from '../services/owner-settings.service.js';
 import { createEmbeddingProvider } from '../providers/embedding/index.js';
 import type { EmbeddingProvider } from '../providers/embedding/embedding-provider.interface.js';
-import { archiveFact, confirmSource, knowledgeProfile, updateFact } from '../services/business-facts.service.js';
-import { createSource, createVoiceSource, sourceWithDrafts } from '../services/knowledge-sources.service.js';
+import { addOwnerFact, archiveFact, confirmSource, knowledgeProfile, updateFact } from '../services/business-facts.service.js';
+import { activeRules, completeDetails, confirmProposal, declineProposal, proposalById, removeRuleNow, stepFor, understandOwnerMessage, type Proposal } from '../services/owner-rules.service.js';
+import { renderText } from '../services/templates.service.js';
+import { ADDRESS_FACT, ADDRESS_MODE_SOURCE_TITLE } from '../config/owner-rules.js';
+import { activeFacts } from '../services/business-facts.service.js';
+import { createSource, createVoiceSource, sourceWithDrafts, transcribeOwnerVoice } from '../services/knowledge-sources.service.js';
 import { answerOwnerQuestion, ensureInterviewJob, ownerQuestionCards, type OwnerQuestion } from '../services/owner-interview.service.js';
 import { decideAuditItem, openAuditItems } from '../services/knowledge-audit.service.js';
 
@@ -25,7 +29,12 @@ knowledgeProfileRouter.get('/knowledge/profile', async (request, response) => {
   if (waiting.error) throw new Error('Escalations unavailable');
   const assistant = await supabase.from('assistant_profiles').select('assistant_name').eq('tenant_id', tenantId).maybeSingle();
   response.setHeader('Cache-Control', 'no-store');
-  response.json({ ...await knowledgeProfile(supabase, tenantId), audit: await openAuditItems(supabase, tenantId), waiting_questions: waiting.count ?? 0, owner_questions: await ownerQuestionCards(supabase, tenantId), voice_max_seconds: behavior(await loadOwnerSettings(supabase, tenantId)).knowledge_voice_max_seconds, assistant_name: typeof assistant.data?.assistant_name === 'string' ? assistant.data.assistant_name : null });
+  // Z11: more than one address and nothing said yet about how they work → the cabinet asks (two choices).
+  const locations = (await activeFacts(supabase, tenantId)).filter(f => f.topic === 'location_hours');
+  const answered = await supabase.from('knowledge_sources').select('id', { count: 'exact', head: true }).eq('tenant_id', tenantId).eq('title', ADDRESS_MODE_SOURCE_TITLE);
+  if (answered.error) throw new Error('Knowledge sources unavailable');
+  const addressQuestion = locations.filter(f => ADDRESS_FACT.test(f.text)).length > 1 && !answered.count;
+  response.json({ address_question: addressQuestion, ...await knowledgeProfile(supabase, tenantId), audit: await openAuditItems(supabase, tenantId), waiting_questions: waiting.count ?? 0, owner_questions: await ownerQuestionCards(supabase, tenantId), voice_max_seconds: behavior(await loadOwnerSettings(supabase, tenantId)).knowledge_voice_max_seconds, assistant_name: typeof assistant.data?.assistant_name === 'string' ? assistant.data.assistant_name : null });
 });
 knowledgeProfileRouter.post('/knowledge/sources/link', async (request, response) => {
   const url = objectBody(request.body).url;
@@ -83,4 +92,68 @@ knowledgeProfileRouter.post('/knowledge/owner-questions/:id', async (request, re
   const result = await answerOwnerQuestion(supabase, tenantId, row.data as unknown as OwnerQuestion, text, 'cabinet');
   await ensureInterviewJob(supabase, tenantId);
   response.json(result);
+});
+
+// ---------------------------------------------------------------- Z11: owner rules in the cabinet
+const proposalView = (p: Proposal | null) => p ? { id: p.id, action: p.action, status: p.status, rule_number: p.rule_number, rule_text: p.rule_text, fact_text: p.fact_text, details_question: p.details_question } : null;
+const plainText = (value: unknown, max: number) => typeof value === 'string' ? value.trim().slice(0, max) : '';
+knowledgeProfileRouter.get('/knowledge/rules', async (request, response) => {
+  const tenantId = tenant(request.query.tenantId), settings = await loadOwnerSettings(supabase, tenantId);
+  response.setHeader('Cache-Control', 'no-store');
+  response.json({ rules: await activeRules(supabase, tenantId), max: behavior(settings).owner_rules_max, max_chars: behavior(settings).owner_rule_max_chars });
+});
+/**
+ * «+ Добавить правило» / «изменить» / «Исправить» in the simulator: what the owner meant and the «Поняла так» text;
+ * nothing is saved until confirm. `number` — the rule being edited; `context` — the simulator turn being corrected.
+ */
+knowledgeProfileRouter.post('/knowledge/rules/understand', async (request, response) => {
+  const tenantId = tenant(request.query.tenantId), body = objectBody(request.body), settings = await loadOwnerSettings(supabase, tenantId);
+  const text = plainText(body.text, 3000);
+  if (!text) throw new HttpError(400, 'Empty text', { code: 'source_empty' });
+  const number = Number.isSafeInteger(body.number) && Number(body.number) > 0 ? Number(body.number) : null;
+  const u = await understandOwnerMessage(supabase, tenantId, settings, text, { context: plainText(body.context, 3000) || null });
+  if (!u) throw new HttpError(503, 'Rules unavailable', { code: 'rules_unavailable' });
+  const step = await stepFor(supabase, tenantId, settings, u, 'cabinet', number);
+  response.json({ kind: step.kind, reply: step.reply, proposal: proposalView(step.proposal) });
+});
+knowledgeProfileRouter.post('/knowledge/rules/proposals/:id/details', async (request, response) => {
+  const tenantId = tenant(request.query.tenantId), settings = await loadOwnerSettings(supabase, tenantId);
+  const p = await proposalById(supabase, tenantId, id(request.params.id)), text = plainText(objectBody(request.body).text, 3000);
+  if (p.status !== 'details' || !text) throw new HttpError(400, 'Nothing to complete', { code: 'rule_proposal_closed' });
+  const step = await completeDetails(supabase, tenantId, settings, p, text, await understandOwnerMessage(supabase, tenantId, settings, text, { context: p.details_question }));
+  response.json({ kind: step.kind, reply: step.reply, proposal: proposalView(step.proposal) });
+});
+knowledgeProfileRouter.post('/knowledge/rules/proposals/:id/confirm', async (request, response) => {
+  const tenantId = tenant(request.query.tenantId), settings = await loadOwnerSettings(supabase, tenantId);
+  const reply = await confirmProposal(supabase, tenantId, settings, await proposalById(supabase, tenantId, id(request.params.id)), null, { embedder: sharedEmbedder() });
+  response.json({ reply, rules: await activeRules(supabase, tenantId) });
+});
+knowledgeProfileRouter.post('/knowledge/rules/proposals/:id/decline', async (request, response) => {
+  const tenantId = tenant(request.query.tenantId), settings = await loadOwnerSettings(supabase, tenantId);
+  response.json({ reply: await declineProposal(supabase, settings, await proposalById(supabase, tenantId, id(request.params.id))) });
+});
+knowledgeProfileRouter.delete('/knowledge/rules/:number', async (request, response) => {
+  const number = Number(request.params.number);
+  if (!Number.isSafeInteger(number) || number < 1) throw new HttpError(400, 'Invalid rule', { code: 'rule_not_found' });
+  await removeRuleNow(supabase, tenant(request.query.tenantId), number);
+  response.status(204).send();
+});
+/** Voice for a question card or a correction: raw audio → text (the cabinet then sends it as text). */
+knowledgeProfileRouter.post('/knowledge/voice-text', express.raw({ type: 'application/octet-stream', limit: '10mb' }), async (request, response) => {
+  const tenantId = tenant(request.query.tenantId);
+  if (!Buffer.isBuffer(request.body) || !request.body.length) throw new HttpError(400, 'Invalid audio', { code: 'voice_type' });
+  response.json({ text: await transcribeOwnerVoice(supabase, tenantId, { type: request.header('x-file-type') ?? '', data: request.body }) });
+});
+/**
+ * Several addresses: how they work is the owner's to say (Z11). The answer is a fact of «Адрес и часы»:
+ * all at once (staff in each place) or the owner by a schedule (with the days).
+ */
+knowledgeProfileRouter.post('/knowledge/address-mode', async (request, response) => {
+  const tenantId = tenant(request.query.tenantId), body = objectBody(request.body), settings = await loadOwnerSettings(supabase, tenantId);
+  const schedule = plainText(body.schedule, 500);
+  if (body.mode !== 'simultaneous' && !(body.mode === 'schedule' && schedule)) throw new HttpError(400, 'Invalid address mode', { code: 'kpErrorSave' });
+  const language = behavior(settings).owner_language;
+  const text = renderText(settings, body.mode === 'simultaneous' ? 'owner.address_simultaneous' : 'owner.address_schedule', language, { schedule });
+  const fact = await addOwnerFact(supabase, tenantId, 'location_hours', text, sharedEmbedder(), { kind: 'onboarding', title: ADDRESS_MODE_SOURCE_TITLE });
+  response.status(201).json({ fact });
 });

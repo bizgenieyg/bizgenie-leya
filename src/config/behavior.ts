@@ -10,6 +10,10 @@ export const BEHAVIOR_DEFAULTS = {
   deferred_max_age_hours: 12,
   /** Z10: how often an owner group is checked to still exist before a message goes to it (operator). */
   owner_channel_check_minutes: 60,
+  /** Z11: owner rules — at most this many active, each this long; an unanswered «Сохранить?» expires after these hours (operator). */
+  owner_rules_max: 30,
+  owner_rule_max_chars: 300,
+  owner_rule_pending_hours: 24,
   context_message_count: 10,
   context_retention_hours: 48,
   history_fetch_limit: 30,

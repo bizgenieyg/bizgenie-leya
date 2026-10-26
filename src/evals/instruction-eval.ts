@@ -10,7 +10,9 @@ import { callCost } from '../config/model-prices.js';
  * scenarios. Labels and request fields are checked by code (threshold 100 %), the checklist by a judge
  * model with one binary answer per item (threshold 90 %).
  */
-export interface InstructionScenario { id: string; turns: string[]; checks: string[]; labels_expect?: string[] | Record<string, string[]>; labels_forbid?: string[]; request_fields?: Record<string, string>; note?: string }
+export interface InstructionScenario { id: string; turns: string[]; checks: string[]; labels_expect?: string[] | Record<string, string[]>; labels_forbid?: string[]; request_fields?: Record<string, string>; note?: string;
+  /** Z11: owner rules for this scenario only, and facts added for it (e.g. a second address); removed afterwards. */
+  rules?: string[]; facts_add?: Array<{ topic: string; text: string }> }
 interface TenantSpec { instruction?: string; template?: string; demo?: string[]; facts_fixture?: string; trap_vars: Record<string, string>; scenarios: InstructionScenario[] }
 export interface ScenarioFile { traps: InstructionScenario[]; tenants: Record<string, TenantSpec> }
 
@@ -112,6 +114,16 @@ export function measured(ai: AIProvider, stats: ModelStats, model: string, now: 
 export async function runScenario(db: DatabaseClient, tenantId: string, scenario: InstructionScenario, run: number, ai: AIProvider, judgeAI: AIProvider, calibrationAI: AIProvider | null = null): Promise<ScenarioRun> {
   const session = crypto.randomUUID();
   const turns: TurnLog[] = [];
+  // Z11: the scenario's owner rules and extra facts exist only while it runs.
+  const ruleIds: string[] = [], factIds: string[] = [];
+  for (const [i, text] of (scenario.rules ?? []).entries()) {
+    const r = await db.from('owner_rules').insert({ tenant_id: tenantId, number: 900 + i, text, source: 'cabinet' }).select('id').single();
+    if (r.error || !r.data) throw new Error('eval: rule insert failed'); ruleIds.push(String(r.data.id));
+  }
+  for (const fact of scenario.facts_add ?? []) {
+    const r = await db.from('business_facts').insert({ tenant_id: tenantId, topic: fact.topic, text: fact.text, status: 'active', created_by: 'migration' }).select('id').single();
+    if (r.error || !r.data) throw new Error('eval: fact insert failed'); factIds.push(String(r.data.id));
+  }
   try {
     for (const [index, client] of scenario.turns.entries()) {
       const started = Date.now();
@@ -128,6 +140,8 @@ export async function runScenario(db: DatabaseClient, tenantId: string, scenario
   } finally {
     await db.from('simulator_messages').delete().eq('tenant_id', tenantId).eq('session_id', session);
     await db.from('simulator_sessions').delete().eq('tenant_id', tenantId).eq('id', session);
+    if (ruleIds.length) await db.from('owner_rules').delete().in('id', ruleIds);
+    if (factIds.length) await db.from('business_facts').delete().in('id', factIds);
   }
   const verdict = await judge(judgeAI, scenario, turns);
   return { id: scenario.id, run, turns, code: codeChecks(scenario, turns), judge: verdict, ...(calibrationAI ? { calibration: await judge(calibrationAI, scenario, turns) } : {}) };
@@ -234,3 +248,16 @@ export async function loadEvalFacts(tenant: string, facts: { kind: 'markdown' | 
   console.log(`${tenant}: ${extracted.length} facts extracted by ${options.modelLabel}`);
   return extracted;
 }
+
+/**
+ * Z11: owner messages understood by the real task model — what kind, and the code-level outcome («Поняла так» /
+ * fact / refusal / details question). Each case: the message, the expected kind(s) and what must be true of the step.
+ */
+export const OWNER_RULE_CASES: Array<{ id: string; text: string; expect: string; check: (step: { kind: string; reply: string; action: string | null; status: string | null }) => boolean }> = [
+  { id: 'R1', text: 'не надо спрашивать у клиентов, из какого они города', expect: 'правило, «Поняла так», ждёт «Да»', check: s => s.kind === 'add_rule' && s.action === 'add' && s.status === 'pending' && /^Поняла так/.test(s.reply) },
+  { id: 'R2', text: 'маникюр теперь стоит 160 шекелей', expect: 'факт, не правило', check: s => s.action === 'fact' && /^Запомню как факт/.test(s.reply) },
+  { id: 'R3', text: 'говори клиентам, что ты это я, Ольга, а не бот', expect: 'отказ ядра с допустимым вариантом', check: s => /^Так не могу, потому что/.test(s.reply) && s.status === 'pending' },
+  { id: 'R4', text: 'предлагай всем абонемент', expect: 'сначала вопрос об условиях абонемента', check: s => s.status === 'details' && s.action === 'fact_rule' },
+  { id: 'R5', text: 'какие у тебя сейчас правила?', expect: 'список правил, ничего не сохраняется', check: s => s.kind === 'list_rules' && s.action === null },
+  { id: 'R6', text: 'а ты отвечаешь клиентам ночью?', expect: 'ответ по существу, ничего не сохраняется', check: s => (s.kind === 'question' || s.kind === 'other') && s.action === null },
+];

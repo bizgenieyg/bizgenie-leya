@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { emptyStats, formatInstructionReport, loadEvalFacts, loadInstructionScenarios, measured, runScenario, tenantScenarios, type ModelStats, type ScenarioRun } from '../evals/instruction-eval.js';
+import { emptyStats, formatInstructionReport, loadEvalFacts, loadInstructionScenarios, measured, OWNER_RULE_CASES, runScenario, tenantScenarios, type ModelStats, type ScenarioRun } from '../evals/instruction-eval.js';
 import { isKnowledgeTopic } from '../config/knowledge-topics.js';
 import { EVAL_JUDGE_MODEL } from '../config/behavior.js';
 import type { TemplateKey } from '../config/instruction-templates.js';
@@ -66,6 +66,7 @@ async function main() {
   const calibrationAI = calibrationModel ? createTaskAIProvider(undefined, calibrationModel) : null;
   console.log(`judge: ${judgeModel}${calibrationModel ? `, calibrating ${calibrationModel}` : ''}`);
   const results: Array<{ model: string; runs: ScenarioRun[]; stats: ModelStats }> = [];
+  const ruleRuns: Array<{ tenant: string; id: string; text: string; expect: string; pass: boolean; reply: string; kind: string }> = [];
   // Facts do not depend on the reply model: extracted once per tenant, before the models. A failed call is
   // retried with smaller chunks (a long chunk can run the task model out of output tokens).
   // --facts-model: the extraction model, when the task model cannot extract this fixture (reported).
@@ -108,13 +109,27 @@ async function main() {
         all.push(result);
         console.log(`${model} · ${scenario.id} · ${run}: ${result.code.every(c => c.pass) && result.judge.every(c => c.pass) ? 'PASS' : 'FAIL'}`);
       }
+      // Z11: owner messages → understood by the task model (once per tenant run, not per reply model).
+      if (process.argv.includes('--owner-rules') && model === models[0]) {
+        const { understandOwnerMessage, stepFor } = await import('../services/owner-rules.service.js');
+        const { loadOwnerSettings } = await import('../services/owner-settings.service.js');
+        const settings = await loadOwnerSettings(db, tenantId);
+        for (const c of OWNER_RULE_CASES) {
+          const u = await understandOwnerMessage(db, tenantId, settings, c.text, { taskAI: createTaskAIProvider() });
+          const step = u ? await stepFor(db, tenantId, settings, u, 'whatsapp') : null;
+          const view = { kind: step?.kind ?? 'none', reply: step?.reply ?? '', action: step?.proposal?.action ?? null, status: step?.proposal?.status ?? null };
+          ruleRuns.push({ tenant: t, id: c.id, text: c.text, expect: c.expect, pass: !!step && c.check(view), reply: view.reply, kind: view.kind });
+          console.log(`owner-rules · ${t} · ${c.id}: ${ruleRuns.at(-1)!.pass ? 'PASS' : 'FAIL'}`);
+        }
+      }
       await pg.close();
     }
     results.push({ model, runs: all, stats });
   }
   const out = arg('out') ?? `docs/evals/${new Date().toISOString().slice(0, 10)}-instructions.md`;
   mkdirSync(dirname(out), { recursive: true });
-  writeFileSync(out, formatInstructionReport(`eval:instructions — ${tenants.join(', ')}, ${runs} прогона`, results, { failuresOnly: process.argv.includes('--failures-only') }));
+  const rulesReport = ruleRuns.length ? `\n\n## Z11: разбор сообщений владельца (модель задач)\n\n${ruleRuns.filter(r => r.pass).length}/${ruleRuns.length} пройдено.\n\n| Тенант | Случай | Сообщение | Ожидание | Итог | Ответ |\n|---|---|---|---|---|---|\n${ruleRuns.map(r => `| ${r.tenant} | ${r.id} | ${r.text} | ${r.expect} | ${r.pass ? 'PASS' : 'FAIL'} (${r.kind}) | ${r.reply.replace(/\n/g, ' ').replace(/\|/g, '/')} |`).join('\n')}\n` : '';
+  writeFileSync(out, formatInstructionReport(`eval:instructions — ${tenants.join(', ')}, ${runs} прогона`, results, { failuresOnly: process.argv.includes('--failures-only') }) + rulesReport);
   console.log(`Report: ${out}`);
 }
 main().catch(error => { console.error(error instanceof Error ? error.message : 'eval:instructions failed'); process.exitCode = 1; });

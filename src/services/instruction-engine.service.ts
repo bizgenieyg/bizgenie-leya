@@ -11,6 +11,7 @@ import { agreement, isDirectRequest } from './client-consent.js';
 import { CLAIMED_PASSED_PATTERN } from '../config/consent.js';
 import { ASSISTANT_NAME_DEFAULT, DEMO_EXAMPLE_MARKERS, REQUEST_INTENT_TURNS } from '../config/instructions.js';
 import { renderText } from './templates.service.js';
+import { activeRules, rulesBlock } from './owner-rules.service.js';
 
 /**
  * Task Z reply path (reply_engine = 'instruction'): core + business instruction + facts (+ demo business),
@@ -69,6 +70,7 @@ export async function answerByInstruction(turn: InstructionTurn): Promise<Instru
   const demoText = async (key: string | null) => key ? fillPlaceholders(await activeDemoInstruction(db, key) ?? '', values).text : null;
   const facts = factsMarkdown(await activeFacts(db, tenantId), turn.business?.business_sector ?? null);
   const currentDemo = await demoText(demo.key);
+  const rules = rulesBlock(await activeRules(db, tenantId));
   /** A demo key is valid only when a demo text exists for it (active demo instruction or a system default). */
   const demoKeys = new Map<string, boolean>();
   const knownDemo = async (key: string | null) => {
@@ -81,7 +83,10 @@ export async function answerByInstruction(turn: InstructionTurn): Promise<Instru
   /** The demo whose text the next variant sees: the open one, or the one the previous variant started (Z3). */
   let promptDemo: { key: string; text: string } | null = demo.key && currentDemo ? { key: demo.key, text: currentDemo } : null;
   const system = (notes: string[]) => [
-    core.text, `=== ИНСТРУКЦИЯ БИЗНЕСА ===\n${instruction.text}`, `=== ФАКТЫ ===\n${facts || '(фактов пока нет)'}`,
+    core.text, `=== ИНСТРУКЦИЯ БИЗНЕСА ===\n${instruction.text}`,
+    // Z11: the owner's rules — after the instruction (they win over it), before the facts.
+    ...(rules ? [`=== ПРАВИЛА ЭТОГО БИЗНЕСА ===\n${rules}`] : []),
+    `=== ФАКТЫ ===\n${facts || '(фактов пока нет)'}`,
     ...(promptDemo ? [`=== РЕЖИМ ПОКАЗА (${promptDemo.key}) ===\n${promptDemo.text}`] : []),
     ...(LANGUAGE_NAMES[language] ? [`=== ЯЗЫК ОТВЕТА ===\nПоследнее сообщение клиента — ${LANGUAGE_NAMES[language]}. Весь ответ — на этом языке.`] : []),
     ...(notes.length ? [`=== ИСПРАВЬ ПРОШЛЫЙ ВАРИАНТ ОТВЕТА ===\n${notes.map(n => `- ${n}`).join('\n')}`] : []),

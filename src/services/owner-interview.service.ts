@@ -159,46 +159,64 @@ export async function runOwnerInterview(db: DatabaseClient, tenantId: string, pr
   const tomorrow = new Date(dayStart(settings, now).getTime() + DAY + 10 * 3_600_000);
   if (all.some(q => q.status === 'sent')) return { sent: null, next: tomorrow };
   const today = dayStart(settings, now);
-  const sentBefore = all.some(q => q.sent_at && new Date(q.sent_at) < today);
-  const sentToday = all.filter(q => q.sent_at && new Date(q.sent_at) >= today).length;
-  const limit = sentBefore ? config.owner_interview_daily_limit : config.owner_interview_first_batch;
+  // Z11: the first day's questions are answered in the cabinet («Расскажите о бизнесе»), never in WhatsApp; after that
+  // at most one message a day, carrying all of that day's questions (owner_interview_daily_limit).
+  const firstAsked = all.map(q => q.created_at).sort()[0];
+  if (!firstAsked || new Date(firstAsked) >= today) return { sent: null, next: tomorrow };
+  if (all.some(q => q.sent_at && new Date(q.sent_at) >= today)) return { sent: null, next: tomorrow };
   const queue = all.filter(q => q.status === 'open' && (!q.next_at || new Date(q.next_at) <= now))
     .sort((a, b) => (a.priority === b.priority ? 0 : a.priority === 'launch' ? -1 : 1) || a.created_at.localeCompare(b.created_at));
-  const next = queue[0];
-  if (!next || sentToday >= limit) return { sent: null, next: next ? tomorrow : null };
+  if (!queue.length) return { sent: null, next: null };
   const language = lang(settings);
-  let question = questionText(next, language);
-  if (question === null) {
-    // No text in the owner's language yet (imported before Z8 or the translation failed): translate now; until it
-    // succeeds the question waits — the owner never gets it in another language.
-    const base = deps.taskAI ?? createTaskAIProvider();
-    if (base) try { question = questionText({ ...next, translations: await ensureTranslations(db, tenantId, next, meterAI(db, tenantId, base, { purpose: 'owner_interview', billable_message: false })!, now) }, language); }
-    catch { console.error('owner_question_translate_failed', { tenantId }); }
-    // Over the limit or failed: try again in an hour, never in another language.
-    if (question === null) return { sent: null, next: new Date(now.getTime() + 3_600_000) };
+  const picked: Array<{ q: OwnerQuestion & { created_at: string }; text: string }> = [];
+  for (const q of queue) {
+    if (picked.length >= config.owner_interview_daily_limit) break;
+    let question = questionText(q, language);
+    if (question === null) {
+      // No text in the owner's language yet: translate now; until it succeeds the question waits — the owner never
+      // gets it in another language.
+      const base = deps.taskAI ?? createTaskAIProvider();
+      if (base) try { question = questionText({ ...q, translations: await ensureTranslations(db, tenantId, q, meterAI(db, tenantId, base, { purpose: 'owner_interview', billable_message: false })!, now) }, language); }
+      catch { console.error('owner_question_translate_failed', { tenantId }); }
+    }
+    if (question !== null) picked.push({ q, text: question });
   }
-  const text = renderText(settings, 'owner.interview_question', language, { question, left: queue.length });
+  // Over the limit or failed: try again in an hour, never in another language.
+  if (!picked.length) return { sent: null, next: new Date(now.getTime() + 3_600_000) };
+  const text = picked.length === 1 ? renderText(settings, 'owner.interview_question', language, { question: picked[0]!.text, left: queue.length })
+    : renderText(settings, 'owner.interview_bundle', language, { questions: picked.map((p, i) => `${i + 1}. ${p.text}`).join('\n') });
   // Z10: interview questions go to the «Нужен ответ» group.
   const destination = await ownerChat(db, provider, tenantId, instance.data.session_name, settings, 'needs_answer');
   if (!ownerChatAllowed(destination)) return { sent: null, next: null };
-  const out = await enqueueMessage(db, tenantId, provider, { session: instance.data.session_name, chatId: destination, text }, { kind: 'owner_notice', dedupeKey: `interview:${next.id}:${next.postponed_count}` });
+  const out = await enqueueMessage(db, tenantId, provider, { session: instance.data.session_name, chatId: destination, text }, { kind: 'owner_notice', dedupeKey: `interview:${today.toISOString().slice(0, 10)}:${picked.map(p => p.q.id).join(',')}` });
   if (!out.id) throw new Error('Interview question not delivered');
-  check((await db.from('owner_questions').update({ status: 'sent', sent_at: now.toISOString(), owner_message_ids: [...next.owner_message_ids, out.id] }).eq('id', next.id)).error, 'Owner question update failed');
-  return { sent: next.id, next: tomorrow };
+  for (const [i, p] of picked.entries())
+    check((await db.from('owner_questions').update({ status: 'sent', sent_at: now.toISOString(), bundle_position: picked.length > 1 ? i + 1 : null, owner_message_ids: [...p.q.owner_message_ids, out.id] }).eq('id', p.q.id)).error, 'Owner question update failed');
+  return { sent: picked[0]!.q.id, next: tomorrow };
 }
 
 const normalize = (text: string) => text.trim().toLowerCase().replace(/[.!…]+$/g, '').replace(/ё/g, 'е');
 export const isPostpone = (text: string) => INTERVIEW_POSTPONE_WORDS.includes(normalize(text));
 
 /** Which question an owner message answers: by quote, else the only question out when no client waits. */
-export async function questionForReply(db: DatabaseClient, tenantId: string, quoted: string | null): Promise<OwnerQuestion | null> {
-  const select = 'id,question,priority,source,topic,status,postponed_count,next_at,sent_at,owner_message_ids';
+/** Z11: «2. ответ» / «2) ответ» / «2 — ответ» — the number of a bundled question and the answer without it. */
+export function bundleAnswer(text: string): { position: number | null; answer: string } {
+  const m = /^\s*(\d{1,2})\s*[.)\-—–:]\s*/.exec(text);
+  return m ? { position: Number(m[1]), answer: text.slice(m[0].length) } : { position: null, answer: text };
+}
+export async function questionForReply(db: DatabaseClient, tenantId: string, quoted: string | null, text = ''): Promise<OwnerQuestion | null> {
+  const select = 'id,question,priority,source,topic,status,postponed_count,next_at,sent_at,owner_message_ids,bundle_position';
   if (quoted) {
     const keys = [replyId(quoted), quoted, ...await outboundIdsForProviderId(db, tenantId, quoted)];
     for (const key of keys) {
-      const r = await db.from('owner_questions').select(select).eq('tenant_id', tenantId).contains('owner_message_ids', [key]).limit(1);
+      const r = await db.from('owner_questions').select(select).eq('tenant_id', tenantId).contains('owner_message_ids', [key]).order('bundle_position', { ascending: true });
       check(r.error, 'Owner questions unavailable');
-      if (r.data?.[0]) return r.data[0] as unknown as OwnerQuestion;
+      const rows = (r.data ?? []) as unknown as Array<OwnerQuestion & { bundle_position: number | null }>;
+      if (!rows.length) continue;
+      if (rows.length === 1) return rows[0]!;
+      // A bundle: the number at the start picks the question; without it — the first still waiting.
+      const { position } = bundleAnswer(text);
+      return rows.find(q => q.bundle_position === position) ?? rows.find(q => q.status === 'sent') ?? rows[0]!;
     }
     return null;
   }
@@ -253,9 +271,10 @@ export async function answerOwnerQuestion(db: DatabaseClient, tenantId: string, 
  */
 export async function handleInterviewReply(db: DatabaseClient, provider: WhatsAppProvider, tenantId: string, session: string, from: string, text: string, quoted: string | null, settings: OwnerSettings, replyChat?: string, deps: AnswerDeps = {}, now = new Date()): Promise<boolean> {
   if (!isBusinessOwner(from, settings)) return false;
-  const question = await questionForReply(db, tenantId, quoted);
+  const question = await questionForReply(db, tenantId, quoted, text);
   if (!question || !text.trim()) return false;
-  const result = await answerOwnerQuestion(db, tenantId, question, text, 'whatsapp', deps, now);
+  const answer = quoted && (question as { bundle_position?: number | null }).bundle_position ? bundleAnswer(text).answer : text;
+  const result = await answerOwnerQuestion(db, tenantId, question, answer.trim() || text, 'whatsapp', deps, now);
   const language = lang(settings);
   const reply = result.status === 'answered' ? renderText(settings, 'owner.interview_recorded', language, { facts: result.facts.join('; ').slice(0, 900) }) : renderText(settings, 'owner.interview_postponed', language);
   const out = await enqueueMessage(db, tenantId, provider, { session, chatId: replyChat ?? from, text: reply }, { kind: 'owner_notice', dedupeKey: `interview-reply:${question.id}:${now.getTime()}` });

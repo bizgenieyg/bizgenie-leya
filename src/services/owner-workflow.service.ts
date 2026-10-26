@@ -16,7 +16,7 @@ import { createAIProvider } from "../providers/ai/index.js";
 import type { DatabaseClient } from '../db/supabase.js';
 import type { WhatsAppProvider } from '../providers/whatsapp/whatsapp-provider.interface.js';
 import { allowedRecipient, ownerIdentityField, readSessionIdentity } from '../utils/incoming-policy.js';
-import { clientText, isDeferredAnswer, ownerAnswerText, replyId, waitingText, withoutRepeatedIntroduction } from '../utils/assistant-text.js';
+import { clientText, ownerText, isDeferredAnswer, ownerAnswerText, replyId, waitingText, withoutRepeatedIntroduction } from '../utils/assistant-text.js';
 import { buildEscalationText, isWithinQuietHours, nextQuietHoursEnd } from './escalation.service.js';
 import { hasOwnerContact, invalidateOwnerSettings, isBusinessOwner, loadOwnerSettings, ownerDestination, pairOwner, type OwnerSettings } from './owner-settings.service.js';
 import { ownerChat, ownerChatAllowed } from './owner-channels.service.js';
@@ -41,7 +41,7 @@ async function claim(db:DatabaseClient,e:Escalation,from:string,to:string):Promi
 }
 async function send(db:DatabaseClient,tenantId:string,provider:WhatsAppProvider,session:string,chatId:string,text:string,kind:OutboundKind='owner_notice',dedupeKey?:string,inboundMessageIds:string[]=[]):Promise<string> {
   if(!ownerChatAllowed(chatId)) throw new Error('Recipient policy blocked escalation');
-  const result=await enqueueMessage(db,tenantId,provider,{session,chatId,text:clientText(text)},{kind,...(dedupeKey?{dedupeKey}:{}),inboundMessageIds});
+  const result=await enqueueMessage(db,tenantId,provider,{session,chatId,text:kind==='owner_notice'||kind==='reminder'?ownerText(text):clientText(text)},{kind,...(dedupeKey?{dedupeKey}:{}),inboundMessageIds});
   if(!result.id) throw new Error('Message delivery not confirmed');
   return result.id;
 }
@@ -223,8 +223,10 @@ export function escalationWaitingMessage(question:string,settings:OwnerSettings,
   };
 }
 /** `replyChat` (Z10): where the owner's commands are answered — the owner group the message came from; the sender's chat otherwise. */
-export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProvider,tenantId:string,session:string,from:string,text:string,quoted:string|null,settings:OwnerSettings,ai?:AIProvider|null,inboundMessageId?:string|null,replyChat?:string):Promise<boolean> {
+export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProvider,tenantId:string,session:string,from:string,text:string,quoted:string|null,settings:OwnerSettings,ai?:AIProvider|null,inboundMessageId?:string|null,replyChat?:string,options:{ruleAI?:AIProvider|null}={}):Promise<boolean> {
   const reply=replyChat??from;
+  // Z11: replies to the owner go to the chat the owner wrote in; proposals keep the id, so a quoted «Да» finds them.
+  const sendReply=(message:string,dedupe:string)=>send(db,tenantId,provider,session,reply,message,'owner_notice',dedupe);
   if(await pairOwner(db,tenantId,from,text,settings)) return true;
   if(!isBusinessOwner(from,settings)) return false;
   const command=text.trim().toLowerCase().replace(/[.!]+$/,'');
@@ -251,10 +253,15 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
     if(!paused&&result.data?.length) await rescheduleTenantEscalationTimeouts(db,tenantId,settings,new Date());
     await send(db,tenantId,provider,session,reply,result.data?.length?(paused?renderText(settings,'owner.owner_reply_12',behavior(settings).owner_language):renderText(settings,'owner.short_1',behavior(settings).owner_language)):renderText(settings,'owner.short_2',behavior(settings).owner_language));return true;
   }
+  // Z11: «Да / Нет» (or the details) to «Сохранить?», then to «Запомнить на будущее?» — before anything else is matched.
+  const {answerProposal,answerRemember,understandInChat,offerRemember}=await import('./owner-rules-chat.service.js');
+  if(await answerProposal(db,tenantId,settings,text,quoted,inboundMessageId??null,sendReply,options.ruleAI))return true;
+  if(await answerRemember(db,tenantId,settings,text,quoted,sendReply,options.ruleAI))return true;
   // Task Z: an answer to an owner-interview question (by quote, or the only question out when no client waits).
   const {handleInterviewReply}=await import('./owner-interview.service.js');
   if(await handleInterviewReply(db,provider,tenantId,session,from,text,quoted,settings,reply))return true;
-  if(!quoted) {await send(db,tenantId,provider,session,reply,renderText(settings,'owner.owner_reply_15',behavior(settings).owner_language));return true;}
+  // Z11: not a quote — a rule, a fact, «какие правила», «отмени последнее», a question: understood by the task model.
+  if(!quoted) {await understandInChat(db,tenantId,settings,text,inboundMessageId??null,sendReply,options.ruleAI);return true;}
   // Stored ids are outbound queue row ids (legacy rows: WhatsApp ids); a quote carries the WhatsApp id.
   const outboundIds=await outboundIdsForProviderId(db,tenantId,quoted);
   if(await handleSuggestionReply(db,tenantId,outboundIds,text))return true;
@@ -303,6 +310,8 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
     const id=await sendClient(db,provider,e,await composeOwnerAnswer(db,tenantId,{question:e.question,answer,language:responseLanguage,introduced:!!c.data?.assistant_introduced_at},settings,ai),'owner_answer_delivery',inboundMessageId?[inboundMessageId]:[],`escalation:${e.id}:answer`);
     await patch(db,e,{status:'delivered',client_message_id:id,delivered_at:new Date().toISOString()});
     await cancelEscalationTimeout(db,e);
+    // Z11: once — «Запомнить на будущее? Да / Нет».
+    try{await offerRemember(db,settings,e,sendReply);}catch{console.warn('remember_offer_failed',{tenantId});}
     const route=await db.from('conversations').update({routed_agent:null,route_selected_at:null}).eq('tenant_id',tenantId).eq('id',e.conversation_id);check(route.error);
   } catch {
     await patch(db,e,{status:'delivery_uncertain'});

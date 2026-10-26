@@ -122,8 +122,12 @@ export async function sourceWithDrafts(db: DatabaseClient, tenantId: string, id:
  * Task Z: a voice note from the cabinet → STT → a 'voice' source, then the same path as text. Service limits
  * (knowledge_voice_*); the audio buffer is wiped right after recognition and never stored.
  */
-export async function createVoiceSource(db: DatabaseClient, tenantId: string, audio: { type: string; data: Buffer }, topic: string | null,
-  deps: SourceDeps & { stt?: import('../providers/stt/stt-provider.interface.js').STTProvider | null } = {}): Promise<{ id: string; done: Promise<void> }> {
+/**
+ * A voice note of the owner → text (the knowledge-voice limits; the audio is wiped). Z11: also an answer to a question
+ * card and a correction in the simulator.
+ */
+export async function transcribeOwnerVoice(db: DatabaseClient, tenantId: string, audio: { type: string; data: Buffer },
+  deps: { stt?: import('../providers/stt/stt-provider.interface.js').STTProvider | null } = {}): Promise<string> {
   const config = behavior(await loadOwnerSettings(db, tenantId));
   const mime = audio.type.split(';')[0]!.trim().toLowerCase();
   try {
@@ -143,6 +147,11 @@ export async function createVoiceSource(db: DatabaseClient, tenantId: string, au
       text = result.text.trim();
     } catch { await recordUsageEvent(db, { tenantId, eventType: 'stt_call', metadata: { status: 'failed', purpose: 'knowledge_voice', billable_message: false } }); throw new HttpError(502, 'Voice not recognised', { code: 'voice_failed' }); }
     if (!text) throw new HttpError(422, 'Nothing recognised', { code: 'voice_empty' });
-    return await createSource(db, tenantId, { kind: 'voice', text, topic }, deps);
+    return text;
   } finally { audio.data.fill(0); }
+}
+export async function createVoiceSource(db: DatabaseClient, tenantId: string, audio: { type: string; data: Buffer }, topic: string | null,
+  deps: SourceDeps & { stt?: import('../providers/stt/stt-provider.interface.js').STTProvider | null } = {}): Promise<{ id: string; done: Promise<void> }> {
+  const text = await transcribeOwnerVoice(db, tenantId, audio, deps);
+  return createSource(db, tenantId, { kind: 'voice', text, topic }, deps);
 }

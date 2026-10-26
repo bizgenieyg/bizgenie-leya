@@ -3,6 +3,8 @@ import { renderText,languageOf } from '../services/templates.service.js';
 import type { OwnerSettings } from '../services/owner-settings.service.js';
 const INTERNAL_AGENT_CODE=/\b(?:SALE|SUPPORT|RECEPTION|CORE)\b/g;
 export const containsInternalAgentCode=(text:string)=>/\b(?:SALE|SUPPORT|RECEPTION|CORE)\b/.test(text);
+/** Z11: a message to the owner — markup and internal codes out, but «Да / Нет» keeps its slash. */
+export const ownerText = (text:string) => text.replace(/<[^>]*>/g, "").replace(/[<>]/g, "").replace(INTERNAL_AGENT_CODE,'').trim();
 export const clientText = (text:string) => text.replace(/<[^>]*>/g, "").replace(/[<>]/g, "").replace(INTERNAL_AGENT_CODE,'').replace(/\s+\/\s+/g,' ').replace(/\s*\/\s*(?=[?!.,]|$)/g,'').replace(/[ \t]+([?!.,])/g,'$1').replace(/[ \t]{2,}/g,' ').replace(/[ \t]*\n[ \t]*/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
 export function withoutRepeatedIntroduction(text:string,introduced:boolean):string {
  if(!introduced)return clientText(text);

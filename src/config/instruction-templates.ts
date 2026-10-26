@@ -26,7 +26,9 @@ export const SECTOR_SUGGESTIONS: Array<{ group: string; template: TemplateKey; i
     { ru: 'кейтеринг', he: 'קייטרינג', en: 'catering' }, { ru: 'ресторан', he: 'מסעדה', en: 'restaurant' }, { ru: 'кафе', he: 'בית קפה', en: 'café' }] },
   { group: 'retail', template: 'order', items: [
     { ru: 'магазин', he: 'חנות', en: 'shop' }, { ru: 'цветы', he: 'פרחים', en: 'flowers' }, { ru: 'одежда', he: 'בגדים', en: 'clothing' },
-    { ru: 'изделия на заказ', he: 'מוצרים בהזמנה אישית', en: 'custom-made goods' }, { ru: 'интернет-магазин', he: 'חנות אונליין', en: 'online store' }] },
+    { ru: 'изделия на заказ', he: 'מוצרים בהזמנה אישית', en: 'custom-made goods' }, { ru: 'интернет-магазин', he: 'חנות אונליין', en: 'online store' },
+    // Z11: rentals of things are orders (what is taken + dates); housing rentals stay 'general'.
+    { ru: 'аренда оборудования', he: 'השכרת ציוד', en: 'equipment rental' }, { ru: 'аренда автомобилей', he: 'השכרת רכב', en: 'car rental' }] },
   { group: 'projects', template: 'project', items: [
     { ru: 'ремонт', he: 'שיפוצים', en: 'renovation' }, { ru: 'сантехник', he: 'אינסטלטור', en: 'plumber' }, { ru: 'электрик', he: 'חשמלאי', en: 'electrician' },
     { ru: 'мебель на заказ', he: 'רהיטים בהזמנה', en: 'custom furniture' }, { ru: 'дизайн интерьера', he: 'עיצוב פנים', en: 'interior design' },
@@ -36,7 +38,7 @@ export const SECTOR_SUGGESTIONS: Array<{ group: string; template: TemplateKey; i
     { ru: 'юрист', he: 'עורך/ת דין', en: 'lawyer' }, { ru: 'маркетинг', he: 'שיווק', en: 'marketing' }, { ru: 'IT-услуги', he: 'שירותי IT', en: 'IT services' }] },
   { group: 'other', template: 'general', items: [
     { ru: 'риелтор', he: 'מתווך/ת נדל״ן', en: 'realtor' }, { ru: 'страховой агент', he: 'סוכן/ת ביטוח', en: 'insurance agent' },
-    { ru: 'туризм', he: 'תיירות', en: 'travel and tourism' }, { ru: 'аренда (оборудования, жилья)', he: 'השכרה (ציוד, דירות)', en: 'rentals (equipment, housing)' },
+    { ru: 'туризм', he: 'תיירות', en: 'travel and tourism' }, { ru: 'аренда жилья', he: 'השכרת דירות', en: 'housing rental' },
     { ru: 'автосервис', he: 'מוסך', en: 'car service' }, { ru: 'ветеринар', he: 'וטרינר', en: 'veterinarian' }, { ru: 'уборка', he: 'ניקיון', en: 'cleaning' }] },
 ];
 const normalizeSector = (sector: string) => sector.toLocaleLowerCase().replace(/[״"]/g, '"').replace(/\s+/g, ' ').trim();
@@ -45,7 +47,7 @@ const SUGGESTED = new Map(SECTOR_SUGGESTIONS.flatMap(g => g.items.flatMap(i => O
 /**
  * Free input → template: a sector matches when it contains a keyword (case-insensitive). The first template whose
  * keyword matches wins. Sectors of the «Прочее» group (realtor, insurance, tourism, rentals, car service, vet,
- * cleaning) have no keywords on purpose: they go to 'general'.
+ * cleaning) have no keywords on purpose: they go to 'general' (Z11: equipment and car rentals moved to 'order'; housing rentals stay).
  */
 export const SECTOR_TEMPLATE_KEYWORDS: Array<{ template: Exclude<TemplateKey, 'general'>; keywords: string[] }> = [
   { template: 'service_booking', keywords: [
@@ -53,6 +55,7 @@ export const SECTOR_TEMPLATE_KEYWORDS: Array<{ template: Exclude<TemplateKey, 'g
     'קוסמטיק', 'מעצב שיער', 'מעצב/ת שיער', 'שיער', 'מספרה', 'ציפורניים', 'מניקור', 'פדיקור', 'גבות', 'ריסים', 'מכון', 'עיסוי', 'ברבר', 'מאמן', 'כושר', 'יוגה', 'קליניקה', 'רופא', 'שיניים', 'פסיכולוג', 'מורה', 'קורס', 'חוג',
     'cosmetolog', 'hairdress', 'barber', 'nail', 'manicur', 'pedicur', 'brow', 'lash', 'salon', 'spa', 'massage', 'trainer', 'fitness', 'yoga', 'clinic', 'dentist', 'doctor', 'therap', 'psycholog', 'tutor', 'teacher', 'lesson', 'course', 'kids club'] },
   { template: 'order', keywords: [
+    'аренда оборуд', 'аренда авто', 'прокат', 'השכרת ציוד', 'השכרת רכב', 'equipment rental', 'car rental', 'car hire',
     'ресторан', 'кафе', 'магазин', 'еда', 'повар', 'кухн', 'кейтеринг', 'кондитер', 'торт', 'выпечк', 'пекар', 'цвет', 'букет', 'доставк', 'одежд', 'изделия', 'изделий',
     'מסעדה', 'בית קפה', 'קפה', 'חנות', 'אוכל', 'שף', 'מטבח', 'קייטרינג', 'קונדיטור', 'עוגות', 'מאפ', 'פרחים', 'משלוח', 'בגדים', 'בהזמנה אישית',
     'restaurant', 'café', 'cafe', 'shop', 'store', 'food', 'chef', 'cook', 'kitchen', 'catering', 'bakery', 'baker', 'cake', 'pastry', 'flower', 'florist', 'delivery', 'boutique', 'cloth', 'custom-made', 'handmade'] },

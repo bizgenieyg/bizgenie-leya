@@ -421,3 +421,19 @@ test('Z8: the core names the assistant by assistant_profiles.assistant_name; emp
     } finally { await f.pg.close(); }
   }
 });
+
+test('Z11: the owner rules are a block after the instruction and before the facts; the core says they win over the instruction', async () => {
+  const f = await fixture();
+  try {
+    await f.pg.query("insert into owner_rules(tenant_id,number,text,source) values($1,1,'Город не спрашивай.','whatsapp'),($1,2,'Старое правило.','cabinet')", [f.tenantId]);
+    await f.pg.query('update owner_rules set active=false where number=2 and tenant_id=$1', [f.tenantId]);
+    f.reply('Здравствуйте! Я Лея.\nЧем могу помочь?');
+    await f.say('Привет');
+    const system = f.prompts.at(-1)!.system;
+    const instruction = system.indexOf('=== ИНСТРУКЦИЯ БИЗНЕСА ==='), rules = system.indexOf('=== ПРАВИЛА ЭТОГО БИЗНЕСА ==='), facts = system.indexOf('=== ФАКТЫ ===');
+    assert.ok(instruction >= 0 && rules > instruction && facts > rules, 'instruction → rules → facts');
+    assert.match(system, /=== ПРАВИЛА ЭТОГО БИЗНЕСА ===\n1\. Город не спрашивай\./);
+    assert.doesNotMatch(system, /Старое правило/, 'only active rules');
+    assert.match(system, /Правила бизнеса важнее инструкции; правила ядра важнее правил бизнеса\./);
+  } finally { await f.pg.close(); }
+});
