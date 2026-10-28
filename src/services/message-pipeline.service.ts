@@ -86,7 +86,9 @@ export interface PipelineSink {
   /** WhatsApp only, called after admission: prior chat history for a first contact. Never persisted. */
   loadChatHistory?: (() => Promise<{ messages: ConversationMemory[]; introduced: boolean }>) | undefined;
   /** One escalation per question (default: the whole message); returns the single client text sent. */
-  createEscalation(responseLanguage: string, questions?: string[], answered?: string | null, options?: { modelUnavailable?: boolean; clientText?: string }): Promise<string | null>;
+  createEscalation(responseLanguage: string, questions?: string[], answered?: string | null, options?: { modelUnavailable?: boolean; clientText?: string; separate?: boolean }): Promise<string | null>;
+  /** Z12: questions of this conversation still waiting for the owner (for the reply prompt); simulator: none. */
+  openQuestions?: (() => Promise<string[]>) | undefined;
   /** Task Z: demo mode of this conversation (conversations / simulator_sessions demo_key, demo_turns). */
   loadDemo(): Promise<{ key: string | null; turns: number }>;
   saveDemo(demo: { key: string | null; turns: number }): Promise<void>;
@@ -96,7 +98,7 @@ export interface PipelineSink {
   saveDialogState(state: DialogState): Promise<void>;
   /** Owner request (demo, booking, callback…): one open request per client; returns the client text sent. */
   /** `confirmation`: the text for the client (model reply or template); null — the sink's own text (repeat of an open request). */
-  createRequest(responseLanguage: string, summary: string, confirmation: string | null, clientFirstName: string | null): Promise<string | null>;
+  createRequest(responseLanguage: string, summary: string, confirmation: string | null, clientFirstName: string | null, card?: string | null): Promise<string | null>;
   /** Summary of the client's open request, if any. */
   openRequest(): Promise<string | null>;
   loadClientProfile(): Promise<string>;
@@ -237,25 +239,20 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
       : primary;
     let outcome: Awaited<ReturnType<typeof answerByInstruction>>;
     try {
+      // Z12: the role (support keywords → classifier → SALES) is chosen in the engine, sticky for the dialog.
       outcome = replyModel ? await answerByInstruction({ db, tenantId, text, language, settings, state, memory: memory.messages, model: replyModel,
-        business: context.business ?? null, assistantName: context.assistant?.assistant_name, demo: await sink.loadDemo() }) : null;
+        business: context.business ?? null, assistantName: context.assistant?.assistant_name, demo: await sink.loadDemo(),
+        roleClassifier: meterAI(db, tenantId, model, { purpose: 'role_classification' }), clientName: client.preferred_name || client.name || null, openQuestions: sink.openQuestions ? await sink.openQuestions() : [],
+        voice: !!sink.attributeVoice, now }) : null;
     } catch (error) {
+      // Z12 (as chef-bot): after the provider's retries (and the fallback model) — a short apology, no escalation.
       const failure = failureReason(error);
       console.warn('instruction_reply_failed', { tenantId, reason: failure });
-      const repeat = state.model_fallback === true;
-      state.model_fallback = true;
       return agentContext.run({ agent: 'RECEPTION' }, async () => {
         await sink.recordUsage('message_received', { eventKey: usageKey });
-        // Z2: two failure templates in a row are not sent — the second is the short "I remember", the escalation stays one.
-        if (repeat) {
-          const reply = renderText(settings, 'client.model_fallback_repeat', language);
-          await send(reply);
-          return finish({ ...result(reply, 'answered'), modelFailure: failure });
-        }
-        const fallback = ownerName ? renderText(settings, 'client.model_fallback', language, { owner_name: ownerName }) : renderText(settings, 'client.model_fallback_no_name', language);
-        const reply = await sink.createEscalation(language, undefined, null, { modelUnavailable: true, clientText: fallback });
-        await sink.recordUsage('escalation_created', { metadata: { failure_reason: 'model_unavailable' } });
-        return finish({ ...result(reply, 'escalated'), modelFailure: failure });
+        const reply = renderText(settings, 'client.model_apology', language);
+        await send(reply);
+        return finish({ ...result(reply, 'answered'), modelFailure: failure });
       });
     }
     if (outcome) {
@@ -279,14 +276,18 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
         if (a.kind === 'silent') return finish(traced(result(null, 'paused')));
         if (a.kind === 'request') {
           delete state.pending_offer;
-          const reply = await sink.createRequest(language, a.summary, clientReply(a.text), clientFirstName());
+          // Z12: a request closes the role; the next message chooses again.
+          delete state.role;
+          const reply = await sink.createRequest(language, a.summary, clientReply(a.text), clientFirstName(), a.card);
           await sink.recordUsage('request_created');
           if (reply) memory.introduced = true;
           state.stage = 'request';
           return finish(traced(result(reply, 'escalated')));
         }
         if (a.kind === 'ask_owner' || a.kind === 'human') {
-          const reply = await sink.createEscalation(language, a.kind === 'ask_owner' ? [a.question] : undefined, null, { clientText: clientReply(a.text) });
+          // Z12: the owner gets only the question of each [[ASK_OWNER]] (one message each); HUMAN — the request to call.
+          const questions = a.kind === 'ask_owner' ? a.questions : [renderText(settings, 'owner.human_request', config.owner_language)];
+          const reply = await sink.createEscalation(language, questions, null, { clientText: clientReply(a.text), separate: true });
           await sink.recordUsage('escalation_created', { metadata: { reason: a.kind } });
           if (reply) memory.introduced = true;
           return finish(traced(result(reply, 'escalated')));

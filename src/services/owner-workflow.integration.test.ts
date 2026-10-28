@@ -76,6 +76,7 @@ async function pgHarness({ withGroups = true }: { withGroups?: boolean } = {}) {
     conversation: async () => (await pg.query('select * from conversations where id=$1', [conversation.id])).rows[0] as Record<string, unknown> & { bot_paused: boolean; owner_last_activity_at: string | null; assistant_introduced_at: string | null },
     notificationSettings: async () => (await pg.query('select * from notification_settings where tenant_id=$1', [tenantId])).rows[0] as Record<string, unknown> & { auto_replies_paused: boolean },
     knowledgeCount: async () => Number((await pg.query<{ count: string }>('select count(*)::text as count from knowledge_items where tenant_id=$1', [tenantId])).rows[0]!.count),
+    facts: async () => (await pg.query<{ text: string; title: string | null }>("select f.text,s.title from business_facts f join knowledge_sources s on s.id=f.source_id where f.tenant_id=$1 and s.kind='owner_answer' order by f.created_at", [tenantId])).rows,
   };
 }
 async function seedEscalation(h: Awaited<ReturnType<typeof pgHarness>>, overrides: Partial<{ question: string; created_at: string }> = {}) {
@@ -105,11 +106,16 @@ test('owner reply: short GOWS ID, delivery before closure, quoted confirmation o
   await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'Да, можно', e.owner_message_ids[0]!, h.settings); await settleAllOutboundQueues();
   e = await h.escalation(e.id); assert.equal(e.status, 'delivered'); assert.ok(e.client_message_id);
   assert.equal((await h.pg.query<{count:number}>("select count(*)::int as count from scheduled_jobs where job_type='escalation_timeout' and status='cancelled'")).rows[0]!.count, 1);
-  // The client answer, then (Z11) once «Запомнить на будущее? Да / Нет» in the group — nothing is saved by itself.
+  // Z12: the owner's words verbatim to the client (no model here — «{owner} пишет»), no «Запомнить?»; the answer is a fact.
   const toClient = h.sent.filter(m => m.chatId === customer).at(-1)!;
-  assert.equal(toClient.replyTo, undefined); assert.match(toClient.text, /Передаю ответ владельца/); assert.equal(await h.knowledgeCount(), 0);
-  assert.deepEqual([h.sent.at(-1)!.chatId, h.sent.at(-1)!.text], [owner, 'Запомнить на будущее? Да / Нет'], 'in the chat the owner answered in');
-  assert.deepEqual(e.learning_message_ids, []); assert.equal(e.learning_state, 'none');
+  assert.equal(toClient.replyTo, undefined); assert.match(toClient.text, /«Да, можно»/);
+  assert.equal(h.sent.at(-1)!.chatId, customer, 'nothing more to the owner');
+  assert.equal(e.learning_state, 'saved');
+  const facts = await h.facts();
+  assert.equal(facts.length, 1); assert.match(facts[0]!.text, /Можно завтра\?[\s\S]*Да, можно/); assert.match(String(facts[0]!.title), /вопрос клиента: Можно завтра\?/);
+  // Z12 history: the waiting text and the forwarded answer are in the dialog.
+  const stored = (await h.pg.query<{ body: string }>('select body from messages where conversation_id=$1 and from_me order by created_at', [h.conversationId])).rows.map(r => r.body);
+  assert.equal(stored.length, 2); assert.match(stored[1]!, /«Да, можно»/);
 });
 
 test('failed client delivery leaves escalation open and never offers learning', async () => {
@@ -121,7 +127,7 @@ test('failed client delivery leaves escalation open and never offers learning', 
   let e = await h.escalation((await h.pg.query<{ id: string }>('select id from escalations limit 1')).rows[0]!.id);
   await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'Ответ', e.owner_message_ids[0]!, h.settings); await settleAllOutboundQueues();
   e = await h.escalation(e.id);
-  assert.equal(e.status, 'delivery_uncertain'); assert.equal(e.learning_state, 'none'); assert.equal(await h.knowledgeCount(), 0);
+  assert.equal(e.status, 'delivery_uncertain'); assert.equal(e.learning_state, 'none'); assert.equal((await h.facts()).length, 0);
 });
 
 test('createEscalation with an all-day-off schedule promises a callback and escalates now', async () => {
@@ -382,7 +388,11 @@ test('owner translation is opt-in: disabled makes zero model calls', async () =>
     await createEscalation(h.db, h.provider, input, settings); await settleAllOutboundQueues();
     const e = await h.escalation((await h.pg.query<{ id: string }>('select id from escalations limit 1')).rows[0]!.id);
     let calls = 0;
-    await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'Yes, available', e.owner_message_ids[0]!, settings, { async generateReply() { calls++; return { text: 'Да, доступно' }; } }); await settleAllOutboundQueues();
+    // Z12: the reply classifier and the forward line are their own calls; only the translation is counted here.
+    await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'Yes, available', e.owner_message_ids[0]!, settings, { async generateReply(input: { systemPrompt: string }) {
+      if (input.systemPrompt.includes('ANSWER или DEFER')) return { text: 'ANSWER' };
+      if (input.systemPrompt.includes('Уточнила у <имя')) return { text: '{"intro":"Уточнила насчёт завтра","follow_up":""}' };
+      calls++; return { text: 'Да, доступно' }; } }); await settleAllOutboundQueues();
     assert.equal(calls, enabled ? 1 : 0);
     assert.match(h.sent.filter(m => m.chatId === customer).at(-1)!.text, enabled ? /Да, доступно/ : /Yes, available/);
   }
@@ -476,49 +486,43 @@ async function ownerAnswerRun(settings: Partial<OwnerSettings>, question: string
   return { h, delivered, text: h.sent.filter(m => m.chatId === customer).at(-1)!.text };
 }
 
-const approving = (text: string) => ({ async generateReply(input: { systemPrompt: string }) {
-  return { text: input.systemPrompt.startsWith('Ты проверяющий') ? '{"adds_facts":false,"changes_meaning":false}' : text }; } });
+const forwarding = (intro: string, followUp: string, defer = false) => ({ prompts: [] as string[], async generateReply(input: { systemPrompt: string; userMessage: string }) {
+  this.prompts.push(input.systemPrompt);
+  if (input.systemPrompt.includes('ANSWER или DEFER')) return { text: defer ? 'DEFER' : 'ANSWER' };
+  return { text: JSON.stringify({ intro, follow_up: followUp }) }; } });
 
-test('polish: terse yes/no becomes a finished reply with the same meaning and reaches delivery', async () => {
-  const seen: string[] = [];
-  const ai = { async generateReply(input: { systemPrompt: string; userMessage: string }) {
-    if (input.systemPrompt.startsWith('Ты проверяющий')) return { text: '{"adds_facts":false,"changes_meaning":false}' };
-    const data = JSON.parse(input.userMessage); seen.push(input.systemPrompt);
-    assert.equal(data.customerQuestion, 'Можно в субботу?');
-    assert.deepEqual(data.knowledge, [{ question: 'Сколько стоит маникюр?', answer: 'Маникюр 120 шекелей' }]);
-    return { text: data.ownerAnswer === 'да' ? 'Да, в субботу можно.' : 'К сожалению, в субботу нельзя.' };
-  } };
+test('Z12: the owner answer goes verbatim after «Уточнила у … насчёт …», then the short follow-up', async () => {
+  const ai = forwarding('Уточнила у Юрия насчёт записи в субботу', 'Записать вас на субботу?');
   const yes = await ownerAnswerRun({}, 'Можно в субботу?', 'да', ai);
   assert.equal(yes.delivered.status, 'delivered'); assert.equal(yes.delivered.answer, 'да');
-  assert.equal(yes.text, 'Да, в субботу можно.');
-  const no = await ownerAnswerRun({}, 'Можно в субботу?', 'нет', ai);
-  assert.equal(no.text, 'К сожалению, в субботу нельзя.');
-  assert.match(seen[0]!, /язык ответа: ru/i);
-});
-
-test('polish: invented price or flipped meaning falls back to the owner text', async () => {
-  const price = await ownerAnswerRun({}, 'Можно в субботу?', 'да', approving('Да, в субботу можно, стоимость 200 шекелей.'));
-  assert.match(price.text, /Передаю ответ владельца/); assert.match(price.text, /«да»/);
-  const known = await ownerAnswerRun({}, 'Сколько стоит маникюр?', 'как в прайсе', approving('Маникюр стоит 120 шекелей.'));
-  assert.equal(known.text, 'Маникюр стоит 120 шекелей.');
-  const flipped = await ownerAnswerRun({}, 'Можно в субботу?', 'нет', approving('Да, приходите в субботу.'));
-  assert.match(flipped.text, /«нет»/);
-});
-
-test('polish: unavailable model and disabled setting keep the current owner text', async () => {
+  assert.equal(yes.text, 'Уточнила у Юрия насчёт записи в субботу:\n\n«да»\n\nЗаписать вас на субботу?');
+  assert.ok(ai.prompts.some(p => /intro — на языке клиента \(русский\)/.test(p)));
+  const off = await ownerAnswerRun({ behavior: { polish_owner_answer: false } }, 'Можно в субботу?', 'да', forwarding('Уточнила у Юрия насчёт субботы', 'Лишняя реплика.'));
+  assert.equal(off.text, 'Уточнила у Юрия насчёт субботы:\n\n«да»', '«Дописывать мои короткие ответы» off — no follow-up');
   const down = await ownerAnswerRun({}, 'Можно в субботу?', 'да', { async generateReply() { throw new Error('down'); } });
-  assert.equal(down.delivered.status, 'delivered'); assert.match(down.text, /Передаю ответ владельца:\s+«да»/);
-  let calls = 0;
-  const off = await ownerAnswerRun({ behavior: { polish_owner_answer: false } }, 'Можно в субботу?', 'да', { async generateReply() { calls++; return { text: 'Да, можно.' }; } });
-  assert.equal(calls, 0); assert.match(off.text, /«да»/);
+  assert.equal(down.delivered.status, 'delivered'); assert.match(down.text, /пишет:\n\n«да»$/);
 });
 
-test('polish: simulator returns exactly the text real delivery sends for the same input', async () => {
+test('Z12: a postponement is not forwarded and the question stays open; a client who left gets nothing, the answer is a fact', async () => {
+  const later = await ownerAnswerRun({}, 'Можно в субботу?', 'гляну вечером', forwarding('x', 'y', true));
+  assert.equal(later.delivered.status, 'pending');
+  assert.equal(later.h.sent.filter(m => m.chatId === customer).length, 1, 'only the waiting text');
+  const h = await pgHarness();
+  const input = { tenant_id: h.tenant, conversation_id: h.conversationId, client_chat_id: customer, client_name: 'Клиент', question: 'Есть ли доставка?', session: 'session', inbound_id: 'incoming' };
+  await createEscalation(h.db, h.provider, input, h.settings); await settleAllOutboundQueues();
+  await h.pg.query("insert into messages(conversation_id,tenant_id,from_me,body,msg_type) values($1,$2,false,'Нет, спасибо, уже заказал в другом месте','text')", [h.conversationId, h.tenant]);
+  const e = await h.escalation((await h.pg.query<{ id: string }>('select id from escalations limit 1')).rows[0]!.id);
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'Да, доставляем по городу', e.owner_message_ids[0]!, h.settings, forwarding('x', 'y')); await settleAllOutboundQueues();
+  assert.equal((await h.escalation(e.id)).status, 'client_left');
+  assert.equal(h.sent.filter(m => m.chatId === customer).length, 1, 'not forwarded');
+  assert.match(h.sent.at(-1)!.text, /Клиент уже попрощался/);
+  assert.match((await h.facts())[0]!.text, /Да, доставляем по городу/);
+});
+
+test('Z12: simulator returns exactly the text real delivery sends for the same input', async () => {
   const { simulateOwnerAnswer } = await import('./simulator.service.js');
   const { mkdtemp, rm } = await import('node:fs/promises'); const { tmpdir } = await import('node:os'); const { join } = await import('node:path');
-  const ai = { async generateReply(input: { systemPrompt: string; userMessage: string }) {
-    if (input.systemPrompt.startsWith('Ты проверяющий')) return { text: '{"adds_facts":false,"changes_meaning":false}' };
-    return { text: JSON.parse(input.userMessage).ownerAnswer === 'да' ? 'Да, в субботу можно.' : 'Уточню.' }; } };
+  const ai = forwarding('Уточнила у Юрия насчёт субботы', 'Записать вас?');
   const real = await ownerAnswerRun({}, 'Можно в субботу?', 'да', ai);
   const session = randomUUID(), root = await mkdtemp(join(tmpdir(), 'leya-owner-sim-'));
   try {
@@ -529,19 +533,9 @@ test('polish: simulator returns exactly the text real delivery sends for the sam
     const saved = await real.h.pg.query<{ body: string }>('select body from simulator_messages where session_id=$1 and from_me order by sequence desc limit 1', [session]);
     assert.equal(saved.rows[0]!.body, real.text);
     const events = await real.h.pg.query<{ purpose: string; simulation: string | null }>("select metadata->>'purpose' purpose,metadata->>'simulation' simulation from usage_events where tenant_id=$1 and event_type='model_call' and metadata->>'purpose' like 'owner_answer_%' order by created_at", [real.h.tenant]);
-    assert.deepEqual(events.rows.map(r => [r.purpose, r.simulation]), [['owner_answer_polish', null], ['owner_answer_verify', null], ['owner_answer_polish', 'true'], ['owner_answer_verify', 'true']]);
+    assert.deepEqual(events.rows.map(r => [r.purpose, r.simulation]), [['owner_answer_forward', null], ['owner_answer_forward', 'true']]);
     await assert.rejects(simulateOwnerAnswer(real.h.db, real.h.tenant, randomUUID(), 'да', ai, { root }), (e: { status?: number }) => e.status === 409);
   } finally { await rm(root, { recursive: true, force: true }); }
-});
-
-test('polish: reviewer example with an invented visit falls back to the original owner text in real delivery', async () => {
-  const ai = { async generateReply(input: { systemPrompt: string }) {
-    return { text: input.systemPrompt.startsWith('Ты проверяющий') ? '{"adds_facts":true,"changes_meaning":false}' : 'Да, можно, мастер приедет к вам домой.' }; } };
-  const run = await ownerAnswerRun({}, 'Можно записаться?', 'да', ai);
-  assert.match(run.text, /Передаю ответ владельца:\s+«да»/);
-  const garbage = await ownerAnswerRun({}, 'Можно записаться?', 'да', { async generateReply(input: { systemPrompt: string }) {
-    return { text: input.systemPrompt.startsWith('Ты проверяющий') ? 'ok' : 'Да, можно.' }; } });
-  assert.match(garbage.text, /«да»/);
 });
 
 test('echo of our own send before messages.waha_msg_id is stamped never pauses the dialogue', async () => {
@@ -960,23 +954,15 @@ test('Z10 review: the creation queue holds when the first creation fails — the
 });
 
 // ---------------------------------------------------------------- Z11
-test('Z11: an owner answer by quote reaches the client; then once «Запомнить на будущее?»; «Да» → «Поняла так» → saved after «Да»', async () => {
+test('Z12: an owner answer by quote reaches the client and becomes a fact at once — no «Запомнить на будущее?»', async () => {
   const h = await pgHarness();
   await escalate(h, 'Можно с ребёнком?');
   const notice = h.sent.find(m => m.chatId === needsAnswer)!;
-  const ruleAI = { async generateReply() { return { text: JSON.stringify({ kind: 'fact', fact: 'С ребёнком можно приходить.', fact_topic: 'faq' }) }; } };
-  const say = async (text: string, quoted: string | null) => { await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, text, quoted, { ...h.settings, ...(await h.notificationSettings()) } as unknown as OwnerSettings, null, randomUUID(), needsAnswer, { ruleAI: ruleAI as never }); await settleAllOutboundQueues(); return h.sent.at(-1)!; };
-  const offer = await say('Да, можно', notice.id);
-  assert.ok(h.sent.some(m => m.chatId === customer && /можно/i.test(m.text)), 'the client got the answer');
-  assert.deepEqual([offer.chatId, offer.text], [needsAnswer, 'Запомнить на будущее? Да / Нет']);
-  const understood = await say('да', offer.id);
-  assert.equal(understood.text, 'Запомню как факт: «С ребёнком можно приходить.». Сохранить? Да / Нет');
-  assert.equal(await h.knowledgeCount(), 0);
-  assert.equal(Number((await h.pg.query<{ n: string }>("select count(*)::text n from business_facts where tenant_id=$1", [h.tenant])).rows[0]!.n), 0, 'nothing before the second «Да»');
-  await say('Да', understood.id);
-  assert.deepEqual((await h.pg.query<{ text: string }>("select text from business_facts where tenant_id=$1", [h.tenant])).rows.map(r => r.text), ['С ребёнком можно приходить.']);
-  // Asked once: another answer to the same question does not ask again.
-  assert.equal(h.sent.filter(m => m.text === 'Запомнить на будущее? Да / Нет').length, 1);
+  await handleOwnerMessage(h.db, h.provider, h.tenant, 'session', owner, 'Да, можно', notice.id, { ...h.settings, ...(await h.notificationSettings()) } as unknown as OwnerSettings, null, randomUUID(), needsAnswer); await settleAllOutboundQueues();
+  assert.ok(h.sent.some(m => m.chatId === customer && /«Да, можно»/.test(m.text)), 'the client got the answer verbatim');
+  assert.equal(h.sent.filter(m => /Запомнить на будущее/.test(m.text)).length, 0);
+  const facts = await h.facts();
+  assert.equal(facts.length, 1); assert.match(facts[0]!.text, /Можно с ребёнком\?/); assert.match(facts[0]!.text, /Да, можно/);
 });
 
 test('Z11: interview — the first day only in the cabinet; then one message a day with all of the day\'s questions; a number picks the question', async () => {
@@ -998,4 +984,75 @@ test('Z11: interview — the first day only in the cabinet; then one message a d
   assert.equal(await status('Нужна ли предоплата?'), 'answered', 'the number picked the question');
   assert.equal(await status('В какие дни вы принимаете?'), 'sent');
   assert.deepEqual((await h.pg.query<{ text: string }>("select text from business_facts where tenant_id=$1", [h.tenant])).rows.map(r => r.text), ['Предоплата не нужна'], 'without the number');
+});
+
+test('Z12: reminders after 4 hours without an answer, at most 2, each with the question', async () => {
+  const { runEscalationTimeouts } = await import('./owner-workflow.service.js');
+  const h = await pgHarness();
+  const id = await seedEscalation(h, { question: 'Делаете ли видео?' });
+  const start = new Date('2026-10-28T06:00:00Z');
+  await h.pg.query("update escalations set status='pending',owner_message_ids=array['initial'],pending_since=$2,created_at=$2 where id=$1", [id, start.toISOString()]);
+  const at = (hours: number) => new Date(start.getTime() + hours * 3_600_000);
+  const reminders = () => h.sent.filter(m => /Напоминание/.test(m.text));
+  await runEscalationTimeouts(h.db, () => h.provider, at(3.9)); await settleAllOutboundQueues();
+  assert.equal(reminders().length, 0, 'not before 4 hours');
+  await runEscalationTimeouts(h.db, () => h.provider, at(4.1)); await settleAllOutboundQueues();
+  await runEscalationTimeouts(h.db, () => h.provider, at(5)); await settleAllOutboundQueues();
+  assert.equal(reminders().length, 1);
+  assert.match(reminders()[0]!.text, /«Делаете ли видео\?»/); assert.equal(reminders()[0]!.chatId, needsAnswer);
+  await runEscalationTimeouts(h.db, () => h.provider, at(8.2)); await settleAllOutboundQueues();
+  await runEscalationTimeouts(h.db, () => h.provider, at(11)); await settleAllOutboundQueues();
+  assert.equal(reminders().length, 2, 'the second one 4 hours after the first, then no more');
+  assert.equal((await h.escalation(id) as unknown as { reminder_count: number }).reminder_count, 2);
+});
+
+test('Z12: each ASK_OWNER is its own owner message with only the question; a request shows the model card + phone', async () => {
+  const { openQuestionsFor } = await import('./owner-workflow.service.js');
+  const h = await pgHarness();
+  const input = { tenant_id: h.tenant, conversation_id: h.conversationId, client_chat_id: customer, client_name: 'Анна', question: 'хочу видео и скидку', session: 'session', inbound_id: 'incoming', client_phone: '972501234567' };
+  await createEscalation(h.db, h.provider, input, h.settings, null, { questions: ['делаете ли видео?', 'есть ли скидка на год?'], separate: true, clientText: 'Уточню у владельца.' }); await settleAllOutboundQueues();
+  const notices = h.sent.filter(m => m.chatId === needsAnswer).map(m => m.text);
+  assert.deepEqual(notices, ['❓ Вопрос от клиента Анна (+972 50-123-4567): делаете ли видео?\n\nОтветьте реплеем — передам клиенту.', '❓ Вопрос от клиента Анна (+972 50-123-4567): есть ли скидка на год?\n\nОтветьте реплеем — передам клиенту.']);
+  assert.deepEqual((await h.pg.query<{ batch_id: string | null }>('select batch_id from escalations')).rows.map(r => r.batch_id), [null, null]);
+  assert.deepEqual(await openQuestionsFor(h.db, h.tenant, h.conversationId), ['делаете ли видео?', 'есть ли скидка на год?']);
+  assert.equal(h.sent.filter(m => m.chatId === customer).at(-1)!.text, 'Уточню у владельца.', 'the client gets the model text');
+
+  const g = await pgHarness();
+  const card = '👤 Клиент: Анна\n📞 Хочет: звонок\n🕐 Удобно (пожелание клиента): среда 14:00';
+  await createEscalation(g.db, g.provider, { ...input, tenant_id: g.tenant, conversation_id: g.conversationId, question: 'meeting\ntopic: звонок', owner_card: card }, g.settings, null, { kind: 'request', clientText: 'Передала.' }); await settleAllOutboundQueues();
+  assert.equal(g.sent.find(m => m.chatId === needsAnswer)!.text, `📩 Заявка\n${card}\n📱 +972 50-123-4567\n\nОтветьте реплеем — передам клиенту.`);
+});
+
+test('Z12: daily report at 09:00 local about yesterday — one line per client, findings kept; nothing when there were no dialogs', async () => {
+  const { runTenantDailyReport } = await import('./daily-report.service.js');
+  const h = await pgHarness();
+  const empty = await runTenantDailyReport(h.db, h.tenant, 'session', h.provider, new Date('2026-10-28T07:05:00Z'), { async generateReply() { throw new Error('no call expected'); } });
+  assert.equal(empty, 'empty'); assert.equal(h.sent.length, 0, 'no dialogs — no report');
+  const g = await pgHarness();
+  await g.pg.query("insert into messages(conversation_id,tenant_id,from_me,body,msg_type,created_at) values($1,$2,false,'Сколько стоит абонемент?','text','2026-10-27T10:00:00Z'),($1,$2,true,'Абонемент — 900 ₪.','text','2026-10-27T10:00:05Z')", [g.conversationId, g.tenant]);
+  await g.pg.query("update clients set preferred_name='Анна' where id=$1", [g.clientId]);
+  const ai = { async generateReply(input: { userMessage: string }) {
+    assert.match(input.userMessage, /Клиент: Сколько стоит абонемент\?/);
+    return { text: JSON.stringify({ dialogs: [{ id: g.conversationId, summary: 'спрашивала абонемент', outcome: 'lost', reason: 'price' }], findings: [{ id: g.conversationId, kind: 'price_not_in_facts', reply_excerpt: 'Абонемент — 900 ₪.', note: 'цены нет в фактах' }] }) }; } };
+  assert.equal(await runTenantDailyReport(g.db, g.tenant, 'session', g.provider, new Date('2026-10-28T05:00:00Z'), ai), 'skipped', '07:00 local — not yet');
+  assert.equal(await runTenantDailyReport(g.db, g.tenant, 'session', g.provider, new Date('2026-10-28T07:05:00Z'), ai), 'sent'); await settleAllOutboundQueues();
+  const report = g.sent.find(m => m.chatId === reports)!;
+  assert.match(report.text, /^📊 Отчёт за 27\.10\.2026\n\nВсего обращений: 1\n✅ Заявки: 0\n💬 В процессе: 0\n❌ Не сложилось: 1/);
+  assert.match(report.text, /❌ Анна — спрашивала абонемент \(дорого\)/);
+  assert.deepEqual((await g.pg.query<{ kind: string; reply_excerpt: string }>('select kind,reply_excerpt from quality_findings')).rows, [{ kind: 'price_not_in_facts', reply_excerpt: 'Абонемент — 900 ₪.' }]);
+  assert.equal(await runTenantDailyReport(g.db, g.tenant, 'session', g.provider, new Date('2026-10-28T08:05:00Z'), ai), 'skipped', 'once a day');
+});
+
+test('Z12: the operator message — all unreported findings once a day; without platform_report_number only the table', async () => {
+  const { runPlatformQualityReport } = await import('./daily-report.service.js');
+  const h = await pgHarness();
+  await h.pg.query("insert into quality_findings(tenant_id,report_date,kind,reply_excerpt,note) values($1,'2026-10-27','promise_for_owner','Юрий перезвонит в 14:00','время обещано за владельца')", [h.tenant]);
+  assert.equal(await runPlatformQualityReport(h.db, h.provider), false);
+  await h.pg.query("insert into whatsapp_instances(tenant_id,waha_url,session_name,status) values($1,'http://waha','session','WORKING') on conflict (tenant_id) do update set session_name='session'", [h.tenant]);
+  await h.pg.query("insert into system_config(key,value) values('platform_report_number',to_jsonb('972500000002'::text)),('platform_report_tenant',to_jsonb($1::text))", [h.tenant]);
+  assert.equal(await runPlatformQualityReport(h.db, h.provider), true); await settleAllOutboundQueues();
+  const message = h.sent.at(-1)!;
+  assert.equal(message.chatId, '972500000002@c.us');
+  assert.match(message.text, /🔎 Контроль ответов за 2026-10-27: 1\n\n• Business — promise_for_owner: «Юрий перезвонит в 14:00» \(время обещано за владельца\)/);
+  assert.equal(await runPlatformQualityReport(h.db, h.provider), false, 'once a day');
 });

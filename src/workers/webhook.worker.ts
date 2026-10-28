@@ -15,7 +15,7 @@ import { meterAI } from '../services/metered-providers.js';
 import { enqueueMessage } from './outbound-queue.js';
 import { notifyUsageFailure, deliverUsageNotices } from '../services/usage-notifications.service.js';
 import { behavior } from '../services/runtime-settings.service.js';
-import { createEscalation, createOwnerRequest, handleOwnerMessage, conversationPaused, openRequestFor } from '../services/owner-workflow.service.js';
+import { createEscalation, createOwnerRequest, handleOwnerMessage, conversationPaused, openRequestFor, openQuestionsFor } from '../services/owner-workflow.service.js';
 import { loadClientProfile, saveClientProfile } from '../services/client-profile.service.js';
 import { loadOwnerSettings } from '../services/owner-settings.service.js';
 import { logSystemEvent, recordAgentAction } from '../services/logging.service.js';
@@ -124,12 +124,13 @@ export async function handleWebhookEvent(tenantId: string, body: Record<string, 
     createEscalation: async (language, questions, answered, options) => {
       const answer = await createEscalation(db, provider, { tenant_id: tenantId, session, conversation_id: conversation.id,
         client_chat_id: from, client_name: pushName || client.name || formatPhone(client.phone) || '', question: text,
-        response_language: language, inbound_id: incomingMsgId, client_phone: client.phone }, settings, client.time_zone, { ...(questions ? { questions } : {}), answered: answered ?? null, modelUnavailable: options?.modelUnavailable === true, ...(options?.clientText ? { clientText: options.clientText } : {}) });
+        response_language: language, inbound_id: incomingMsgId, client_phone: client.phone }, settings, client.time_zone, { ...(questions ? { questions } : {}), answered: answered ?? null, modelUnavailable: options?.modelUnavailable === true, ...(options?.clientText ? { clientText: options.clientText } : {}), ...(options?.separate ? { separate: true } : {}) });
       return answer ? withoutRepeatedIntroduction(answer, memory.introduced) : null;
     },
-    createRequest: (language, summary, repeatReply, clientFirstName) => createOwnerRequest(db, provider, { tenant_id: tenantId, session, conversation_id: conversation.id,
+    createRequest: (language, summary, repeatReply, clientFirstName, card) => createOwnerRequest(db, provider, { tenant_id: tenantId, session, conversation_id: conversation.id,
       client_chat_id: from, client_name: clientFirstName || pushName || client.name || formatPhone(client.phone) || '', question: text,
-      response_language: language, inbound_id: incomingMsgId, client_phone: client.phone }, settings, summary, repeatReply, clientFirstName),
+      response_language: language, inbound_id: incomingMsgId, client_phone: client.phone, ...(card ? { owner_card: card } : {}) }, settings, summary, repeatReply, clientFirstName),
+    openQuestions: () => openQuestionsFor(db, tenantId, conversation.id),
     openRequest: async () => (await openRequestFor(db, tenantId, conversation.id))?.question ?? null,
     loadDemo: async () => {
       const row = await db.from('conversations').select('demo_key,demo_turns').eq('tenant_id', tenantId).eq('id', conversation.id).maybeSingle();

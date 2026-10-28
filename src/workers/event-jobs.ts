@@ -24,8 +24,28 @@ export async function ensureRetentionSweep(db: DatabaseClient, now = new Date())
   scheduleWake(now);
 }
 
+/** Z12: one system-wide hourly job sends each tenant's daily report at its time and the operator's quality message. */
+export async function ensureDailyReportJob(db: DatabaseClient, now = new Date()): Promise<void> {
+  const active = await db.from('scheduled_jobs').select('scheduled_at').eq('job_type', 'daily_report')
+    .in('status', ['pending', 'sending']).limit(1);check(active.error);
+  if (active.data?.length) { scheduleWake(new Date(String(active.data[0]!.scheduled_at))); return; }
+  const inserted = await db.from('scheduled_jobs').insert({ tenant_id: null, job_type: 'daily_report', payload: {}, scheduled_at: now.toISOString(), status: 'pending' });
+  if (inserted.error?.code !== '23505') check(inserted.error);
+  scheduleWake(now);
+}
+async function runDailyReportJob(db: DatabaseClient, job: ScheduledJob, now: Date): Promise<void> {
+  const { runDailyReports } = await import('../services/daily-report.service.js');
+  await runDailyReports(db, createWhatsAppProvider, now);
+  // Next run at the start of the next hour (+1 min): report times are HH:MM of each tenant.
+  const next = new Date(Math.floor(now.getTime() / 3_600_000) * 3_600_000 + 3_660_000);
+  const updated = await db.from('scheduled_jobs').update({ status: 'pending', scheduled_at: next.toISOString(), executed_at: now.toISOString(), error: null })
+    .eq('id', job.id).eq('status', 'sending');check(updated.error);
+  scheduleWake(next);
+}
+
 export async function seedDurableJobs(db: DatabaseClient, now = new Date()): Promise<void> {
   await ensureRetentionSweep(db, now);
+  await ensureDailyReportJob(db, now);
   const instances = await db.from('whatsapp_instances').select('tenant_id,session_name');check(instances.error);
   const settingsByTenant = new Map<string, Awaited<ReturnType<typeof loadOwnerSettings>>>();
   for (const row of instances.data ?? []) {
@@ -119,6 +139,7 @@ async function runSummary(db: DatabaseClient, job: ScheduledJob, now: Date): Pro
 export async function runEventJob(db: DatabaseClient, job: ScheduledJob): Promise<void> {
   const now = new Date();
   if (job.job_type === 'retention_sweep') return runRetentionSweep(db, job, now);
+  if (job.job_type === 'daily_report') return runDailyReportJob(db, job, now);
   if (job.job_type === 'owner_escalation') {
     await runDueScheduledEscalations(db, createWhatsAppProvider, now, job.tenant_id ?? undefined, job.id);
     return;

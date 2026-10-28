@@ -5,9 +5,11 @@ import { renderGreeting, renderText } from "./templates.service.js";
 import { languageOf } from "./templates.service.js";
 import { enqueueMessage, outboundIdsForProviderId, type OutboundKind } from '../workers/outbound-queue.js';
 import type { AIProvider } from "../providers/ai/ai-provider.interface.js";
-import { polishOwnerAnswer, translateOwnerAnswer } from "./ai-fallback.service.js";
+import { translateOwnerAnswer } from "./ai-fallback.service.js";
+import { classifyOwnerReply, composeOwnerForward, learnOwnerAnswer } from './owner-forward.service.js';
+import { clientIsLeaving } from '../config/roles.js';
 import { loadContext } from "./context.service.js";
-import { handleSuggestionReply, proposeKnowledgeSuggestion } from "./knowledge-suggestions.service.js";
+import { handleSuggestionReply } from "./knowledge-suggestions.service.js";
 import { formatPhone, storedPhone } from "../utils/whatsapp-id.js";
 import { loadClientProfile } from "./client-profile.service.js";
 import { randomUUID } from "node:crypto";
@@ -29,6 +31,8 @@ export interface Escalation {
   pending_since?:string|null;reminded_at?:string|null;created_at?:string;
   inbound_id:string|null;status:string;owner_message_ids:string[];answer:string|null;learning_state:string;learning_message_ids:string[];
   client_message_id?:string|null;batch_id?:string|null;batch_position?:number;client_phone?:string|null;kind?:'question'|'request';model_unavailable?:boolean;
+  /** Z12: the card the model wrote for the owner after [[REQUEST]]; reminders sent so far. */
+  owner_card?:string|null;reminder_count?:number;
 }
 const JOB='owner_escalation';
 const TIMEOUT_JOB='escalation_timeout';
@@ -47,20 +51,23 @@ async function send(db:DatabaseClient,tenantId:string,provider:WhatsAppProvider,
 }
 async function sendClient(db:DatabaseClient,provider:WhatsAppProvider,e:Escalation,text:string,kind:OutboundKind='reply',inboundMessageIds:string[]=[],dedupeKey?:string):Promise<string>{
  const c=await db.from('conversations').select('assistant_introduced_at').eq('tenant_id',e.tenant_id).eq('id',e.conversation_id).maybeSingle();check(c.error);
- const id=await send(db,e.tenant_id,provider,e.session,e.client_chat_id,withoutRepeatedIntroduction(text,!!c.data?.assistant_introduced_at),kind,dedupeKey,inboundMessageIds);
+ const body=withoutRepeatedIntroduction(text,!!c.data?.assistant_introduced_at);
+ const id=await send(db,e.tenant_id,provider,e.session,e.client_chat_id,body,kind,dedupeKey,inboundMessageIds);
+ // Z12: every message to the client is part of the dialog («Чаты», the model's history), like an ordinary reply.
+ const stored=await db.from('messages').insert({conversation_id:e.conversation_id,tenant_id:e.tenant_id,from_me:true,body:clientText(body),msg_type:'text',outbound_message_id:id});
+ if(stored.error)console.error('escalation_message_persist_failed',{tenantId:e.tenant_id});
  const marked=await db.from('conversations').update({assistant_introduced_at:new Date().toISOString()}).eq('tenant_id',e.tenant_id).eq('id',e.conversation_id).is('assistant_introduced_at',null);check(marked.error);return id;
 }
-/** The exact client text for an owner answer; shared by real delivery and the simulator. */
+/** The exact client text for an owner answer; shared by real delivery and the simulator. Z12: «Уточнила у … насчёт …: «ответ дословно»» + a short follow-up. */
 export async function composeOwnerAnswer(db:DatabaseClient,tenantId:string,input:{question:string;answer:string;language:string;introduced:boolean},settings:OwnerSettings,ai?:AIProvider|null):Promise<string> {
-  if(behavior(settings).polish_owner_answer&&ai){
-    let context=null;
-    try{context=await loadContext(db,tenantId);}catch{console.warn('owner_answer_polish_context_unavailable');}
-    const polished=context?await polishOwnerAnswer(input.question,input.answer,context,input.language,
-      meterAI(db,tenantId,ai,{purpose:'owner_answer_polish'}),input.introduced,meterAI(db,tenantId,ai,{purpose:'owner_answer_verify'})):null;
-    if(polished)return withoutRepeatedIntroduction(polished,input.introduced);
-  }
-  const translated=(settings.translate_owner_answer ?? BEHAVIOR_DEFAULTS.translate_owner_answer) ? await translateOwnerAnswer(input.language,input.answer,ai) : input.answer;
-  return withoutRepeatedIntroduction(ownerAnswerText(input.question,translated,settings,input.language),input.introduced);
+  const answer=(settings.translate_owner_answer ?? BEHAVIOR_DEFAULTS.translate_owner_answer) ? await translateOwnerAnswer(input.language,input.answer,ai) : input.answer;
+  return withoutRepeatedIntroduction(await composeOwnerForward(db,tenantId,{question:input.question,answer,language:input.language},settings,ai?meterAI(db,tenantId,ai,{purpose:'owner_answer_forward'}):null),input.introduced);
+}
+/** Z12: questions of the conversation still waiting for the owner — the reply prompt's «ждёшь ответа на». */
+export async function openQuestionsFor(db:DatabaseClient,tenantId:string,conversationId:string):Promise<string[]>{
+  const r=await db.from('escalations').select('question').eq('tenant_id',tenantId).eq('conversation_id',conversationId).eq('kind','question')
+    .in('status',['queued','notifying','pending','reminding','answered','delivering']).order('created_at',{ascending:true}).limit(10);check(r.error);
+  return (r.data??[]).map(row=>String(row.question));
 }
 export async function conversationPaused(db:DatabaseClient,tenantId:string,conversationId:string,settings?:OwnerSettings,now=new Date()):Promise<boolean> {
   const {data,error}=await db.from('conversations').select('bot_paused,owner_last_activity_at').eq('tenant_id',tenantId).eq('id',conversationId).maybeSingle();check(error);
@@ -124,6 +131,8 @@ async function escalationPhone(db:DatabaseClient,e:Escalation):Promise<string|nu
 }
 /** 📩 request notice: what the client asks (+ named time) and up to two facts Leya already knows. */
 async function requestNotice(db:DatabaseClient,e:Escalation,settings:OwnerSettings,phone:string|null):Promise<string>{
+  // Z12: the card the model wrote (👤 Клиент, 📞 Хочет, 🕐 Удобно, 📝 Детали) + the client's phone from the code.
+  if(e.owner_card?.trim()){const text=renderText(settings,'owner.request_card',behavior(settings).owner_language,{card:clientText(e.owner_card),phone:phone??''});return phone?text:text.replace(/\n📱 \n/,'\n');}
   const conversation=await db.from('conversations').select('client_id').eq('tenant_id',e.tenant_id).eq('id',e.conversation_id).maybeSingle();check(conversation.error);
   const profile=conversation.data?.client_id?await loadClientProfile(db,e.tenant_id,String(conversation.data.client_id)):'';
   const known=profile.split('\n').map(line=>line.replace(/^- \d{2}\.\d{2}: /,'').trim()).filter(Boolean).slice(-2);
@@ -185,11 +194,12 @@ export async function notifyOwner(db:DatabaseClient,provider:WhatsAppProvider,e:
  * (a quoted reply maps to exactly one question) and ONE client message for the whole batch:
  * the answered part (if any) followed by the waiting text.
  */
-export async function createEscalation(db:DatabaseClient,provider:WhatsAppProvider,input:Omit<Escalation,'id'|'status'|'owner_message_ids'|'answer'|'learning_state'|'learning_message_ids'>,settings:OwnerSettings,clientZone?:string|null,options:{questions?:string[];answered?:string|null;kind?:'question'|'request';clientText?:string;modelUnavailable?:boolean}={}) {
+export async function createEscalation(db:DatabaseClient,provider:WhatsAppProvider,input:Omit<Escalation,'id'|'status'|'owner_message_ids'|'answer'|'learning_state'|'learning_message_ids'>,settings:OwnerSettings,clientZone?:string|null,options:{questions?:string[];answered?:string|null;kind?:'question'|'request';clientText?:string;modelUnavailable?:boolean;separate?:boolean}={}) {
   if(!hasOwnerContact(settings)) {console.warn('webhook_escalation_skipped',{reason:'missing_owner_phone'});return;}
   if(!allowedRecipient(ownerDestination(settings))) return;
   const questions=options.questions?.length?options.questions:[input.question];
-  const batchId=questions.length>1?randomUUID():null;
+  // Z12: each [[ASK_OWNER]] is its own question — answered and forwarded on its own (`separate`).
+  const batchId=questions.length>1&&!options.separate?randomUUID():null;
   const rows:Escalation[]=[];
   for(const [position,question] of questions.entries()){
     const {data,error}=await db.from('escalations').insert({...input,question,batch_id:batchId,batch_position:position,kind:options.kind??'question',model_unavailable:options.modelUnavailable===true}).select('*').single();
@@ -254,7 +264,7 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
     await send(db,tenantId,provider,session,reply,result.data?.length?(paused?renderText(settings,'owner.owner_reply_12',behavior(settings).owner_language):renderText(settings,'owner.short_1',behavior(settings).owner_language)):renderText(settings,'owner.short_2',behavior(settings).owner_language));return true;
   }
   // Z11: «Да / Нет» (or the details) to «Сохранить?», then to «Запомнить на будущее?» — before anything else is matched.
-  const {answerProposal,answerRemember,understandInChat,offerRemember}=await import('./owner-rules-chat.service.js');
+  const {answerProposal,answerRemember,understandInChat}=await import('./owner-rules-chat.service.js');
   if(await answerProposal(db,tenantId,settings,text,quoted,inboundMessageId??null,sendReply,options.ruleAI))return true;
   if(await answerRemember(db,tenantId,settings,text,quoted,sendReply,options.ruleAI))return true;
   // Task Z: an answer to an owner-interview question (by quote, or the only question out when no client waits).
@@ -288,12 +298,23 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
     await send(db,tenantId,provider,session,reply,paused?renderText(settings,'owner.owner_reply_22',behavior(settings).owner_language):renderText(settings,'owner.owner_reply_23',behavior(settings).owner_language));return true;
   }
   if(e.status!=='pending') return true;
-  if(isDeferredAnswer(text)) {await send(db,tenantId,provider,session,reply,renderText(settings,'owner.owner_reply_24',behavior(settings).owner_language));return true;}
+  // Z12: a postponement («позже», «завтра отвечу») — nothing to the client, the question stays open.
+  if(await classifyOwnerReply(e.question,text,ai?meterAI(db,tenantId,ai,{purpose:'owner_reply_classification'}):null)==='DEFER') {await send(db,tenantId,provider,session,reply,renderText(settings,'owner.owner_reply_24',behavior(settings).owner_language));return true;}
   if(settings.auto_replies_paused||await conversationPaused(db,tenantId,e.conversation_id,settings)){
     await send(db,tenantId,provider,session,reply,renderText(settings,'owner.owner_reply_25',behavior(settings).owner_language));return true;
   }
   const answer=clientText(text);if(!answer) return true;
   if(!allowedRecipient(e.client_chat_id)) return true;
+  // Z12 (as chef-bot): the client has already said goodbye — the answer is not forwarded, only kept as a fact.
+  const last=await db.from('messages').select('body').eq('tenant_id',tenantId).eq('conversation_id',e.conversation_id).eq('from_me',false).order('created_at',{ascending:false}).limit(1);check(last.error);
+  if(typeof last.data?.[0]?.body==='string'&&clientIsLeaving(last.data[0].body)){
+    if(!await claim(db,e,'pending','client_left')) return true;
+    await patch(db,e,{answer,closed_at:new Date().toISOString(),learning_state:'saved'});
+    await cancelEscalationTimeout(db,e);
+    await learnOwnerAnswer(db,tenantId,settings,{question:e.question,answer});
+    await sendReply(renderText(settings,'owner.client_left',behavior(settings).owner_language),`escalation:${e.id}:client_left`);
+    return true;
+  }
   if(e.batch_id){
     // A batch answers the client once: park this answer until every sibling question is answered.
     if(!await claim(db,e,'pending','answered')) return true;
@@ -310,8 +331,7 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
     const id=await sendClient(db,provider,e,await composeOwnerAnswer(db,tenantId,{question:e.question,answer,language:responseLanguage,introduced:!!c.data?.assistant_introduced_at},settings,ai),'owner_answer_delivery',inboundMessageId?[inboundMessageId]:[],`escalation:${e.id}:answer`);
     await patch(db,e,{status:'delivered',client_message_id:id,delivered_at:new Date().toISOString()});
     await cancelEscalationTimeout(db,e);
-    // Z11: once — «Запомнить на будущее? Да / Нет».
-    try{await offerRemember(db,settings,e,sendReply);}catch{console.warn('remember_offer_failed',{tenantId});}
+    // Z12: no «Запомнить на будущее?» — the answer becomes a fact once it reaches the client (onOwnerAnswerDeliveryOutcome).
     const route=await db.from('conversations').update({routed_agent:null,route_selected_at:null}).eq('tenant_id',tenantId).eq('id',e.conversation_id);check(route.error);
   } catch {
     await patch(db,e,{status:'delivery_uncertain'});
@@ -361,7 +381,15 @@ export async function onOwnerAnswerDeliveryOutcome(db:DatabaseClient,provider:Wh
   const found=await db.from('escalations').select('*').eq('tenant_id',row.tenant_id).eq('client_message_id',row.id).eq('status','delivered');check(found.error);
   const delivered=(found.data??[]) as Escalation[];if(!delivered.length)return;
   // Sent: each Q/A pair is only *considered* for the knowledge base; the owner sees it in the next summary.
-  if(outcome==='sent'){for(const e of delivered)await proposeKnowledgeSuggestion(db,e);return;}
+  // Z12 (as chef-bot learned answers): sent — each owner answer is an active fact at once, no suggestion or «Запомнить?».
+  if(outcome==='sent'){
+    const settings=await loadOwnerSettings(db,row.tenant_id);
+    for(const e of delivered){
+      const claimed=await db.from('escalations').update({learning_state:'saved'}).eq('tenant_id',e.tenant_id).eq('id',e.id).neq('learning_state','saved').select('id');check(claimed.error);
+      if(claimed.data?.length&&e.answer&&!e.model_unavailable)await learnOwnerAnswer(db,row.tenant_id,settings,{question:e.question,answer:e.answer});
+    }
+    return;
+  }
   const settings=await loadOwnerSettings(db,row.tenant_id),owner=await ownerChat(db,provider,row.tenant_id,row.session,settings,'needs_answer');
   for(const e of delivered)await patch(db,e,{status:'delivery_uncertain'});
   console.error('escalation_client_delivery_uncertain',{tenantId:row.tenant_id,escalationId:delivered[0]!.id});
@@ -419,14 +447,14 @@ export async function runEscalationTimeouts(db:DatabaseClient,providerFor:()=>Wh
      const route=await db.from('conversations').update({routed_agent:null,route_selected_at:null}).eq('tenant_id',e.tenant_id).eq('id',e.conversation_id);check(route.error);
     }catch{await patch(db,e,{status:'delivery_uncertain'});console.error('escalation_timeout_delivery_uncertain',{tenantId:e.tenant_id,escalationId:e.id});}
     await cancelEscalationTimeout(db,e,now);
-   }else if(!e.reminded_at&&elapsed>=config.escalation_remind_minutes*60000){
+   }else if((e.reminder_count??0)<config.escalation_remind_max&&activeElapsedMs(settings,new Date(e.reminded_at??e.pending_since??e.created_at!),now)>=config.escalation_remind_minutes*60000){
     const to=await ownerChat(db,provider,e.tenant_id,e.session,settings,'needs_answer');
     if(!ownerChatAllowed(to))continue;
     if(!await claim(db,e,'pending','reminding'))continue;
     try{const phone=formatPhone(await escalationPhone(db,e)),remind=renderText(settings,'owner.remind',config.owner_language,{name:e.client_name,phone:phone??'',question:e.question});
-     const id=await send(db,e.tenant_id,provider,e.session,to,phone?remind:remind.replace(/\s*\(\s*\)/,''),'reminder',`escalation:${e.id}:remind`);
-     await patch(db,e,{status:'pending',reminded_at:now.toISOString(),owner_message_ids:[...e.owner_message_ids,id]});
-    }catch{await patch(db,e,{status:'pending',reminded_at:now.toISOString()});console.error('escalation_reminder_uncertain',{tenantId:e.tenant_id,escalationId:e.id});}
+     const id=await send(db,e.tenant_id,provider,e.session,to,phone?remind:remind.replace(/\s*\(\s*\)/,''),'reminder',`escalation:${e.id}:remind${(e.reminder_count??0)>0?`:${(e.reminder_count??0)+1}`:''}`);
+     await patch(db,e,{status:'pending',reminded_at:now.toISOString(),reminder_count:(e.reminder_count??0)+1,owner_message_ids:[...e.owner_message_ids,id]});
+    }catch{await patch(db,e,{status:'pending',reminded_at:now.toISOString(),reminder_count:(e.reminder_count??0)+1});console.error('escalation_reminder_uncertain',{tenantId:e.tenant_id,escalationId:e.id});}
     // Some questions of the batch are answered while this one still waits: send what we have.
     if(e.batch_id)await deliverBatchIfReady(db,provider,e,settings,meterAI(db,e.tenant_id,createAIProvider()),true);
    }

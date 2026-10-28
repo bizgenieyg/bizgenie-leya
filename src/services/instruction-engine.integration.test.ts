@@ -47,24 +47,25 @@ test('instruction path: core + instruction + facts in the prompt, history as cha
     const second = await f.say('у меня салон красоты');
     assert.equal(second.reply, 'Для салона ассистент возьмёт на себя запись. Показать на примере, как он ответит вашей клиентке?');
     const p = f.prompts.at(-1)!;
-    assert.match(p.system, /^Ты — Лея, ассистент бизнеса «BizGenie» в WhatsApp\. Владелец — Юрий\./);
+    assert.match(p.system, /^Ты — Лея, ИИ-ассистент бизнеса «BizGenie» в WhatsApp\. Владелец — Юрий\./);
     assert.match(p.system, /=== ИНСТРУКЦИЯ БИЗНЕСА ===\nИНСТРУКЦИЯ БИЗНЕСА: BizGenie\. Юрия зовут Юрий\./);
     assert.match(p.system, /=== ФАКТЫ ===\n## услуги и цены\n- Базовый ассистент — от 249 ₪ в месяц/);
+    assert.match(p.system, /=== СЕЙЧАС ===\nСегодня /);
+    assert.match(p.system, /открытых вопросов нет — все ответы переданы/);
     assert.equal(p.user, 'у меня салон красоты');
     assert.equal(p.history, 2, 'previous turns as chat messages, not JSON');
     assert.doesNotMatch(p.system, /Верни строго JSON|классификатор/);
   } finally { await f.pg.close(); }
 });
 
-test('27.09: "по объявлениям" — a REQUEST without consent is regenerated; if it stays, no request and no "свяжется"', async () => {
+test('Z12: the answer goes as the model wrote it — a REQUEST without consent or fields is created, one model call', async () => {
   const f = await fixture();
   try {
-    f.reply('Отлично, Юрий свяжется с вами.\n[[REQUEST: meeting | topic=объявления]]', 'Юрий свяжется с вами сегодня.\n[[REQUEST: meeting | topic=объявления]]');
+    f.reply('Отлично, Юрий свяжется с вами.\n[[REQUEST: meeting | topic=объявления]]');
     const r = await f.say('по объявлениям');
-    assert.equal(await f.requests(), 0);
-    assert.match(f.prompts.at(-1)!.system, /Клиент не просил и не соглашался/);
-    assert.doesNotMatch(r.reply ?? '', /свяжется|передал/);
-    assert.equal(r.reply, 'Подскажите, пожалуйста, что для вас сейчас самое важное?');
+    assert.equal(await f.requests(), 1);
+    assert.equal(f.prompts.length, 1, 'no regeneration');
+    assert.equal(r.reply, 'Отлично, Юрий свяжется с вами.');
   } finally { await f.pg.close(); }
 });
 
@@ -82,42 +83,35 @@ test('29.09: offer → "да хочу" → one request with its fields and one c
   } finally { await f.pg.close(); }
 });
 
-test('a direct request with missing required fields asks for them; collected over several messages it is created', async () => {
+test('Z12: the card after [[REQUEST]] never reaches the client; the fields go to the request summary', async () => {
   const f = await fixture();
   try {
-    await saveRuntimeSettings(f.db, f.tenantId, { request_required_fields: { consultation: ['city', 'when'] } });
-    f.reply('Готово, записала.\n[[REQUEST: consultation | city=Ашдод]]', 'В каком городе и в какой день вам удобно?');
-    const first = await f.say('хочу записаться на консультацию');
-    assert.equal(await f.requests(), 0);
-    assert.match(f.prompts.at(-1)!.system, /не хватает данных: when/);
-    assert.equal(first.reply, 'В каком городе и в какой день вам удобно?');
-    f.reply('Хорошо. Какой день удобен?');
-    await f.say('в Ашдоде');
-    // Z11 (M11): not «записала» — the owner confirms the time.
-    f.reply('Консультация в Ашдоде в среду — Юрий подберёт время и напишет.\n[[REQUEST: consultation | city=Ашдод; when=среда]]');
-    await f.say('в среду');
-    assert.equal(await f.requests(), 1, 'the direct request two turns earlier still counts');
+    f.reply('Передала Юрию — он перезвонит и подтвердит время.\n[[REQUEST: meeting | topic=звонок; time=среда 14:00]]\n👤 Клиент: Анна\n📞 Хочет: звонок\n🕐 Удобно (пожелание клиента): среда 14:00');
+    const r = await f.say('перезвоните мне в среду в 14 00');
+    assert.equal(r.reply, 'Передала Юрию — он перезвонит и подтвердит время.');
+    assert.deepEqual(r.labels, ['REQUEST']);
+    const request = (await f.pg.query<{ open_request: string }>('select open_request from simulator_sessions')).rows[0]!.open_request;
+    assert.equal(request, 'meeting\ntopic: звонок\ntime: среда 14:00');
   } finally { await f.pg.close(); }
 });
 
-test('numbers not in facts: one regeneration with the list, then "уточню у Юрия" and a question to the owner', async () => {
+test('Z12: numbers not in the facts are not checked by code — the reply is sent as it is', async () => {
   const f = await fixture();
   try {
-    f.reply('Интеграция с Monday — 1500 ₪.', 'Обычно это 1 200 ₪ за 3 дня.');
+    f.reply('Интеграция с Monday — 1500 ₪.');
     const r = await f.say('сколько стоит интеграция с Monday?');
-    assert.match(f.prompts.at(-1)!.system, /Этих чисел нет в Фактах и инструкции: 1500/);
-    assert.equal(r.reply, 'Уточню: Юрий ответит, и я сразу вернусь к вам.');
-    assert.equal(r.outcome, 'escalated');
-    f.reply('Базовый ассистент — от 249 ₪ в месяц.');
-    assert.equal((await f.say('а сам ассистент?')).reply, 'Базовый ассистент — от 249 ₪ в месяц.', 'numbers from the facts pass');
+    assert.equal(r.reply, 'Интеграция с Monday — 1500 ₪.');
+    assert.equal(r.outcome, 'answered');
+    assert.equal(f.prompts.length, 1);
   } finally { await f.pg.close(); }
 });
 
-test('unsafe text is regenerated, then replaced; a missing placeholder blocks the reply', async () => {
+test('Z12: service characters and placeholders are cut, not regenerated; a missing placeholder blocks the reply', async () => {
   const f = await fixture();
   try {
-    f.reply('Цена {price}', 'Ответ: undefined');
-    assert.equal((await f.say('сколько стоит?')).reply, 'Подскажите, пожалуйста, что для вас сейчас самое важное?');
+    f.reply('Цена {price} уточняется <b>у Юрия</b>.');
+    assert.equal((await f.say('сколько стоит?')).reply, 'Цена уточняется у Юрия.');
+    assert.equal(f.prompts.length, 1);
   } finally { await f.pg.close(); }
   const g = await fixture({ owner: ' ' });
   try {
@@ -133,10 +127,9 @@ test('demo mode: DEMO_START … numbers from the demo text with "для прим
   try {
     f.reply('Напишите, как вам обычно пишет клиент, — отвечу так, как ответила бы ему.\n[[DEMO_START: home_cook]]');
     await f.say('покажите на примере');
-    f.reply('Пельмени — 100 ₪/кг. На завтра не получится: заказ минимум за неделю, выдача во вторник или четверг.', 'Пельмени — 100 ₪/кг (цены здесь для примера). На завтра не получится: заказ минимум за неделю.');
+    f.reply('Пельмени — 100 ₪/кг (цены здесь для примера). На завтра не получится: заказ минимум за неделю.');
     const r = await f.say('сколько стоят пельмени? можно на завтра?');
     assert.match(f.prompts.at(-1)!.system, /=== РЕЖИМ ПОКАЗА \(home_cook\) ===\nДЕМО-БИЗНЕС: домашний повар/);
-    assert.match(f.prompts.at(-1)!.system, /цены здесь для примера|пометк|для примера/);
     assert.equal(r.reply, 'Пельмени — 100 ₪/кг (цены здесь для примера). На завтра не получится: заказ минимум за неделю.');
     f.reply('Так же ассистент будет отвечать вашим клиентам по вашим ценам. Показать, как подключиться?\n[[DEMO_END]]');
     await f.say('понятно, спасибо');
@@ -200,7 +193,7 @@ test('operator endpoints logic: versions, one active, core override; operator se
     await f.pg.query("insert into system_config(key,value) values('assistant_core_instruction', to_jsonb('Ядро оператора для {business_name}. {owner_name}.'::text))");
     f.reply('Здравствуйте!');
     await f.say('привет');
-    assert.match(f.prompts.at(-1)!.system, /^Ядро оператора для BizGenie\. Юрий\.\n\n=== ИНСТРУКЦИЯ БИЗНЕСА ===\nВерсия 2 для BizGenie/);
+    assert.match(f.prompts.at(-1)!.system, /^Ядро оператора для BizGenie\. Юрий\.\nИмена склоняй[^\n]*\n\n=== ИНСТРУКЦИЯ БИЗНЕСА ===\nВерсия 2 для BizGenie/);
   } finally { await f.pg.close(); }
 });
 
@@ -214,21 +207,15 @@ test('Z1: a failed reply model gives the fallback and reports the operational re
   } finally { await f.pg.close(); }
 });
 
-test('Z2: Hebrew message answered in Russian → one regeneration naming the language; still Russian → Hebrew template + ASK_OWNER', async () => {
+test('Z12: a reply in another language is not rewritten; the prompt names the language and adds the Hebrew block', async () => {
   const f = await fixture({ languages: ['ru', 'he', 'en'] });
   try {
-    f.reply('Здравствуйте! Чем занимается ваш бизнес?');
-    await f.say('привет');
-    f.reply('Ассистент запишет клиентов на стрижку.', 'האסיסטנט ירשום לקוחות לתספורת.');
-    const fixed = await f.say('יש לי מספרה, איך זה יעזור לי?');
-    assert.equal(fixed.reply, 'האסיסטנט ירשום לקוחות לתספורת.');
-    assert.match(f.prompts.at(-2)!.system, /=== ЯЗЫК ОТВЕТА ===\nПоследнее сообщение клиента — иврит\./);
-    assert.match(f.prompts.at(-1)!.system, /Ответ не на том языке: последнее сообщение клиента — иврит/);
-    f.reply('Ассистент запишет клиентов.', 'Ассистент запишет клиентов.');
-    const failed = await f.say('כמה זה עולה?');
-    assert.match(failed.reply ?? '', /[\u0590-\u05FF]/);
-    assert.equal(failed.reply, 'אבדוק עם Юрий ואחזור עם תשובה.', 'the Hebrew template; the owner name is as stored');
-    assert.deepEqual(failed.labels, ['ASK_OWNER']);
+    f.reply('Ассистент запишет клиентов на стрижку.');
+    const r = await f.say('יש לי מספרה, איך זה יעזור לי?');
+    assert.equal(r.reply, 'Ассистент запишет клиентов на стрижку.');
+    assert.match(f.prompts.at(-1)!.system, /=== ЯЗЫК ОТВЕТА ===\nПоследнее сообщение клиента — иврит\./);
+    assert.match(f.prompts.at(-1)!.system, /На иврите, если род клиента неизвестен/);
+    assert.doesNotMatch(f.prompts.at(-1)!.system, /Имена склоняй/);
   } finally { await f.pg.close(); }
 });
 
@@ -249,19 +236,17 @@ test('Z2: DEMO_START without a valid demo key does not switch the mode on and lo
   } finally { console.warn = warn; await f.pg.close(); }
 });
 
-test('Z2: model failure → template with the owner name in nominative; a second one in a row is the short repeat, one escalation', async () => {
+test('Z12: model failure → the short apology every time, no escalation (as chef-bot)', async () => {
   const f = await fixture();
   try {
     f.reply('THROW:incomplete_max_tokens');
     const first = await f.say('сколько стоит?');
-    assert.equal(first.reply, 'Уточню этот вопрос — Юрий ответит, и я вернусь к вам.');
-    f.reply('THROW:incomplete_max_tokens');
-    const second = await f.say('а установка?');
-    assert.equal(second.reply, 'Я помню ваш вопрос и вернусь с ответом.');
-    f.reply('Установка — от 500 ₪.');
-    assert.equal((await f.say('а установка?')).reply, 'Установка — от 500 ₪.');
+    assert.equal(first.reply, 'Прошу прощения, небольшая заминка. Напишите, пожалуйста, ещё раз через минуту.');
+    assert.equal(first.outcome, 'answered');
     f.reply('THROW:http_500');
-    assert.equal((await f.say('ещё вопрос')).reply, 'Уточню этот вопрос — Юрий ответит, и я вернусь к вам.', 'a normal reply resets the repeat');
+    assert.equal((await f.say('а установка?')).reply, 'Прошу прощения, небольшая заминка. Напишите, пожалуйста, ещё раз через минуту.');
+    f.reply('[[OFFER]]');
+    assert.equal((await f.say('ещё')).reply, 'Прошу прощения, небольшая заминка. Напишите, пожалуйста, ещё раз через минуту.', 'only labels — nothing to read');
   } finally { await f.pg.close(); }
 });
 
@@ -281,34 +266,17 @@ test('Z2: reply model limits reach the model call; the new settings are validate
   } finally { await f.pg.close(); }
 });
 
-test('Z3: numbers of the answer that starts a demo are checked against the demo text; DEMO_END — against the tenant facts', async () => {
+test('Z3: the answer that starts a demo goes as written; DEMO_END returns to the tenant', async () => {
   const f = await fixture();
   try {
-    f.reply('Давайте на примере домашнего повара. Напишите, как вам обычно пишет клиент.');
-    await f.say('покажите на примере');
-    f.reply('Пельмени — 100 ₪ за кг (цены здесь для примера). На завтра не получится.\n[[DEMO_START: home_cook]]');
+    f.reply('Пельмени — 70 ₪ за кг (для примера). На завтра не получится.\n[[DEMO_START: home_cook]]');
     const start = await f.say('сколько стоят пельмени? можно на завтра?');
     assert.deepEqual(start.labels, ['DEMO_START']);
-    assert.match(start.reply ?? '', /100 ₪/);
+    assert.match(start.reply ?? '', /70 ₪/);
     f.reply('Установка — от 500 ₪, а пельмени были для примера.\n[[DEMO_END]]');
     const end = await f.say('понятно, а у вас сколько стоит?');
     assert.deepEqual(end.labels, ['DEMO_END']);
-    assert.match(end.reply ?? '', /500 ₪/, 'the tenant price passes after DEMO_END');
-
-    const g = await fixture();
-    try {
-      g.reply('Напишите, как вам обычно пишет клиент.');
-      await g.say('покажите на примере');
-      g.reply('Пельмени — 70 ₪ за кг (для примера).\n[[DEMO_START: home_cook]]', 'Пельмени — 70 ₪ за кг (для примера).\n[[DEMO_START: home_cook]]');
-      const wrong = await g.say('сколько стоят пельмени?');
-      assert.equal(wrong.reply, 'Уточню: Юрий ответит, и я сразу вернусь к вам.', 'a price not in the demo text is not sent');
-      assert.match(g.prompts.at(-1)!.system, /Этих чисел нет в Фактах и инструкции: 70/);
-      assert.doesNotMatch(g.prompts.at(-2)!.system, /=== РЕЖИМ ПОКАЗА/, 'the first variant was written before the demo was on');
-      assert.match(g.prompts.at(-1)!.system, /=== РЕЖИМ ПОКАЗА \(home_cook\) ===\nДЕМО-БИЗНЕС: домашний повар/, 'the regeneration sees the demo price list');
-      g.reply('Пельмени — 100 ₪ за кг.\n[[DEMO_START: home_cook]]', 'Пельмени — 100 ₪ за кг.\n[[DEMO_START: home_cook]]');
-      const unmarked = await g.say('сколько стоят пельмени?');
-      assert.match(unmarked.reply ?? '', /^Для примера: Пельмени — 100 ₪/, 'the first demo price is marked even in the starting answer');
-    } finally { await g.pg.close(); }
+    assert.equal((await f.pg.query<{ demo_key: string | null }>('select demo_key from simulator_sessions')).rows[0]!.demo_key, null);
   } finally { await f.pg.close(); }
 });
 
@@ -319,9 +287,9 @@ test('Z4/Z6: reply_fallback_model without its provider key is not used (no error
   try {
     await saveRuntimeSettings(f.db, f.tenantId, { reply_fallback_model: 'claude-haiku-5-5' });
     f.reply('THROW:timeout');
-    // No ANTHROPIC_API_KEY in tests: the fallback is skipped, the client gets the failure template of the primary.
+    // No ANTHROPIC_API_KEY in tests: the fallback is skipped, the client gets the apology.
     const r = await f.say('сколько стоит?');
-    assert.equal(r.reply, 'Уточню этот вопрос — Юрий ответит, и я вернусь к вам.');
+    assert.equal(r.reply, 'Прошу прощения, небольшая заминка. Напишите, пожалуйста, ещё раз через минуту.');
     assert.equal(r.modelFailure, 'timeout');
     assert.equal(warnings.filter(w => w[0] === 'model_fallback').length, 0, 'no key — no fallback attempt');
     await assert.rejects(saveRuntimeSettings(f.db, f.tenantId, { reply_fallback_model: 'claude haiku; drop' }), /Invalid fallback model/);
@@ -416,7 +384,7 @@ test('Z8: the core names the assistant by assistant_profiles.assistant_name; emp
       f.reply('Здравствуйте!');
       await f.say('сколько стоит?');
       const p = f.prompts.at(-1)!;
-      assert.match(p.system, new RegExp(`^Ты — ${expected}, ассистент бизнеса «BizGenie»`));
+      assert.match(p.system, new RegExp(`^Ты — ${expected}, ИИ-ассистент бизнеса «BizGenie»`));
       assert.match(p.system, new RegExp(`«Я ${expected}, ИИ-ассистент BizGenie»`));
       assert.doesNotMatch(p.system, /\{assistant_name\}/);
     } finally { await f.pg.close(); }
@@ -439,23 +407,25 @@ test('Z11: the owner rules are a block after the instruction and before the fact
   } finally { await f.pg.close(); }
 });
 
-test('Z11 review (eval M11): «записала» / «вы записаны» is never sent — the reply is rewritten; still so → the owner will confirm', async () => {
-  const { CLAIMED_BOOKED_PATTERN } = await import('../config/consent.js');
-  for (const t of ['Отлично, среду после обеда записала.', 'Вы записаны на четверг.', 'רשמתי אותך ליום רביעי', "Great, you're booked for Wednesday", 'I have booked you for 3pm'])
-    assert.match(t, CLAIMED_BOOKED_PATTERN, t);
-  for (const t of ['Записать вас на среду после обеда?', 'Хочу записаться', 'Ольга подтвердит время.', 'Can I book you for Wednesday?'])
-    assert.doesNotMatch(t, CLAIMED_BOOKED_PATTERN, t);
-  const f = await fixture();
+test('Z12: roles — keywords pick SUPPORT, the classifier SALES/SUPPORT once, the role sticks; a request resets it', async () => {
+  const f = await fixture({ instruction: 'Общее для {business_name}, {owner_name}.\n### Продажа\nРАЗДЕЛ ПРОДАЖИ\n### Поддержка\nРАЗДЕЛ ПОДДЕРЖКИ' });
   try {
-    f.reply('Отлично, среду после обеда записала. В каком филиале удобнее?', 'Передам Юрию запрос на среду после обеда — он подтвердит время. Хорошо?\n[[OFFER: запись на среду]]');
-    const fixed = await f.say('хочу записаться в среду после обеда');
-    assert.equal(f.prompts.length, 2, 'regenerated once');
-    assert.match(f.prompts[1]!.system, /Не пиши, что записала клиента или подтвердила время/);
-    assert.match(String(fixed.reply), /подтвердит время/); assert.doesNotMatch(String(fixed.reply), /записала/);
-    f.reply('Записала вас на среду.', 'Всё, вы записаны на среду!');
-    const fallback = await f.say('а на четверг?');
-    assert.equal(fallback.reply, 'Уточню: Юрий ответит, и я сразу вернусь к вам.', 'twice → the owner will answer');
-    // «Юрий ответит» is true: the question is passed to the owner (escalated), not a plain reply.
-    assert.equal(fallback.outcome, 'escalated');
+    f.reply('SALES', 'Здравствуйте! Чем помочь?');
+    await f.say('привет');
+    assert.match(f.prompts[0]!.system, /классификатор намерений/);
+    assert.match(f.prompts[1]!.system, /РАЗДЕЛ ПРОДАЖИ/); assert.doesNotMatch(f.prompts[1]!.system, /РАЗДЕЛ ПОДДЕРЖКИ/);
+    f.reply('Расскажу.');
+    await f.say('сколько стоит?');
+    assert.equal(f.prompts.length, 3, 'sticky: no second classification');
+    f.reply('Сейчас разберёмся.');
+    await f.say('где мой заказ?');
+    assert.match(f.prompts.at(-1)!.system, /РАЗДЕЛ ПОДДЕРЖКИ/);
+    assert.equal(f.prompts.length, 4, 'keywords — no classifier call');
+    f.reply('Передала.\n[[REQUEST: meeting | topic=звонок]]');
+    await f.say('позвоните мне');
+    f.reply('SUPPORT', 'Помогу.');
+    await f.say('а ещё вопрос');
+    assert.match(f.prompts.at(-2)!.system, /классификатор намерений/, 'after the request the role is chosen again');
+    assert.match(f.prompts.at(-1)!.system, /РАЗДЕЛ ПОДДЕРЖКИ/);
   } finally { await f.pg.close(); }
 });

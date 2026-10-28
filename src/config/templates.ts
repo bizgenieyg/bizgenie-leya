@@ -1,4 +1,20 @@
 export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
+  // Z12: the owner cycle as in chef-bot; the daily report; the operator's quality review.
+  "owner.request_card": {"ru": "📩 Заявка\n{card}\n📱 {phone}\n\nОтветьте реплеем — передам клиенту.", "he": "📩 בקשה\n{card}\n📱 {phone}\n\nהשיבו בציטוט — אעביר ללקוח.", "en": "📩 Request\n{card}\n📱 {phone}\n\nReply to this message — I'll pass it to the client."},
+  "owner.human_request": {"ru": "Клиент просит связаться с вами лично.", "he": "הלקוח מבקש שתיצרו איתו קשר אישית.", "en": "The client asks you to contact them personally."},
+  "owner.client_left": {"ru": "Клиент уже попрощался — ответ не пересылаю, сохранила в знания.", "he": "הלקוח כבר נפרד — לא מעבירה את התשובה, שמרתי אותה בידע.", "en": "The client has already said goodbye — I'm not forwarding the answer; I saved it to the knowledge."},
+  "client.model_apology": {"ru": "Прошу прощения, небольшая заминка. Напишите, пожалуйста, ещё раз через минуту.", "he": "סליחה, יש תקלה קטנה. אפשר לכתוב שוב בעוד דקה?", "en": "Sorry, a small hiccup. Please write again in a minute."},
+  "client.owner_forward_fallback": {"ru": "{owner_name} пишет:\n\n«{answer}»", "he": "התשובה של {owner_name}:\n\n«{answer}»", "en": "{owner_name} says:\n\n«{answer}»"},
+  "owner.learned_title": {"ru": "Ответ {owner_name}, {date}, вопрос клиента: {question}", "he": "תשובת {owner_name}, {date}, שאלת לקוח: {question}", "en": "Answer of {owner_name}, {date}, client question: {question}"},
+  "owner.learned_fact": {"ru": "Клиент спросил: {question}\nОтвет {owner_name}: {answer}", "he": "לקוח שאל: {question}\nתשובת {owner_name}: {answer}", "en": "A client asked: {question}\nAnswer of {owner_name}: {answer}"},
+  "owner.daily_report": {"ru": "📊 Отчёт за {date}\n\nВсего обращений: {total}\n✅ Заявки: {request}\n💬 В процессе: {in_progress}\n❌ Не сложилось: {lost}\nℹ️ Справка: {info}\n\n{lines}", "he": "📊 דוח ל-{date}\n\nסה\"כ פניות: {total}\n✅ בקשות: {request}\n💬 בתהליך: {in_progress}\n❌ לא הסתדר: {lost}\nℹ️ מידע בלבד: {info}\n\n{lines}", "en": "📊 Report for {date}\n\nConversations: {total}\n✅ Requests: {request}\n💬 In progress: {in_progress}\n❌ Didn't work out: {lost}\nℹ️ Info only: {info}\n\n{lines}"},
+  "owner.daily_report_line": {"ru": "{icon} {name} — {summary}{reason}", "he": "{icon} {name} — {summary}{reason}", "en": "{icon} {name} — {summary}{reason}"},
+  "owner.daily_reason_price": {"ru": "дорого", "he": "יקר", "en": "too expensive"},
+  "owner.daily_reason_date": {"ru": "не подошла дата", "he": "התאריך לא התאים", "en": "the date did not fit"},
+  "owner.daily_reason_missing": {"ru": "нет нужного", "he": "אין את מה שחיפש", "en": "we don't have what they need"},
+  "owner.daily_reason_silent": {"ru": "ушёл молча", "he": "עזב בלי להגיד", "en": "left without a word"},
+  "owner.daily_reason_other": {"ru": "другое", "he": "אחר", "en": "other"},
+  "operator.quality_report": {"ru": "🔎 Контроль ответов за {date}: {count}\n\n{lines}", "he": "🔎 בקרת תשובות ל-{date}: {count}\n\n{lines}", "en": "🔎 Reply review for {date}: {count}\n\n{lines}"},
   // Z11: the owner's rules from WhatsApp; one bundled interview message a day.
   "owner.address_simultaneous": {"ru": "Во всех местах принимают одновременно (есть сотрудники) — клиент выбирает, где удобнее.", "he": "בכל המקומות מקבלים במקביל (יש צוות) — הלקוח בוחר איפה נוח לו.", "en": "All locations work at the same time (there is staff) — the client chooses where is convenient."},
   "owner.address_schedule": {"ru": "Владелец принимает сам, по графику: {schedule}", "he": "בעל העסק מקבל בעצמו, לפי לוח זמנים: {schedule}", "en": "The owner works in person, by schedule: {schedule}"},
@@ -85,9 +101,9 @@ export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
     "en": "I'm the owner's assistant. I haven't received an answer yet. The owner will contact you separately."
   },
   "owner.escalation": {
-    "ru": "❓ {name} ({phone}):\n«{question}»\n\nОтветьте реплеем — я передам клиенту.",
-    "en": "❓ {name} ({phone}):\n«{question}»\n\nReply to this message — I'll pass it to the client.",
-    "he": "❓ {name} ({phone}):\n«{question}»\n\nהשיבו בציטוט להודעה — אעביר ללקוח."
+    "ru": "❓ Вопрос от клиента {name} ({phone}): {question}\n\nОтветьте реплеем — передам клиенту.",
+    "en": "❓ Question from client {name} ({phone}): {question}\n\nReply to this message — I'll pass it to the client.",
+    "he": "❓ שאלה מהלקוח {name} ({phone}): {question}\n\nהשיבו בציטוט — אעביר ללקוח."
   },
   "owner.summary_suggestions": {
     "ru": "Добавить в базу знаний?\n{items}\nОтветьте номерами (например «1 3»), «все» или «нет».",
@@ -212,9 +228,9 @@ export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
     "en": "I'm still checking the remaining questions with the owner and will write as soon as I have an answer."
   },
   "owner.remind": {
-    "ru": "Напоминание: клиент {name} ({phone}) ждёт ответа.\n\n{question}\n\nОтветьте реплеем на это сообщение.",
-    "en": "Reminder: {name} ({phone}) is waiting for an answer.\n\n{question}\n\nReply to this message.",
-    "he": "תזכורת: {name} ({phone}) ממתין לתשובה.\n\n{question}\n\nנא להשיב בציטוט להודעה זו."
+    "ru": "🔔 Напоминание — жду ответа на вопрос от клиента {name} ({phone}):\n«{question}»\n\nОтветьте реплеем на это сообщение 🙏",
+    "en": "🔔 Reminder — waiting for your answer to the question from {name} ({phone}):\n«{question}»\n\nReply to this message 🙏",
+    "he": "🔔 תזכורת — מחכה לתשובה על השאלה של {name} ({phone}):\n«{question}»\n\nנא להשיב בציטוט להודעה זו 🙏"
   },
   "owner.reminder_missed": {
     "ru": "Напоминание клиенту {name} на {time} не отправлено вовремя.",

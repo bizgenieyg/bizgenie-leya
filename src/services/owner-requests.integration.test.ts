@@ -49,7 +49,7 @@ function model(replies: Array<Record<string, unknown>>, prompts: Array<{ system:
   return { async generateReply(input: { systemPrompt: string; userMessage: string }) {
     if (input.systemPrompt.includes('классификатор')) return { text: classifier };
     if (input.systemPrompt.startsWith('Ты проверяющий')) return { text: '{"adds_facts":false,"changes_meaning":false}' };
-    if (input.systemPrompt.startsWith('Ты цифровой ассистент бизнеса. Владелец ответил')) return { text: 'Юрий ждёт вас в четверг в 11:00.' };
+    if (input.systemPrompt.includes('Уточнила у <имя владельца')) return { text: '{"intro":"Уточнила у Юрия насчёт демо","follow_up":"Юрий ждёт вас в четверг в 11:00."}' };
     if (input.systemPrompt.includes('пополнять базу знаний')) return { text: '{"useful":false}' };
     prompts.push({ system: input.systemPrompt, user: JSON.parse(input.userMessage) });
     return { text: JSON.stringify(replies.shift() ?? { reply: null, unanswered: [] }) };
@@ -74,7 +74,7 @@ test('"хочу демо" becomes one owner request; a repeat extends it silentl
     assert.deepEqual(rows[0], { kind: 'request', status: 'pending', question: 'Хочет демо ассистента\nУдобно в четверг утром\nВремя: четверг утром' });
     const settings = await loadOwnerSettings(f.db, f.tenantId);
     await handleOwnerMessage(f.db, f.provider, f.tenantId, 'session', owner, 'четверг 11:00 ок', f.toOwner()[0]!.id, settings, ai as never); await settleAllOutboundQueues();
-    assert.equal(f.toClient(chat).at(-1)!.text, 'Юрий ждёт вас в четверг в 11:00.');
+    assert.equal(f.toClient(chat).at(-1)!.text, 'Уточнила у Юрия насчёт демо:\n\n«четверг 11:00 ок»\n\nЮрий ждёт вас в четверг в 11:00.');
     assert.equal((await f.pg.query<{ status: string }>('select status from escalations')).rows[0]!.status, 'delivered');
   } finally { await f.close(); }
 });

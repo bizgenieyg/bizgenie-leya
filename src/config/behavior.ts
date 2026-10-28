@@ -3,7 +3,9 @@ export const BEHAVIOR_DEFAULTS = {
   translate_owner_answer: false,
   polish_owner_answer: true,
   client_discovery_questions: [] as string[],
-  escalation_remind_minutes: 120,
+  /** Z12 (as chef-bot): the owner is reminded after 4 hours without an answer, at most escalation_remind_max times. */
+  escalation_remind_minutes: 240,
+  escalation_remind_max: 2,
   escalation_close_minutes: 1440,
   /** Task Z: the assistant comes back 1 hour after the owner's last message in the chat (owners do not type commands). */
   auto_resume_hours: 1,
@@ -55,6 +57,12 @@ export const BEHAVIOR_DEFAULTS = {
   summary_frequency: 'weekly' as 'off'|'daily'|'weekly',
   summary_time: '09:00',
   summary_weekday: 1,
+  /** Z12: the daily report to the owner («Отчёты»), local time of the tenant; sent only when yesterday had dialogs (operator). */
+  daily_report_enabled: true,
+  daily_report_time: '09:00',
+  /** Z12: dialogs of one day the nightly review reads (one model call per tenant) and messages per dialog. */
+  daily_report_max_dialogs: 40,
+  daily_report_dialog_messages: 30,
   knowledge_max_files: 10,
   knowledge_max_file_bytes: 10 * 1024 * 1024,
   knowledge_max_total_bytes: 50 * 1024 * 1024,

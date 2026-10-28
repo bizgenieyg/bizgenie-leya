@@ -87,12 +87,12 @@ test("nextQuietHoursEnd still finds a real transition on a schedule that opens l
   assert.equal(end.getUTCHours(), 6);
 });
 
-test("escalation text keeps the owner template", () => {
+test("Z12: the owner gets only the question (as chef-bot)", () => {
   const body = buildEscalationText("Dana", "Do you open on Saturday?");
-  assert.match(body, /^❓ Dana:\n«/);
+  assert.match(body, /^❓ Вопрос от клиента Dana: /);
   assert.doesNotMatch(body, /Беру на себя|Продолжить|\(\s*\)/);
   assert.match(body, /Do you open on Saturday\?/);
-  assert.equal(body, '❓ Dana:\n«Do you open on Saturday?»\n\nОтветьте реплеем — я передам клиенту.');
+  assert.equal(body, '❓ Вопрос от клиента Dana: Do you open on Saturday?\n\nОтветьте реплеем — передам клиенту.');
   assert.equal(buildEscalationText('Dana', 'Можно в субботу?', undefined, '+972 50-123-4567'),
-    '❓ Dana (+972 50-123-4567):\n«Можно в субботу?»\n\nОтветьте реплеем — я передам клиенту.');
+    '❓ Вопрос от клиента Dana (+972 50-123-4567): Можно в субботу?\n\nОтветьте реплеем — передам клиенту.');
 });

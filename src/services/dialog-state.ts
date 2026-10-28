@@ -27,6 +27,8 @@ export interface DialogState {
   demo_marked?: boolean;
   /** Z2: the last reply was the model-failure template; a second one in a row is the short repeat, no escalation. */
   model_fallback?: boolean;
+  /** Z12: the reply role of this dialog; sticks until a request is made. */
+  role?: 'SALES' | 'SUPPORT';
 }
 export interface PendingOffer { summary: string; time: string | null; topic: string | null; turns_left: number }
 
@@ -51,6 +53,7 @@ export function normalizeDialogState(value: unknown): DialogState {
     ...(Number.isSafeInteger(v.direct_request_turn) ? { direct_request_turn: Number(v.direct_request_turn) } : {}),
     ...(v.demo_marked === true ? { demo_marked: true } : {}),
     ...(v.model_fallback === true ? { model_fallback: true } : {}),
+    ...(v.role === 'SALES' || v.role === 'SUPPORT' ? { role: v.role } : {}),
   };
 }
 

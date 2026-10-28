@@ -88,7 +88,7 @@ test('three questions, one answered from the base: one client message, two owner
     const ai = { async generateReply(input: { systemPrompt: string; userMessage: string }) {
       if (input.systemPrompt.includes('классификатор')) return { text: classifier };
       if (input.systemPrompt.startsWith('Ты проверяющий')) return { text: '{"adds_facts":false,"changes_meaning":false}' };
-      if (input.systemPrompt.startsWith('Ты цифровой ассистент бизнеса. Владелец ответил')) return { text: 'Парковка есть во дворе. Оплата картой возможна.' };
+      if (input.systemPrompt.includes('Уточнила у <имя владельца')) return { text: '{"intro":"Уточнила у Юрия насчёт парковки и оплаты","follow_up":"Ждём вас!"}' };
       if (input.systemPrompt.includes('пополнять базу знаний')) return { text: '{"useful":false}' };
       return { text: '{"reply":"Лендинг стоит от 3000 ₪.","unanswered":["Есть ли парковка?","Можно оплатить картой?"]}' };
     } };
@@ -98,8 +98,8 @@ test('three questions, one answered from the base: one client message, two owner
     assert.match(f.toClient()[0]!.text, /Уточню у владельца/);
     const notices = f.toOwner();
     assert.equal(notices.length, 2);
-    assert.equal(notices[0]!.text, '❓ Дана (+972 50-123-4567):\n«Есть ли парковка?»\n\nОтветьте реплеем — я передам клиенту.');
-    assert.match(notices[1]!.text, /«Можно оплатить картой\?»/);
+    assert.equal(notices[0]!.text, '❓ Вопрос от клиента Дана (+972 50-123-4567): Есть ли парковка?\n\nОтветьте реплеем — передам клиенту.');
+    assert.match(notices[1]!.text, /: Можно оплатить картой\?\n/);
     const esc = (await f.pg.query<{ owner_message_ids: string[] }>('select owner_message_ids from escalations order by batch_position')).rows;
     const settings = await loadOwnerSettings(f.db, f.tenantId);
     await handleOwnerMessage(f.db, f.provider, f.tenantId, 'session', owner, 'есть, во дворе', notices[0]!.id, settings, ai as never); await settleAllOutboundQueues();
@@ -107,7 +107,8 @@ test('three questions, one answered from the base: one client message, two owner
     assert.equal(esc.length, 2);
     await handleOwnerMessage(f.db, f.provider, f.tenantId, 'session', owner, 'да картой можно', notices[1]!.id, settings, ai as never); await settleAllOutboundQueues();
     assert.equal(f.toClient().length, 2);
-    assert.equal(f.toClient()[1]!.text, 'Парковка есть во дворе. Оплата картой возможна.');
+    // Z12: the owner's words verbatim, after «Уточнила у … насчёт …».
+    assert.equal(f.toClient()[1]!.text, 'Уточнила у Юрия насчёт парковки и оплаты:\n\n«1) есть, во дворе\n2) да картой можно»\n\nЖдём вас!');
     assert.equal(f.toOwner().length, 2, 'zero service messages to the owner after answering');
     const statuses = (await f.pg.query<{ status: string; client_message_id: string }>('select status,client_message_id from escalations')).rows;
     assert.ok(statuses.every(r => r.status === 'delivered') && statuses[0]!.client_message_id === statuses[1]!.client_message_id);
@@ -236,13 +237,13 @@ test('merged client: escalation from @lid shows the number although the card kee
     } };
     await handleWebhookEvent(f.tenantId, f.incoming('m1', 'Есть парковка?'), f.db, f.provider, ai as never); await settleAllOutboundQueues();
     assert.equal((await f.pg.query<{ n: number }>('select count(*)::int n from clients where tenant_id=$1', [f.tenantId])).rows[0]!.n, 1, 'one client for both ids');
-    assert.match(f.toOwner()[0]!.text, /^❓ Дана \(\+972 50-123-4567\):/);
+    assert.match(f.toOwner()[0]!.text, /^❓ Вопрос от клиента Дана \(\+972 50-123-4567\):/);
     const esc = (await f.pg.query<{ client_phone: string; client_chat_id: string }>('select client_phone,client_chat_id from escalations')).rows[0]!;
     assert.deepEqual(esc, { client_phone: '972501234567', client_chat_id: customer });
     // Without the snapshot (rows created before 058) the number comes through conversation → client.
-    await f.pg.query('update escalations set client_phone=null,reminded_at=null,pending_since=now()-interval \'3 hours\'');
+    await f.pg.query('update escalations set client_phone=null,reminded_at=null,pending_since=now()-interval \'5 hours\'');
     const { runEscalationTimeouts } = await import('./owner-workflow.service.js');
     await runEscalationTimeouts(f.db, () => f.provider, new Date()); await settleAllOutboundQueues();
-    assert.match(f.toOwner().at(-1)!.text, /Напоминание: клиент Дана \(\+972 50-123-4567\) ждёт ответа/);
+    assert.match(f.toOwner().at(-1)!.text, /Напоминание — жду ответа на вопрос от клиента Дана \(\+972 50-123-4567\)/);
   } finally { await f.close(); }
 });

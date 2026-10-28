@@ -6,17 +6,21 @@ import type { DialogState } from './dialog-state.js';
 import { behavior } from './runtime-settings.service.js';
 import { activeFacts, factsMarkdown } from './business-facts.service.js';
 import { activeInstructionFor, resolveTemplate, activeDemoInstruction, fillPlaceholders, loadCore } from './instructions.service.js';
-import { checkedNumbers, hasLabel, labelValue, missingFields, parseLabels, parseRequestValue, unbackedNumbers, unsafeClientText, type ParsedReply } from './instruction-checks.js';
-import { agreement, isDirectRequest } from './client-consent.js';
-import { CLAIMED_BOOKED_PATTERN, CLAIMED_PASSED_PATTERN } from '../config/consent.js';
-import { ASSISTANT_NAME_DEFAULT, DEMO_EXAMPLE_MARKERS, REQUEST_INTENT_TURNS } from '../config/instructions.js';
-import { renderText } from './templates.service.js';
+import { hasLabel, labelValue, labelValues, parseLabels, parseRequestValue, type ParsedReply } from './instruction-checks.js';
+import { ASSISTANT_NAME_DEFAULT, PROMPT_BLOCKS, WEEKDAYS_RU } from '../config/instructions.js';
+import { CORE_LANGUAGE_DEFAULTS } from '../config/instruction-defaults.js';
+import { ROLE_HEADINGS, type ReplyRole } from '../config/roles.js';
 import { activeRules, rulesBlock } from './owner-rules.service.js';
+import { chooseRole } from './reply-role.service.js';
+import { isWithinQuietHours, nextQuietHoursEnd } from './escalation.service.js';
+import { zonedDateTimeFormat, localTime } from '../utils/time-zone.js';
+import { DEFAULT_TIME_ZONE } from '../config/time-zones.js';
 
 /**
- * Task Z reply path (reply_engine = 'instruction'): core + business instruction + facts (+ demo business),
- * the conversation as chat turns, the answer as text with labels. No routing, reception, stages or gates.
- * Code runs two checks — the request (consent + required fields) and the numbers — plus the demo marker.
+ * Task Z reply path (reply_engine = 'instruction'): core + business instruction (common part + the section of the
+ * dialog's role) + rules + facts (+ demo business) + what is known about this moment (date, name, open questions to
+ * the owner, quiet hours, voice). Z12 (as chef-bot): the model's answer goes out as it is — code only cuts the labels
+ * and service characters; no checks, no regeneration, no fallback text.
  */
 export interface InstructionTurn {
   db: DatabaseClient; tenantId: string; text: string; language: string; settings: OwnerSettings; state: DialogState;
@@ -25,41 +29,74 @@ export interface InstructionTurn {
   /** Z8: the name the owner gave the assistant; empty → ASSISTANT_NAME_DEFAULT. */
   assistantName?: string | null | undefined;
   demo: { key: string | null; turns: number };
+  /** Z12: the dialog's role (SALES by default), the client's WhatsApp name, questions still waiting for the owner. */
+  role?: ReplyRole;
+  /** Z12: the short role classifier; called only when the instruction has role sections and keywords did not decide. */
+  roleClassifier?: AIProvider | null;
+  clientName?: string | null;
+  openQuestions?: string[];
+  voice?: boolean;
+  now?: Date;
 }
 export type InstructionAction =
   | { kind: 'silent'; reason: string }
   | { kind: 'reply'; text: string }
-  | { kind: 'request'; text: string; summary: string; request: { type: string; fields: Record<string, string> } }
-  | { kind: 'ask_owner'; text: string; question: string }
+  | { kind: 'request'; text: string; summary: string; card: string | null; request: { type: string; fields: Record<string, string> } }
+  | { kind: 'ask_owner'; text: string; questions: string[] }
   | { kind: 'human'; text: string };
 export interface InstructionOutcome { action: InstructionAction; dataRequest: 'delete' | 'access' | null; demo: { key: string | null; turns: number }; offer: string | null; attempts: number; issues: string[] }
 
-const isMarked = (text: string) => DEMO_EXAMPLE_MARKERS.some(marker => text.toLowerCase().includes(marker));
 /** Language of the client's last message, as the prompt names it (ru names: the core is Russian). */
 const LANGUAGE_NAMES: Record<string, string> = { he: 'иврит', ru: 'русский', en: 'английский' };
-/** The reply is written in another script than the client's last message (task Z2; the rule is "language of the
- *  incoming message"): the letters of the client's script must outnumber each other script (links not counted),
- *  so one Hebrew letter in a Russian sentence ("אссистент в WhatsApp…") is still a Russian reply. */
-export function wrongLanguage(reply: string, language: string): boolean {
-  const text = reply.replace(/https?:\/\/\S+/g, '');
-  const count = (re: RegExp) => text.match(re)?.length ?? 0;
-  const letters: Record<string, number> = { he: count(/[\u05D0-\u05EA]/g), ru: count(/[\u0400-\u04FF]/g), en: count(/[A-Za-z]/g) };
-  if (!(language in letters)) return false;
-  const own = letters[language]!;
-  // English replies may name Hebrew/Russian things; Russian and Hebrew ones often carry Latin brand names (WhatsApp).
-  const rivals = language === 'en' ? [letters.he!, letters.ru!] : [language === 'he' ? letters.ru! : letters.he!];
-  return own === 0 || rivals.some(n => n >= own);
+const fill = (template: string, values: Record<string, string>) => template.replace(/\{([a-z_]+)\}/g, (all, key: string) => values[key] ?? all);
+/** Service characters that never reach a client (labels are already cut). */
+const cleanClientText = (text: string) => text.replace(/\{[^{}\n]*\}|<[^<>\n]*>/g, '').replace(/\[\[|\]\]|[<>{}]/g, '').replace(/\b(undefined|null)\b/g, '')
+  .replace(/[ \t]{2,}/g, ' ').replace(/ +([.,!?])/g, '$1').replace(/[ \t]+\n/g, '\n').trim();
+
+/** Z12: the common part of the instruction + the section of this role; no role headings — the whole text. */
+export const hasRoleSections = (text: string) => text.split('\n').some(line => ROLE_HEADINGS.SALES.test(line.trim()) || ROLE_HEADINGS.SUPPORT.test(line.trim()));
+export function instructionForRole(text: string, role: ReplyRole): string {
+  const lines = text.split('\n');
+  if (!hasRoleSections(text)) return text;
+  let current: ReplyRole | 'COMMON' = 'COMMON';
+  const kept: string[] = [];
+  for (const line of lines) {
+    const heading = (['SALES', 'SUPPORT', 'COMMON'] as const).find(key => ROLE_HEADINGS[key].test(line.trim()));
+    if (heading) { current = heading; continue; }
+    if (current === 'COMMON' || current === role) kept.push(line);
+  }
+  return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/** Z12 (as chef-bot): date, known name, open questions, quiet hours, voice — one block of the system prompt. */
+export function momentBlock(turn: Pick<InstructionTurn, 'settings' | 'clientName' | 'openQuestions' | 'voice' | 'now'>, ownerName: string): string {
+  const now = turn.now ?? new Date(), zone = turn.settings.time_zone ?? DEFAULT_TIME_ZONE;
+  const weekday = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(zonedDateTimeFormat('en-US', { weekday: 'short' }, zone).format(now));
+  const date = zonedDateTimeFormat('ru', { day: 'numeric', month: 'long', year: 'numeric' }, zone).format(now);
+  const owner = ownerName || 'владелец';
+  const lines = [fill(PROMPT_BLOCKS.today, { weekday: WEEKDAYS_RU[weekday] ?? '', date })];
+  const name = turn.clientName?.trim();
+  if (name) lines.push(fill(PROMPT_BLOCKS.knownName, { name: name.slice(0, 60) }));
+  const open = (turn.openQuestions ?? []).filter(Boolean);
+  lines.push(open.length ? fill(PROMPT_BLOCKS.openQuestions, { owner_name: owner, items: open.map(q => `- «${q.slice(0, 300)}»`).join('\n') }) : fill(PROMPT_BLOCKS.noOpenQuestions, { owner_name: owner }));
+  lines.push(fill(PROMPT_BLOCKS.openQuestionsRule, { owner_name: owner }));
+  if (isWithinQuietHours(turn.settings, now)) {
+    const until = nextQuietHoursEnd(turn.settings, now);
+    if (until) lines.push(fill(PROMPT_BLOCKS.quietHours, { owner_name: owner, until: localTime(until, zone, 'ru') }));
+  }
+  if (turn.voice) lines.push(PROMPT_BLOCKS.voice);
+  return lines.join('\n\n');
 }
 
 export async function answerByInstruction(turn: InstructionTurn): Promise<InstructionOutcome | null> {
-  const { db, tenantId, text, language, settings, state } = turn;
+  const { db, tenantId, text, language, settings } = turn;
   const config = behavior(settings);
   // Z6: its own instruction, else the template of its deal type (setting or sector), else 'general'.
   const active = await activeInstructionFor(db, tenantId, resolveTemplate(config.instruction_template, turn.business?.business_sector));
   if (!active) return null; // nothing published: the tenant keeps the legacy path
-  const instructionRaw = active.text;
   const values = { business_name: turn.business?.business_name, owner_name: turn.business?.owner_name, assistant_name: turn.assistantName?.trim() || ASSISTANT_NAME_DEFAULT };
-  const core = fillPlaceholders(await loadCore(db), values), instruction = fillPlaceholders(instructionRaw, values);
+  const role = turn.role ?? (hasRoleSections(active.text) ? await chooseRole(text, turn.memory, turn.state, turn.roleClassifier ?? null) : 'SALES');
+  const core = fillPlaceholders(await loadCore(db), values), instruction = fillPlaceholders(instructionForRole(active.text, role), values);
   if (!core.text || !instruction.text) {
     console.error('instruction_placeholder_missing', { tenantId, placeholders: [...core.missing, ...instruction.missing] });
     return { action: { kind: 'silent', reason: 'placeholder' }, dataRequest: null, demo: turn.demo, offer: null, attempts: 0, issues: ['placeholder'] };
@@ -67,125 +104,54 @@ export async function answerByInstruction(turn: InstructionTurn): Promise<Instru
   // Demo mode closes by itself after demo_max_turns client turns.
   let demo = turn.demo.key ? { key: turn.demo.key, turns: turn.demo.turns + 1 } : { key: null as string | null, turns: 0 };
   if (demo.key && demo.turns > config.demo_max_turns) demo = { key: null, turns: 0 };
-  const demoText = async (key: string | null) => key ? fillPlaceholders(await activeDemoInstruction(db, key) ?? '', values).text : null;
+  const demoText = demo.key ? fillPlaceholders(await activeDemoInstruction(db, demo.key) ?? '', values).text : null;
   const facts = factsMarkdown(await activeFacts(db, tenantId), turn.business?.business_sector ?? null);
-  const currentDemo = await demoText(demo.key);
   const rules = rulesBlock(await activeRules(db, tenantId));
-  /** A demo key is valid only when a demo text exists for it (active demo instruction or a system default). */
-  const demoKeys = new Map<string, boolean>();
-  const knownDemo = async (key: string | null) => {
-    if (!key || !/^[a-z][a-z0-9_]{1,39}$/.test(key)) return false;
-    if (!demoKeys.has(key)) demoKeys.set(key, (await activeDemoInstruction(db, key)) !== null);
-    return demoKeys.get(key)!;
-  };
-  if (isDirectRequest(text)) state.direct_request_turn = state.client_turns;
+  const ownerName = turn.business?.owner_name?.trim() ?? '';
+  const languageBlock = CORE_LANGUAGE_DEFAULTS[language];
 
-  /** The demo whose text the next variant sees: the open one, or the one the previous variant started (Z3). */
-  let promptDemo: { key: string; text: string } | null = demo.key && currentDemo ? { key: demo.key, text: currentDemo } : null;
-  const system = (notes: string[]) => [
-    core.text, `=== ИНСТРУКЦИЯ БИЗНЕСА ===\n${instruction.text}`,
+  const systemPrompt = [
+    languageBlock ? `${core.text.trimEnd()}\n${languageBlock.trim()}` : core.text,
+    `=== ИНСТРУКЦИЯ БИЗНЕСА ===\n${instruction.text}`,
     // Z11: the owner's rules — after the instruction (they win over it), before the facts.
     ...(rules ? [`=== ПРАВИЛА ЭТОГО БИЗНЕСА ===\n${rules}`] : []),
     `=== ФАКТЫ ===\n${facts || '(фактов пока нет)'}`,
-    ...(promptDemo ? [`=== РЕЖИМ ПОКАЗА (${promptDemo.key}) ===\n${promptDemo.text}`] : []),
+    ...(demo.key && demoText ? [`=== РЕЖИМ ПОКАЗА (${demo.key}) ===\n${demoText}`] : []),
+    `=== СЕЙЧАС ===\n${momentBlock(turn, ownerName)}`,
     ...(LANGUAGE_NAMES[language] ? [`=== ЯЗЫК ОТВЕТА ===\nПоследнее сообщение клиента — ${LANGUAGE_NAMES[language]}. Весь ответ — на этом языке.`] : []),
-    ...(notes.length ? [`=== ИСПРАВЬ ПРОШЛЫЙ ВАРИАНТ ОТВЕТА ===\n${notes.map(n => `- ${n}`).join('\n')}`] : []),
   ].join('\n\n');
   const history = turn.memory.slice(0, -1).map(m => ({ role: m.fromMe ? 'assistant' as const : 'user' as const, text: m.text }));
-  const ask = async (notes: string[]): Promise<ParsedReply> => {
-    const result = await turn.model.generateReply({ systemPrompt: system(notes), userMessage: text, history,
-      generation: { maxOutputTokens: config.reply_max_output_tokens, retryMaxOutputTokens: config.reply_retry_max_output_tokens, thinkingLevels: config.reply_thinking_levels,
-        timeoutMs: config.reply_timeout_ms, attemptTimeoutMs: config.reply_attempt_timeout_ms, retryDelayMs: config.reply_retry_delay_ms } });
-    const parsed = parseLabels(result.text);
-    if (parsed.unknown.length) console.warn('instruction_unknown_labels', { tenantId, labels: parsed.unknown });
-    return parsed;
-  };
-
-  /** Issues of one variant; each has a note for the regeneration. */
-  const review = async (parsed: ParsedReply) => {
-    const issues: Array<{ code: string; note: string }> = [];
-    if (parsed.text.trim() && wrongLanguage(parsed.text, language)) issues.push({ code: 'language', note: `Ответ не на том языке: последнее сообщение клиента — ${LANGUAGE_NAMES[language]}. Напиши весь ответ на этом языке.` });
-    if (unsafeClientText(parsed.text)) issues.push({ code: 'unsafe', note: 'В тексте клиенту остались служебные символы или пустой ответ: напиши обычный текст, метки только в конце.' });
-    const request = hasLabel(parsed, 'REQUEST') ? parseRequestValue(labelValue(parsed, 'REQUEST')) : null;
-    if (hasLabel(parsed, 'REQUEST')) {
-      const direct = state.direct_request_turn !== undefined && state.client_turns - state.direct_request_turn <= REQUEST_INTENT_TURNS;
-      const consent = direct || (!!state.pending_offer && !!agreement(text));
-      const missing = request ? missingFields(request, config.request_required_fields) : ['type'];
-      if (!consent) issues.push({ code: 'request_consent', note: 'Клиент не просил и не соглашался на предложение: заявку [[REQUEST]] не ставь, не пиши, что передала или что свяжутся. Если уместно — предложи и спроси согласия.' });
-      else if (missing.length) issues.push({ code: 'request_fields', note: `Для заявки не хватает данных: ${missing.join(', ')}. Спроси их у клиента (по одному), заявку пока не ставь и не пиши, что передала.` });
-    }
-    // Z11 (eval M11): the assistant never makes the booking or confirms the time itself — the owner does.
-    if (CLAIMED_BOOKED_PATTERN.test(parsed.text)) issues.push({ code: 'claimed_booked', note: `Не пиши, что записала клиента или подтвердила время: это делает владелец. Спроси недостающее или предложи передать запрос владельцу ([[OFFER: …]]); если клиент уже согласился — поставь [[REQUEST]] и скажи, что владелец подтвердит время.` });
-    const newDemo = labelValue(parsed, 'DEMO_START');
-    const newDemoKnown = await knownDemo(newDemo);
-    // Z3: the numbers of this answer belong to the business it speaks for. [[DEMO_END]] — back to the tenant's facts;
-    // a valid [[DEMO_START: key]] — that demo's text, already in the answer that starts the role; else the open demo.
-    const ending = hasLabel(parsed, 'DEMO_END');
-    const demoCorpus = ending ? null : newDemoKnown ? await demoText(newDemo) : demo.key ? currentDemo : null;
-    const corpus = demoCorpus ?? `${facts}\n${instruction.text}`;
-    const bad = unbackedNumbers(parsed.text, corpus);
-    if (bad.length) issues.push({ code: 'numbers', note: `Этих чисел нет в Фактах и инструкции: ${bad.join(', ')}. Не называй их; если нужного нет — скажи, что уточнишь, и поставь [[ASK_OWNER: вопрос]].` });
-    if (demoCorpus !== null && checkedNumbers(parsed.text).length && !(demo.key && state.demo_marked) && !isMarked(parsed.text))
-      issues.push({ code: 'demo_marker', note: 'В показе при первой цифре скажи, что цены здесь для примера.' });
-    return { issues, request };
-  };
-
-  let parsed = await ask([]);
-  let checked = await review(parsed);
-  let attempts = 1;
-  if (checked.issues.length) {
-    // The answer that starts a demo was written without the demo text (the mode was not on yet): the regeneration
-    // gets it, so prices and rules come from the demo business instead of being invented.
-    const started = labelValue(parsed, 'DEMO_START');
-    if (!promptDemo && !hasLabel(parsed, 'DEMO_END') && await knownDemo(started)) {
-      const text = await demoText(started);
-      if (text) promptDemo = { key: started!, text };
-    }
-    parsed = await ask(checked.issues.map(i => i.note)); checked = await review(parsed); attempts = 2;
-  }
-  const left = new Set(checked.issues.map(i => i.code));
-  const ownerName = turn.business?.owner_name?.trim() ?? '';
-  const askOwnerText = () => ownerName ? renderText(settings, 'client.ask_owner_fallback', language, { owner_name: ownerName }) : renderText(settings, 'client.model_fallback_no_name', language);
-  let clientText = parsed.text;
-  let request = checked.request;
-  if (left.has('unsafe')) clientText = renderText(settings, 'client.instruction_fallback', language);
-  // Still «записала» after the regeneration: the owner confirms the time — say so instead (and pass it, below).
-  else if (left.has('claimed_booked')) clientText = askOwnerText();
-  if (left.has('request_consent') || left.has('request_fields')) {
-    request = null;
-    if (CLAIMED_PASSED_PATTERN.test(clientText)) clientText = renderText(settings, 'client.instruction_fallback', language);
-  }
-  // Z11 review: «{owner} ответит» must be true — without a valid request or HUMAN the question goes to the owner (ASK_OWNER).
-  if (left.has('claimed_booked') && !(request && hasLabel(parsed, 'REQUEST')) && !hasLabel(parsed, 'HUMAN'))
-    return finishOutcome({ kind: 'ask_owner', text: askOwnerText(), question: text.slice(0, 1000) }, parsed, demo, attempts, [...left]);
-  // Wrong numbers or still the wrong language after the regeneration: the template in the client's language + ASK_OWNER.
-  if (left.has('numbers') || left.has('language')) {
-    if (left.has('language')) console.warn('instruction_wrong_language', { tenantId, language });
-    return finishOutcome({ kind: 'ask_owner', text: askOwnerText(), question: text.slice(0, 1000) }, parsed, demo, attempts, [...left]);
-  }
-  if (left.has('demo_marker')) clientText = `${language === 'he' ? 'לדוגמה' : language === 'en' ? 'For example' : 'Для примера'}: ${clientText}`;
+  const result = await turn.model.generateReply({ systemPrompt, userMessage: text, history,
+    generation: { maxOutputTokens: config.reply_max_output_tokens, retryMaxOutputTokens: config.reply_retry_max_output_tokens, thinkingLevels: config.reply_thinking_levels,
+      timeoutMs: config.reply_timeout_ms, attemptTimeoutMs: config.reply_attempt_timeout_ms, retryDelayMs: config.reply_retry_delay_ms } });
+  const parsed = parseLabels(result.text);
+  if (parsed.unknown.length) console.warn('instruction_unknown_labels', { tenantId, labels: parsed.unknown });
+  const clientText = cleanClientText(parsed.text);
+  // Only labels and no words: nothing the client can read — the same short apology as a model failure.
+  if (!clientText) throw new Error('Empty reply');
 
   // Labels → actions on the existing mechanisms.
   const start = labelValue(parsed, 'DEMO_START');
   if (hasLabel(parsed, 'DEMO_START')) {
     // Without a valid demo key the mode is not switched on (Z2): only the label name and the key shape are logged.
-    if (await knownDemo(start)) demo = { key: start, turns: 0 };
+    const known = !!start && /^[a-z][a-z0-9_]{1,39}$/.test(start) && (await activeDemoInstruction(db, start)) !== null;
+    if (known) demo = { key: start, turns: 0 };
     else console.warn('instruction_demo_unknown_key', { tenantId, label: 'DEMO_START', key: start && /^[a-z0-9_]{1,40}$/.test(start) ? start : null });
   }
   if (hasLabel(parsed, 'DEMO_END')) demo = { key: null, turns: 0 };
-  if (demo.key && (isMarked(clientText) || left.has('demo_marker'))) state.demo_marked = true;
-  if (!demo.key) delete state.demo_marked;
-  if (request && hasLabel(parsed, 'REQUEST')) {
+  if (hasLabel(parsed, 'REQUEST')) {
+    const request = parseRequestValue(labelValue(parsed, 'REQUEST')) ?? { type: 'request', fields: {} };
     const summary = [`${request.type}`, ...Object.entries(request.fields).map(([k, v]) => `${k}: ${v}`)].join('\n');
-    return finishOutcome({ kind: 'request', text: clientText, summary, request }, parsed, demo, attempts, [...left]);
+    return finishOutcome({ kind: 'request', text: clientText, summary, card: parsed.card ?? null, request }, parsed, demo);
   }
-  if (hasLabel(parsed, 'HUMAN')) return finishOutcome({ kind: 'human', text: clientText }, parsed, demo, attempts, [...left]);
-  if (hasLabel(parsed, 'ASK_OWNER')) return finishOutcome({ kind: 'ask_owner', text: clientText, question: (labelValue(parsed, 'ASK_OWNER') ?? text).slice(0, 1000) }, parsed, demo, attempts, [...left]);
-  return finishOutcome({ kind: 'reply', text: clientText }, parsed, demo, attempts, [...left]);
+  if (hasLabel(parsed, 'HUMAN')) return finishOutcome({ kind: 'human', text: clientText }, parsed, demo);
+  const questions = labelValues(parsed, 'ASK_OWNER').map(q => q.slice(0, 1000));
+  if (hasLabel(parsed, 'ASK_OWNER')) return finishOutcome({ kind: 'ask_owner', text: clientText, questions: questions.length ? questions : [text.slice(0, 1000)] }, parsed, demo);
+  return finishOutcome({ kind: 'reply', text: clientText }, parsed, demo);
 }
 
-function finishOutcome(action: InstructionAction, parsed: ParsedReply, demo: { key: string | null; turns: number }, attempts: number, issues: string[]): InstructionOutcome {
+function finishOutcome(action: InstructionAction, parsed: ParsedReply, demo: { key: string | null; turns: number }): InstructionOutcome {
   const data = labelValue(parsed, 'DATA_REQUEST')?.toLowerCase();
   const offer = action.kind === 'reply' && hasLabel(parsed, 'OFFER') ? (labelValue(parsed, 'OFFER') ?? 'предложение') : null;
-  return { action, dataRequest: data === 'delete' || data === 'access' ? data : null, demo, offer, attempts, issues };
+  return { action, dataRequest: data === 'delete' || data === 'access' ? data : null, demo, offer, attempts: 1, issues: [] };
 }

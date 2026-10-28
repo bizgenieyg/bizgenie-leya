@@ -1,26 +1,36 @@
 /**
- * Task Z: the answer is plain text with service labels at the end. Code parses the labels, strips them from
- * the client text and runs exactly two checks: the request (consent and required fields) and the numbers.
+ * Task Z: the answer is plain text with service labels at the end. Code parses the labels and strips them from
+ * the client text. Z12: no checks rewrite the answer; the text after [[REQUEST]] is the model's card for the owner.
  */
 export const LABEL_NAMES = ['OFFER', 'REQUEST', 'ASK_OWNER', 'HUMAN', 'DATA_REQUEST', 'DEMO_START', 'DEMO_END'] as const;
 export type LabelName = (typeof LABEL_NAMES)[number];
 export interface Label { name: LabelName; value: string | null }
-export interface ParsedReply { text: string; labels: Label[]; unknown: string[] }
+export interface ParsedReply { text: string; labels: Label[]; unknown: string[]; card?: string }
 
 const LABEL = /\[\[\s*([A-Za-z_]+)\s*(?::\s*([^\]]*?))?\s*\]\]/g;
 /** Labels out, client text in. Unknown label names are reported (never executed). */
-export function parseLabels(raw: string): ParsedReply {
+export function parseLabels(input: string): ParsedReply {
   const labels: Label[] = [], unknown: string[] = [];
+  // Z12 (as chef-bot [[ORDER_COMPLETE]]): what follows [[REQUEST: …]] is the card for the owner, never client text.
+  let raw = input, card = '';
+  const request = /\[\[\s*REQUEST\b[^\]]*\]\]/i.exec(input);
+  if (request) {
+    const after = input.slice(request.index + request[0].length);
+    card = after.replace(LABEL, '').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, 2000);
+    raw = input.slice(0, request.index + request[0].length) + '\n' + (after.match(LABEL) ?? []).join('\n');
+  }
   const text = raw.replace(LABEL, (_all, name: string, value: string | undefined) => {
     const upper = name.toUpperCase();
     if ((LABEL_NAMES as readonly string[]).includes(upper)) labels.push({ name: upper as LabelName, value: value?.trim() || null });
     else unknown.push(upper);
     return '';
   }).replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
-  return { text, labels, unknown };
+  return { text, labels, unknown, ...(card ? { card } : {}) };
 }
 export const hasLabel = (parsed: ParsedReply, name: LabelName) => parsed.labels.some(l => l.name === name);
 export const labelValue = (parsed: ParsedReply, name: LabelName) => parsed.labels.find(l => l.name === name)?.value ?? null;
+/** Z12: every value of a label that may repeat ([[ASK_OWNER]] — one owner message per question). */
+export const labelValues = (parsed: ParsedReply, name: LabelName) => parsed.labels.filter(l => l.name === name).flatMap(l => l.value ? [l.value] : []);
 
 /** Leftovers that must never reach a client: brackets, placeholders, JS nulls. */
 export const unsafeClientText = (text: string) => !text.trim() || /\[\[|\]\]|[<>{}]|\bundefined\b|\bnull\b/.test(text);

@@ -3,7 +3,7 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { checkedNumbers, missingFields, normalizeNumber, parseLabels, parseRequestValue, unbackedNumbers, unsafeClientText } from './instruction-checks.js';
 import { fillPlaceholders } from './instructions.service.js';
-import { CORE_INSTRUCTION_DEFAULT, DEMO_INSTRUCTION_DEFAULTS } from '../config/instruction-defaults.js';
+import { CORE_INSTRUCTION_DEFAULT, CORE_LANGUAGE_DEFAULTS, DEMO_INSTRUCTION_DEFAULTS } from '../config/instruction-defaults.js';
 
 test('labels are parsed, stripped from the client text; unknown ones reported, never executed', () => {
   const r = parseLabels('Юрий свяжется с вами в четверг.\n[[REQUEST: meeting | topic=демо; time=четверг]]\n[[OFFER]]\n[[BOOK: x]]');
@@ -35,17 +35,68 @@ test('placeholders: filled, or the text is unusable with the missing names', () 
 
 test('config defaults are the instruction files verbatim', () => {
   assert.equal(CORE_INSTRUCTION_DEFAULT, readFileSync('evals/instructions/core.md', 'utf8'));
+  assert.equal(CORE_LANGUAGE_DEFAULTS.he, readFileSync('evals/instructions/core-he.md', 'utf8'));
+  assert.equal(CORE_LANGUAGE_DEFAULTS.ru, readFileSync('evals/instructions/core-ru.md', 'utf8'));
   assert.equal(DEMO_INSTRUCTION_DEFAULTS.home_cook, readFileSync('evals/instructions/demo-home-cook.md', 'utf8'));
   assert.equal(DEMO_INSTRUCTION_DEFAULTS.cosmetologist, readFileSync('evals/instructions/demo-cosmetologist.md', 'utf8'));
 });
 
-test('Z2: wrong language — the client script must dominate; Latin brand names do not count against ru/he', async () => {
-  const { wrongLanguage } = await import('./instruction-engine.service.js');
-  assert.equal(wrongLanguage('אссистент в WhatsApp возьмет на себя ответы на вопросы клиентов.', 'he'), true, 'one Hebrew letter is not a Hebrew reply');
-  assert.equal(wrongLanguage('האסיסטנט ב-WhatsApp יענה ללקוחות.', 'he'), false);
-  assert.equal(wrongLanguage('Ассистент в WhatsApp ответит клиентам: https://leya.bizgenie.site/login', 'ru'), false);
-  assert.equal(wrongLanguage('הסייען יענה', 'ru'), true);
-  assert.equal(wrongLanguage('The assistant answers in WhatsApp.', 'en'), false);
-  assert.equal(wrongLanguage('Ассистент ответит.', 'en'), true);
-  assert.equal(wrongLanguage('500 ₪', 'he'), true);
+test('Z12: the text after [[REQUEST]] is the owner card, never client text; [[ASK_OWNER]] may repeat', async () => {
+  const { labelValues } = await import('./instruction-checks.js');
+  const r = parseLabels('Передала Юрию, он свяжется с вами.\n[[REQUEST: meeting | topic=звонок; time=среда 14:00]]\n👤 Клиент: Анна\n📞 Хочет: звонок\n🕐 Удобно (пожелание клиента): среда 14:00\n[[OFFER]]');
+  assert.equal(r.text, 'Передала Юрию, он свяжется с вами.');
+  assert.equal(r.card, '👤 Клиент: Анна\n📞 Хочет: звонок\n🕐 Удобно (пожелание клиента): среда 14:00');
+  assert.deepEqual(r.labels.map(l => l.name), ['REQUEST', 'OFFER']);
+  const two = parseLabels('Уточню у Юрия.\n[[ASK_OWNER: делаете ли видео?]]\n[[ASK_OWNER: есть ли скидка на год?]]');
+  assert.deepEqual(labelValues(two, 'ASK_OWNER'), ['делаете ли видео?', 'есть ли скидка на год?']);
+  assert.equal(two.card, undefined);
+});
+
+test('Z12: the instruction gives the common part and the section of the role; no headings — all of it', async () => {
+  const { instructionForRole } = await import('./instruction-engine.service.js');
+  const text = 'Общее 1\n### Продажа\nПродаём\n### Поддержка\nПомогаем\n### Общее\nОбщее 2';
+  assert.equal(instructionForRole(text, 'SALES'), 'Общее 1\nПродаём\nОбщее 2');
+  assert.equal(instructionForRole(text, 'SUPPORT'), 'Общее 1\nПомогаем\nОбщее 2');
+  assert.equal(instructionForRole('Без разделов\n5. Продажа — шаг', 'SUPPORT'), 'Без разделов\n5. Продажа — шаг');
+  for (const key of ['bizgenie', 'templates/service_booking', 'templates/order', 'templates/project', 'templates/b2b', 'templates/general']) {
+    const file = readFileSync(`evals/instructions/${key}.md`, 'utf8');
+    assert.notEqual(instructionForRole(file, 'SALES'), instructionForRole(file, 'SUPPORT'), `${key}: both sections`);
+  }
+});
+
+test('Z12: support keywords and farewells (ru/he/en)', async () => {
+  const { matchesSupportKeywords } = await import('./reply-role.service.js');
+  const { clientIsLeaving } = await import('../config/roles.js');
+  for (const text of ['Где мой заказ?', 'хочу перенести запись', 'ההזמנה שלי לא הגיעה', 'I want to cancel']) assert.equal(matchesSupportKeywords(text), true, text);
+  for (const text of ['Сколько стоит?', 'כמה זה עולה?', 'How much is it?']) assert.equal(matchesSupportKeywords(text), false, text);
+  for (const text of ['Нет, спасибо', 'передумал', 'לא צריך, תודה', 'never mind']) assert.equal(clientIsLeaving(text), true, text);
+  assert.equal(clientIsLeaving('А в среду можно?'), false);
+});
+
+test('Z12: the moment block — date, name, open questions or «нет открытых», quiet hours, voice', async () => {
+  const { momentBlock } = await import('./instruction-engine.service.js');
+  const settings = { time_zone: 'Asia/Jerusalem', mode: 'normal', quiet_hours_start: null, quiet_hours_end: null } as never;
+  const now = new Date('2026-10-28T10:00:00Z');
+  const open = momentBlock({ settings, clientName: 'Yana Melman', openQuestions: ['Делаете ли видео?'], voice: true, now }, 'Юрий');
+  assert.match(open, /Сегодня среда, 28 октября 2026/);
+  assert.match(open, /ИЗВЕСТНОЕ ИМЯ КЛИЕНТА \(из WhatsApp\): Yana Melman/);
+  assert.match(open, /ждёшь ответа на:\n- «Делаете ли видео\?»/);
+  assert.match(open, /ГОЛОСОВЫМ/);
+  const none = momentBlock({ settings, openQuestions: [], now }, 'Юрий');
+  assert.match(none, /открытых вопросов нет — все ответы переданы/);
+  assert.doesNotMatch(none, /ИЗВЕСТНОЕ ИМЯ|ГОЛОСОВЫМ/);
+  const quiet = momentBlock({ settings: { ...(settings as object), mode: 'mute_all', quiet_hours_start: '00:00', quiet_hours_end: '23:00' } as never, now }, 'Юрий');
+  assert.match(quiet, /Юрий не на связи и отвечает с/);
+});
+
+test('Z12: the daily review — every dialog once, unknown values safe; the report time and day', async () => {
+  const { parseReview, reportDue } = await import('./daily-report.service.js');
+  const r = parseReview('```json\n{"dialogs":[{"id":"a","summary":"хочет абонемент","outcome":"lost","reason":"price"},{"id":"x","outcome":"request"}],"findings":[{"id":"a","kind":"price_not_in_facts","reply_excerpt":"стоит 900 ₪"},{"id":"zz","kind":"other"}]}\n```', ['a', 'b']);
+  assert.deepEqual(r.dialogs, [{ id: 'a', summary: 'хочет абонемент', outcome: 'lost', reason: 'price' }, { id: 'b', summary: '—', outcome: 'info_only', reason: null }]);
+  assert.deepEqual(r.findings.map(f => f.id), ['a']);
+  assert.equal(parseReview('not json', ['a']).dialogs[0]!.outcome, 'info_only');
+  const settings = { time_zone: 'Asia/Jerusalem' } as never;
+  assert.equal(reportDue(settings, new Date('2026-10-28T05:30:00Z')), null, '07:30 local — not yet');
+  assert.deepEqual(reportDue(settings, new Date('2026-10-28T07:05:00Z')), { reportDate: '2026-10-27' });
+  assert.deepEqual(reportDue(settings, new Date('2026-11-01T07:05:00Z')), { reportDate: '2026-10-31' });
 });
