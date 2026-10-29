@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { DatabaseClient } from '../db/supabase.js';
 import type { AIProvider } from '../providers/ai/ai-provider.interface.js';
 import type { WhatsAppProvider } from '../providers/whatsapp/whatsapp-provider.interface.js';
@@ -65,18 +66,20 @@ export function parseReview(raw: string, ids: string[]): { ok: boolean; dialogs:
   return { ok, dialogs, findings };
 }
 
-/** Ending letters a name loses or changes when declined (Анна → Анне, Анну; Юрий → Юрия; Коэн → Коэна). */
+/** Ending letters a name loses or changes when declined (Анна → Анне, Анну; Ира → Иры; Юрий → Юрия; Коэн → Коэна). */
 const NAME_ENDING = /[аяоеёыиийьуюэ]+$/iu;
+const HEBREW_PREFIX = '(?:[והבלמשכ]{1,2}(?=[\\p{L}]))?';
 /**
  * Z12 review: what reaches the operator carries no client data — phones, e-mails, links and the client's names are cut,
- * a name in any case form too: the stem of each part (at least 2 letters) with up to 3 letters of ending, as a whole word.
+ * a name in any case form too: the stem of each part (at least 2 letters, short names too) with up to 3 letters of
+ * ending, as a whole word or after Hebrew prefix letters (לדנה, ודנה, שדנה).
  */
 export function withoutPersonalData(text: string, names: string[]): string {
   let out = text.replace(/[^\s,;:«»()]+@[^\s,;:«»()]+\.[^\s,;:«»()]+/g, '…').replace(/https?:\/\/[^\s,;«»()]+/g, '…').replace(/\+?\d[\d\s().-]{6,}\d/g, '…');
   const stems = names.flatMap(n => n.split(/[\s-]+/)).map(n => n.trim()).filter(n => n.length >= 2)
-    .map(n => (n.length > 3 ? n.replace(NAME_ENDING, '') : n) || n).filter(n => n.length >= 2).sort((a, b) => b.length - a.length);
+    .map(n => { const stem = n.replace(NAME_ENDING, ''); return stem.length >= 2 ? stem : n; }).sort((a, b) => b.length - a.length);
   for (const stem of stems)
-    out = out.replace(new RegExp(`(?<![\\p{L}\\p{M}])${stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\p{L}\\p{M}]{0,3}(?![\\p{L}\\p{M}])`, 'giu'), '…');
+    out = out.replace(new RegExp(`(?<![\\p{L}\\p{M}])${HEBREW_PREFIX}${stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\p{L}\\p{M}]{0,3}(?![\\p{L}\\p{M}])`, 'giu'), '…');
   // A full name cut part by part is one gap.
   return out.replace(/…(?:[ \t]+…)+/g, '…');
 }
@@ -160,7 +163,9 @@ export async function runPlatformQualityReport(db: DatabaseClient, provider: Wha
   const number = (await systemValue(db, 'platform_report_number')).replace(/\D/g, ''), tenant = await systemValue(db, 'platform_report_tenant');
   if (!number || !tenant) return false;
   // At most one message per operator's day (in the platform tenant's zone), not per 20 hours: a finding reported
-  // earlier today stops the next run, and the dedupe key is the day itself, so a retry after a crash is not a second send.
+  // earlier today stops the next run. The dedupe key is the day and the findings sent: a retry after a crash between
+  // the send and the mark with the same findings is not a second send, and new findings since then are not lost
+  // (marked reported without having been in the message) — they go in a message of their own.
   const settings = await loadOwnerSettings(db, tenant), today = localDay(now, settings.time_zone ?? DEFAULT_TIME_ZONE);
   const recent = await db.from('quality_findings').select('reported_at').gte('reported_at', new Date(now.getTime() - 48 * 3_600_000).toISOString()).limit(500);check(recent.error);
   if ((recent.data ?? []).some(f => localDay(new Date(String(f.reported_at)), settings.time_zone ?? DEFAULT_TIME_ZONE) === today)) return false;
@@ -175,7 +180,7 @@ export async function runPlatformQualityReport(db: DatabaseClient, provider: Wha
   const lines = open.data.map(f => `• ${nameOf.get(String(f.tenant_id)) || '—'} — ${f.kind}: «${withoutPersonalData(String(f.reply_excerpt ?? ''), []).slice(0, 200)}»${f.note ? ` (${withoutPersonalData(String(f.note), []).slice(0, 200)})` : ''}`);
   const date = String(open.data.at(-1)!.report_date instanceof Date ? (open.data.at(-1)!.report_date as Date).toISOString() : open.data.at(-1)!.report_date).slice(0, 10);
   const text = renderText(settings, 'operator.quality_report', 'ru', { date, count: String(open.data.length), lines: lines.join('\n') });
-  await enqueueMessage(db, tenant, provider, { session: String(instance.data.session_name), chatId, text }, { kind: 'owner_notice', dedupeKey: `quality-report:${today}` });
+  await enqueueMessage(db, tenant, provider, { session: String(instance.data.session_name), chatId, text }, { kind: 'owner_notice', dedupeKey: `quality-report:${today}:${createHash('sha256').update(open.data.map(f => String(f.id)).join(',')).digest('hex').slice(0, 16)}` });
   check((await db.from('quality_findings').update({ reported_at: now.toISOString() }).in('id', open.data.map(f => f.id))).error);
   return true;
 }

@@ -1070,6 +1070,9 @@ test('Z12 review: a failed review is not sent as a report and is tried again; a 
 test('Z12 review: findings reach the operator without the client\'s name, phone, e-mail or links', async () => {
   const { runTenantDailyReport, withoutPersonalData } = await import('./daily-report.service.js');
   assert.equal(withoutPersonalData('Передала Анне, Анну и Анной ждём; Коэну и Коэна тоже. Аннотация остаётся.', ['Анна Коэн']), 'Передала …, … и … ждём; … и … тоже. Аннотация остаётся.');
+  assert.equal(withoutPersonalData('Иры нет, передайте Ире, Иру ждём; Иркутск остаётся', ['Ира']), '… нет, передайте …, … ждём; Иркутск остаётся');
+  assert.equal(withoutPersonalData('תודה לדנה, ודנה ביקשה; דנהל', ['דנה']), 'תודה …, … ביקשה; …');
+  assert.equal(withoutPersonalData('Ян и Яну, Яна', ['Яна']), '… и …, …');
   assert.equal(withoutPersonalData('Юрия попросили, Юрию передали', ['Юрий']), '… попросили, … передали');
   assert.equal(withoutPersonalData('Anna\'s order, Annabelle', ['Anna']), '…\'s order, Annabelle');
   assert.equal(withoutPersonalData('Анна Коэн, перезвоню на +972 50-123-4567 или anna@mail.com, https://x.co/a', ['Анна Коэн']), '…, перезвоню на … или …, …');
@@ -1117,5 +1120,17 @@ test('Z12: the operator message — all unreported findings once a day; without 
   assert.equal(await runPlatformQualityReport(h.db, h.provider), false, 'the same local day');
   await settleAllOutboundQueues(); assert.equal(h.sent.length, sentBefore);
   await h.pg.query("update quality_findings set reported_at = now() - interval '25 hours' where reported_at is not null");
-  assert.equal(await runPlatformQualityReport(h.db, h.provider), true, 'the next day');
+  assert.equal(await runPlatformQualityReport(h.db, h.provider), true, 'the next day'); await settleAllOutboundQueues();
+  // The send went out but the mark failed; the retry with the same findings is deduped (no second message) and marks them.
+  const sentAfter = h.sent.length;
+  await h.pg.query("update quality_findings set reported_at = null where report_date = '2026-10-28'");
+  await runPlatformQualityReport(h.db, h.provider); await settleAllOutboundQueues();
+  assert.equal(h.sent.length, sentAfter, 'same findings — no second message');
+  assert.equal((await h.pg.query("select 1 from quality_findings where reported_at is null")).rows.length, 0);
+  // Same failure, but a finding came in before the retry: it goes out, not marked reported unsent.
+  await h.pg.query("update quality_findings set reported_at = null where report_date = '2026-10-28'");
+  await h.pg.query("insert into quality_findings(tenant_id,report_date,kind,reply_excerpt) values($1,'2026-10-28','other','новая находка')", [h.tenant]);
+  assert.equal(await runPlatformQualityReport(h.db, h.provider), true); await settleAllOutboundQueues();
+  assert.equal(h.sent.length, sentAfter + 1);
+  assert.match(h.sent.at(-1)!.text, /новая находка/);
 });
