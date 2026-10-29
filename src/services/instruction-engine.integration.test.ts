@@ -266,20 +266,23 @@ test('Z2: reply model limits reach the model call; the new settings are validate
   } finally { await f.pg.close(); }
 });
 
-test('Z3: the answer that starts a demo goes as written; DEMO_END returns to the tenant', async () => {
+test('Z12 review (eval B9): the answer that starts a demo is written once more with the demo text; DEMO_END returns to the tenant', async () => {
   const f = await fixture();
   try {
-    f.reply('Пельмени — 70 ₪ за кг (для примера). На завтра не получится.\n[[DEMO_START: home_cook]]');
+    f.reply('Пельмени — 45 ₪ за порцию, на завтра успеем.\n[[DEMO_START: home_cook]]', 'Пельмени — 100 ₪ за кг (для примера). На завтра не получится: заказ минимум за неделю.');
     const start = await f.say('сколько стоят пельмени? можно на завтра?');
-    assert.deepEqual(start.labels, ['DEMO_START']);
-    assert.match(start.reply ?? '', /70 ₪/);
+    assert.equal(f.prompts.length, 2);
+    assert.doesNotMatch(f.prompts[0]!.system, /=== РЕЖИМ ПОКАЗА/);
+    assert.match(f.prompts[1]!.system, /=== РЕЖИМ ПОКАЗА \(home_cook\) ===\nДЕМО-БИЗНЕС: домашний повар/);
+    assert.equal(start.reply, 'Пельмени — 100 ₪ за кг (для примера). На завтра не получится: заказ минимум за неделю.');
+    assert.deepEqual(start.labels, ['DEMO_START'], 'the mode is on even if the second answer dropped the label');
     f.reply('Установка — от 500 ₪, а пельмени были для примера.\n[[DEMO_END]]');
     const end = await f.say('понятно, а у вас сколько стоит?');
     assert.deepEqual(end.labels, ['DEMO_END']);
+    assert.equal(f.prompts.length, 3, 'one call when the demo is already on or ends');
     assert.equal((await f.pg.query<{ demo_key: string | null }>('select demo_key from simulator_sessions')).rows[0]!.demo_key, null);
   } finally { await f.pg.close(); }
 });
-
 test('Z4/Z6: reply_fallback_model without its provider key is not used (no error); setting validated', async () => {
   const f = await fixture();
   const warnings: unknown[][] = [], warn = console.warn, error = console.error;

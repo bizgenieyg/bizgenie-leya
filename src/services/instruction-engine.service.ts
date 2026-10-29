@@ -104,15 +104,16 @@ export async function answerByInstruction(turn: InstructionTurn): Promise<Instru
   // Demo mode closes by itself after demo_max_turns client turns.
   let demo = turn.demo.key ? { key: turn.demo.key, turns: turn.demo.turns + 1 } : { key: null as string | null, turns: 0 };
   if (demo.key && demo.turns > config.demo_max_turns) demo = { key: null, turns: 0 };
-  const demoText = demo.key ? fillPlaceholders(await activeDemoInstruction(db, demo.key) ?? '', values).text : null;
+  let demoText = demo.key ? fillPlaceholders(await activeDemoInstruction(db, demo.key) ?? '', values).text : null;
   const facts = factsMarkdown(await activeFacts(db, tenantId), turn.business?.business_sector ?? null);
   const rules = rulesBlock(await activeRules(db, tenantId));
   const ownerName = turn.business?.owner_name?.trim() ?? '';
   const languageBlock = CORE_LANGUAGE_DEFAULTS[language];
 
-  const systemPrompt = [
-    languageBlock ? `${core.text.trimEnd()}\n${languageBlock.trim()}` : core.text,
-    `=== ИНСТРУКЦИЯ БИЗНЕСА ===\n${instruction.text}`,
+  const coreText = core.text, instructionText = instruction.text;
+  const systemPrompt = () => [
+    languageBlock ? `${coreText.trimEnd()}\n${languageBlock.trim()}` : coreText,
+    `=== ИНСТРУКЦИЯ БИЗНЕСА ===\n${instructionText}`,
     // Z11: the owner's rules — after the instruction (they win over it), before the facts.
     ...(rules ? [`=== ПРАВИЛА ЭТОГО БИЗНЕСА ===\n${rules}`] : []),
     `=== ФАКТЫ ===\n${facts || '(фактов пока нет)'}`,
@@ -121,10 +122,17 @@ export async function answerByInstruction(turn: InstructionTurn): Promise<Instru
     ...(LANGUAGE_NAMES[language] ? [`=== ЯЗЫК ОТВЕТА ===\nПоследнее сообщение клиента — ${LANGUAGE_NAMES[language]}. Весь ответ — на этом языке.`] : []),
   ].join('\n\n');
   const history = turn.memory.slice(0, -1).map(m => ({ role: m.fromMe ? 'assistant' as const : 'user' as const, text: m.text }));
-  const result = await turn.model.generateReply({ systemPrompt, userMessage: text, history,
+  const ask = async () => parseLabels((await turn.model.generateReply({ systemPrompt: systemPrompt(), userMessage: text, history,
     generation: { maxOutputTokens: config.reply_max_output_tokens, retryMaxOutputTokens: config.reply_retry_max_output_tokens, thinkingLevels: config.reply_thinking_levels,
-      timeoutMs: config.reply_timeout_ms, attemptTimeoutMs: config.reply_attempt_timeout_ms, retryDelayMs: config.reply_retry_delay_ms } });
-  const parsed = parseLabels(result.text);
+      timeoutMs: config.reply_timeout_ms, attemptTimeoutMs: config.reply_attempt_timeout_ms, retryDelayMs: config.reply_retry_delay_ms } })).text);
+  let parsed = await ask();
+  // Z12 review (eval B9): the answer that starts a demo was written without the demo business (the mode was not on):
+  // it is written once more with the demo text, so prices and terms come from it. Context, not a check of the answer.
+  const starting = labelValue(parsed, 'DEMO_START');
+  if (!demo.key && starting && /^[a-z][a-z0-9_]{1,39}$/.test(starting) && !hasLabel(parsed, 'DEMO_END')) {
+    const text = fillPlaceholders(await activeDemoInstruction(db, starting) ?? '', values).text;
+    if (text) { demo = { key: starting, turns: 0 }; demoText = text; parsed = await ask(); if (!hasLabel(parsed, 'DEMO_START') && !hasLabel(parsed, 'DEMO_END')) parsed.labels.push({ name: 'DEMO_START', value: starting }); }
+  }
   if (parsed.unknown.length) console.warn('instruction_unknown_labels', { tenantId, labels: parsed.unknown });
   const clientText = cleanClientText(parsed.text);
   // Only labels and no words: nothing the client can read — the same short apology as a model failure.
