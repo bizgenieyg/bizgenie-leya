@@ -1150,4 +1150,12 @@ test('Z12: the operator message — all unreported findings once a day; without 
   await h.pg.query("update quality_findings set created_at = now() - interval '1 hour' where reported_at is null");
   assert.equal(await runPlatformQualityReport(h.db, h.provider, day3), false, 'sent — marked, no more that day');
   assert.deepEqual(await unmarked(), []);
+  // Review 6: more than the 50 a message holds — the second and third runs mark exactly the 50 sent, never the 51st.
+  const day4 = new Date(Date.now() + 72 * 3_600_000);
+  await h.pg.query("insert into quality_findings(tenant_id,report_date,kind,reply_excerpt,created_at) select $1,'2026-10-29','other','n'||g,now() - interval '2 hours' + g * interval '1 second' from generate_series(1,51) g", [h.tenant]);
+  assert.equal(await runPlatformQualityReport(h.db, h.provider, day4), true); await settleAllOutboundQueues();
+  for (let run = 2; run <= 3; run++) {
+    assert.equal(await runPlatformQualityReport(h.db, h.provider, day4), false);
+    assert.deepEqual(await unmarked(), ['n51'], `run ${run}`);
+  }
 });

@@ -165,17 +165,16 @@ async function systemValue(db: DatabaseClient, key: string): Promise<string> {
 export async function runPlatformQualityReport(db: DatabaseClient, provider: WhatsAppProvider, now = new Date()): Promise<boolean> {
   const number = (await systemValue(db, 'platform_report_number')).replace(/\D/g, ''), tenant = await systemValue(db, 'platform_report_tenant');
   if (!number || !tenant) return false;
-  // At most one message per operator's day (in the platform tenant's zone). A finding is marked reported only once the
-  // day's message is confirmed sent (the next run sees it): those created before it, the same first 50; newer ones wait
-  // for tomorrow. A message still in the queue — wait; failed, cancelled or expired — the findings were not sent, so
-  // they stay unmarked and go in a new attempt (at most QUALITY_REPORT_MAX_ATTEMPTS a day).
+  // At most one message per operator's day (in the platform tenant's zone). Each finding keeps the message it went in
+  // (report_message_id) and is marked reported only once that very message is confirmed sent — never by time or
+  // count, so a finding that was not in it is never marked. A message still in the queue — wait; failed, cancelled or
+  // expired — its findings stay open and go in a new attempt (at most QUALITY_REPORT_MAX_ATTEMPTS a day).
   const settings = await loadOwnerSettings(db, tenant), today = localDay(now, settings.time_zone ?? DEFAULT_TIME_ZONE);
   const base = `quality-report:${today}`;
-  const attempts = await db.from('outbound_messages').select('status,created_at').eq('tenant_id', tenant).like('dedupe_key', `${base}%`).order('created_at', { ascending: true });check(attempts.error);
+  const attempts = await db.from('outbound_messages').select('id,status').eq('tenant_id', tenant).like('dedupe_key', `${base}%`).order('created_at', { ascending: true });check(attempts.error);
   const delivered = (attempts.data ?? []).find(m => m.status === 'sent');
   if (delivered) {
-    const sent = await db.from('quality_findings').select('id').is('reported_at', null).lte('created_at', new Date(String(delivered.created_at)).toISOString()).order('created_at', { ascending: true }).limit(50);check(sent.error);
-    if (sent.data?.length) check((await db.from('quality_findings').update({ reported_at: now.toISOString() }).in('id', sent.data.map(f => f.id))).error);
+    check((await db.from('quality_findings').update({ reported_at: now.toISOString() }).eq('report_message_id', String(delivered.id)).is('reported_at', null)).error);
     return false;
   }
   if ((attempts.data ?? []).some(m => m.status === 'pending' || m.status === 'sending') || (attempts.data?.length ?? 0) >= QUALITY_REPORT_MAX_ATTEMPTS) return false;
@@ -193,7 +192,8 @@ export async function runPlatformQualityReport(db: DatabaseClient, provider: Wha
   const lines = open.data.map(f => `• ${nameOf.get(String(f.tenant_id)) || '—'} — ${f.kind}: «${withoutPersonalData(String(f.reply_excerpt ?? ''), []).slice(0, 200)}»${f.note ? ` (${withoutPersonalData(String(f.note), []).slice(0, 200)})` : ''}`);
   const date = String(open.data.at(-1)!.report_date instanceof Date ? (open.data.at(-1)!.report_date as Date).toISOString() : open.data.at(-1)!.report_date).slice(0, 10);
   const text = renderText(settings, 'operator.quality_report', 'ru', { date, count: String(open.data.length), lines: lines.join('\n') });
-  await enqueueMessage(db, tenant, provider, { session: String(instance.data.session_name), chatId, text }, { kind: 'owner_notice', dedupeKey: key });
+  const message = await enqueueMessage(db, tenant, provider, { session: String(instance.data.session_name), chatId, text }, { kind: 'owner_notice', dedupeKey: key });
+  check((await db.from('quality_findings').update({ report_message_id: message.id }).in('id', open.data.map(f => f.id)).is('reported_at', null)).error);
   return true;
 }
 
