@@ -1138,4 +1138,16 @@ test('Z12: the operator message — all unreported findings once a day; without 
   assert.deepEqual((await h.pg.query<{ reply_excerpt: string }>("select reply_excerpt from quality_findings where reported_at is null")).rows.map(r => r.reply_excerpt), ['новая находка']);
   assert.equal(await runPlatformQualityReport(h.db, h.provider, day3), true, 'tomorrow'); await settleAllOutboundQueues();
   assert.match(h.sent.at(-1)!.text, /новая находка/);
+  // Not marked until the message is confirmed sent; a failed delivery leaves the findings unsent and a new attempt goes out.
+  const unmarked = async () => (await h.pg.query<{ reply_excerpt: string }>("select reply_excerpt from quality_findings where reported_at is null")).rows.map(r => r.reply_excerpt);
+  assert.deepEqual(await unmarked(), ['новая находка'], 'enqueued, not yet confirmed');
+  await h.pg.query("update outbound_messages set status='failed' where id = (select id from outbound_messages where dedupe_key like 'quality-report:%' order by created_at desc limit 1)");
+  const beforeRetry = h.sent.length;
+  assert.equal(await runPlatformQualityReport(h.db, h.provider, day3), true, 'failed delivery — a new attempt'); await settleAllOutboundQueues();
+  assert.equal(h.sent.length, beforeRetry + 1);
+  assert.deepEqual(await unmarked(), ['новая находка']);
+  // (the finding was dated a second ahead to stay out of day 2's message; here it is older than the day 3 attempt)
+  await h.pg.query("update quality_findings set created_at = now() - interval '1 hour' where reported_at is null");
+  assert.equal(await runPlatformQualityReport(h.db, h.provider, day3), false, 'sent — marked, no more that day');
+  assert.deepEqual(await unmarked(), []);
 });
