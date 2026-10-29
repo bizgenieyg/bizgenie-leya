@@ -1158,4 +1158,16 @@ test('Z12: the operator message — all unreported findings once a day; without 
     assert.equal(await runPlatformQualityReport(h.db, h.provider, day4), false);
     assert.deepEqual(await unmarked(), ['n51'], `run ${run}`);
   }
+  // Review 7: findings are bound before the message is created. A crash after binding and before creating leaves bound
+  // findings without a message — the next run creates it under the same key, and they are marked only after it is sent.
+  const day5 = new Date(Date.now() + 96 * 3_600_000);
+  const { localDay } = await import('./daily-report.service.js');
+  const key5 = `quality-report:${localDay(day5, 'Asia/Jerusalem')}`;
+  await h.pg.query("insert into quality_findings(tenant_id,report_date,kind,reply_excerpt,report_key) values($1,'2026-10-30','other','после сбоя',$2)", [h.tenant, key5]);
+  assert.equal(await runPlatformQualityReport(h.db, h.provider, day5), true); await settleAllOutboundQueues();
+  const bound = await h.pg.query<{ report_key: string; reported_at: Date | null }>("select report_key,reported_at from quality_findings where reply_excerpt in ('после сбоя','n51')");
+  assert.ok(bound.rows.every(r => r.report_key === key5 && r.reported_at === null), 'bound before the message, not yet marked');
+  assert.match(h.sent.at(-1)!.text, /после сбоя/);
+  assert.equal(await runPlatformQualityReport(h.db, h.provider, day5), false);
+  assert.deepEqual(await unmarked(), []);
 });

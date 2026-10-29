@@ -42,8 +42,9 @@ create table if not exists public.quality_findings (
   kind text not null check (kind in ('price_not_in_facts','term_not_in_facts','promise_for_owner','contradicts_facts','other')),
   reply_excerpt text check (reply_excerpt is null or length(reply_excerpt) <= 500),
   note text check (note is null or length(note) <= 500),
-  -- The operator message this finding went in; reported_at is set once that message is confirmed sent.
-  report_message_id uuid references public.outbound_messages(id) on delete set null,
+  -- The operator message this finding goes in (its outbound dedupe key), written before the message is created;
+  -- reported_at is set once that message is confirmed sent.
+  report_key text check (report_key is null or length(report_key) <= 100),
   reported_at timestamptz,
   created_at timestamptz not null default now()
 );
