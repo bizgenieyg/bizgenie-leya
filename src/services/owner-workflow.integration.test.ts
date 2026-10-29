@@ -1069,16 +1069,23 @@ test('Z12 review: a failed review is not sent as a report and is tried again; a 
 
 test('Z12 review: findings reach the operator without the client\'s name, phone, e-mail or links', async () => {
   const { runTenantDailyReport, withoutPersonalData } = await import('./daily-report.service.js');
+  assert.equal(withoutPersonalData('Передала Анне, Анну и Анной ждём; Коэну и Коэна тоже. Аннотация остаётся.', ['Анна Коэн']), 'Передала …, … и … ждём; … и … тоже. Аннотация остаётся.');
+  assert.equal(withoutPersonalData('Юрия попросили, Юрию передали', ['Юрий']), '… попросили, … передали');
+  assert.equal(withoutPersonalData('Anna\'s order, Annabelle', ['Anna']), '…\'s order, Annabelle');
   assert.equal(withoutPersonalData('Анна Коэн, перезвоню на +972 50-123-4567 или anna@mail.com, https://x.co/a', ['Анна Коэн']), '…, перезвоню на … или …, …');
   const h = await pgHarness();
   await h.pg.query("update clients set preferred_name='Анна', name='Anna Cohen' where id=$1", [h.clientId]);
+  await (await import('./runtime-settings.service.js')).saveRuntimeSettings(h.db, h.tenant, { owner_language: 'he' });
   await h.pg.query("insert into messages(conversation_id,tenant_id,from_me,body,msg_type,created_at) values($1,$2,false,'Перезвоните','text','2026-10-27T10:00:00Z')", [h.conversationId, h.tenant]);
-  const ai = { async generateReply() { return { text: JSON.stringify({ dialogs: [{ id: h.conversationId, summary: 'звонок', outcome: 'in_progress' }],
+  const prompts: string[] = [];
+  const ai = { async generateReply(input: { systemPrompt: string }) { prompts.push(input.systemPrompt); return { text: JSON.stringify({ dialogs: [{ id: h.conversationId, summary: 'звонок', outcome: 'in_progress' }],
     findings: [{ id: h.conversationId, kind: 'promise_for_owner', reply_excerpt: 'Анна, Юрий перезвонит вам на 0501234567 в 14:00', note: 'Anna Cohen: время обещано' }] }) }; } };
   assert.equal(await runTenantDailyReport(h.db, h.tenant, 'session', h.provider, new Date('2026-10-28T07:05:00Z'), ai), 'sent');
   const row = (await h.pg.query<{ reply_excerpt: string; note: string }>('select reply_excerpt,note from quality_findings')).rows[0]!;
   assert.equal(row.reply_excerpt, '…, Юрий перезвонит вам на … в 14:00');
   assert.equal(row.note, '…: время обещано');
+  assert.match(prompts[0]!, /summary пиши на языке: иврит/, 'the owner language reaches the review');
+  assert.doesNotMatch(prompts[0]!, /\{language\}/);
 });
 
 test('Z12 review: the new operator settings are saved and validated through the settings API', async () => {
@@ -1103,4 +1110,12 @@ test('Z12: the operator message — all unreported findings once a day; without 
   assert.equal(message.chatId, '972500000002@c.us');
   assert.match(message.text, /🔎 Контроль ответов за 2026-10-27: 1\n\n• Business — promise_for_owner: «Юрий перезвонит в 14:00» \(время обещано за владельца\)/);
   assert.equal(await runPlatformQualityReport(h.db, h.provider), false, 'once a day');
+  // A new finding later the same local day (21 h after the first message) is kept for tomorrow, not a second message.
+  await h.pg.query("insert into quality_findings(tenant_id,report_date,kind,reply_excerpt) values($1,'2026-10-28','other','ещё')", [h.tenant]);
+  const sentBefore = h.sent.length;
+  await h.pg.query("update quality_findings set reported_at = date_trunc('day', now() at time zone 'Asia/Jerusalem') at time zone 'Asia/Jerusalem' + interval '1 minute' where reported_at is not null");
+  assert.equal(await runPlatformQualityReport(h.db, h.provider), false, 'the same local day');
+  await settleAllOutboundQueues(); assert.equal(h.sent.length, sentBefore);
+  await h.pg.query("update quality_findings set reported_at = now() - interval '25 hours' where reported_at is not null");
+  assert.equal(await runPlatformQualityReport(h.db, h.provider), true, 'the next day');
 });

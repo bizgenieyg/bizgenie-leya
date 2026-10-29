@@ -27,6 +27,7 @@ const OUTCOMES = ['request', 'lost', 'in_progress', 'info_only'] as const;
 type Outcome = (typeof OUTCOMES)[number];
 const ICONS: Record<Outcome, string> = { request: '✅', lost: '❌', in_progress: '💬', info_only: 'ℹ️' };
 const REASONS = ['price', 'date', 'missing', 'silent', 'other'] as const;
+const LANGUAGE_NAMES: Record<string, string> = { he: 'иврит', ru: 'русский', en: 'английский' };
 const FINDING_KINDS = ['price_not_in_facts', 'term_not_in_facts', 'promise_for_owner', 'contradicts_facts', 'other'];
 export interface ReviewedDialog { id: string; summary: string; outcome: Outcome; reason: (typeof REASONS)[number] | null }
 export interface Finding { id: string; kind: string; reply_excerpt: string; note: string }
@@ -42,7 +43,10 @@ export function reportDue(settings: OwnerSettings, now: Date): { reportDate: str
   return { reportDate: yesterday.toISOString().slice(0, 10) };
 }
 
-/** The review answer: every dialog id once (unknown ids dropped, a missing one → info only), findings of known dialogs. */
+/**
+ * The review answer: every dialog id once (unknown ids dropped), findings of known dialogs. It is usable (ok) only when
+ * every dialog got a valid outcome — an empty or partial review is not the day's result and is tried again.
+ */
 export function parseReview(raw: string, ids: string[]): { ok: boolean; dialogs: ReviewedDialog[]; findings: Finding[] } {
   let value: Record<string, unknown> = {}, ok = false;
   try { const parsed: unknown = JSON.parse(raw.trim().replace(/^```(?:json)?\s*|\s*```$/g, '')); if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Array.isArray((parsed as Record<string, unknown>).dialogs)) { value = parsed as Record<string, unknown>; ok = true; } } catch { /* not ok: the report is not sent */ }
@@ -54,18 +58,27 @@ export function parseReview(raw: string, ids: string[]): { ok: boolean; dialogs:
     const reason = outcome === 'lost' ? (REASONS.includes(d.reason as never) ? d.reason as ReviewedDialog['reason'] : 'other') : null;
     return { id, summary: typeof d.summary === 'string' ? d.summary.replace(/[<>{}]/g, '').slice(0, 120) : '—', outcome, reason };
   });
+  ok = ok && ids.length > 0 && ids.every(id => OUTCOMES.includes(byId.get(id)?.outcome as Outcome));
   const known = new Set(ids);
   const findings = list('findings').filter(f => known.has(String(f.id))).slice(0, 20).map(f => ({ id: String(f.id), kind: FINDING_KINDS.includes(String(f.kind)) ? String(f.kind) : 'other',
     reply_excerpt: typeof f.reply_excerpt === 'string' ? f.reply_excerpt.slice(0, 500) : '', note: typeof f.note === 'string' ? f.note.slice(0, 500) : '' }));
   return { ok, dialogs, findings };
 }
 
-/** Z12 review: what reaches the operator carries no client data — phones, e-mails, links and the client's names are cut. */
+/** Ending letters a name loses or changes when declined (Анна → Анне, Анну; Юрий → Юрия; Коэн → Коэна). */
+const NAME_ENDING = /[аяоеёыиийьуюэ]+$/iu;
+/**
+ * Z12 review: what reaches the operator carries no client data — phones, e-mails, links and the client's names are cut,
+ * a name in any case form too: the stem of each part (at least 2 letters) with up to 3 letters of ending, as a whole word.
+ */
 export function withoutPersonalData(text: string, names: string[]): string {
   let out = text.replace(/[^\s,;:«»()]+@[^\s,;:«»()]+\.[^\s,;:«»()]+/g, '…').replace(/https?:\/\/[^\s,;«»()]+/g, '…').replace(/\+?\d[\d\s().-]{6,}\d/g, '…');
-  for (const name of names.flatMap(n => [n, ...n.split(/\s+/)]).map(n => n.trim()).filter(n => n.length >= 2).sort((a, b) => b.length - a.length))
-    out = out.replace(new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'giu'), '…');
-  return out;
+  const stems = names.flatMap(n => n.split(/[\s-]+/)).map(n => n.trim()).filter(n => n.length >= 2)
+    .map(n => (n.length > 3 ? n.replace(NAME_ENDING, '') : n) || n).filter(n => n.length >= 2).sort((a, b) => b.length - a.length);
+  for (const stem of stems)
+    out = out.replace(new RegExp(`(?<![\\p{L}\\p{M}])${stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\p{L}\\p{M}]{0,3}(?![\\p{L}\\p{M}])`, 'giu'), '…');
+  // A full name cut part by part is one gap.
+  return out.replace(/…(?:[ \t]+…)+/g, '…');
 }
 
 /** One tenant: claims the day (one report per day even after a restart), reviews, sends, keeps the findings. */
@@ -104,7 +117,7 @@ export async function runTenantDailyReport(db: DatabaseClient, tenantId: string,
   const transcript = ids.map(id => `--- id: ${id}\n${dialogs.get(id)!.slice(-config.daily_report_dialog_messages).map(m => `${m.fromMe ? 'Ассистент' : 'Клиент'}: ${m.text}`).join('\n')}`).join('\n\n');
   const model = ai === undefined ? meterAI(db, tenantId, createAIProvider(), { purpose: 'daily_review' }) : ai;
   let raw = '';
-  try { raw = model ? (await model.generateReply({ systemPrompt: DAILY_REVIEW_PROMPT, userMessage: `ФАКТЫ:\n${facts || '(нет)'}\n\nДИАЛОГИ:\n${transcript}`, generation: { maxOutputTokens: 8192 } })).text : ''; }
+  try { raw = model ? (await model.generateReply({ systemPrompt: DAILY_REVIEW_PROMPT.replace('{language}', LANGUAGE_NAMES[config.owner_language] ?? config.owner_language), userMessage: `ФАКТЫ:\n${facts || '(нет)'}\n\nДИАЛОГИ:\n${transcript}`, generation: { maxOutputTokens: 8192 } })).text : ''; }
   catch { console.warn('daily_review_unavailable', { tenantId, attempt }); }
   const review = parseReview(raw, ids);
   // No model or no usable answer: nothing is sent as if it were the day's result — the next hour tries again.
@@ -146,8 +159,11 @@ async function systemValue(db: DatabaseClient, key: string): Promise<string> {
 export async function runPlatformQualityReport(db: DatabaseClient, provider: WhatsAppProvider, now = new Date()): Promise<boolean> {
   const number = (await systemValue(db, 'platform_report_number')).replace(/\D/g, ''), tenant = await systemValue(db, 'platform_report_tenant');
   if (!number || !tenant) return false;
-  const recent = await db.from('quality_findings').select('id').gte('reported_at', new Date(now.getTime() - 20 * 3_600_000).toISOString()).limit(1);check(recent.error);
-  if (recent.data?.length) return false;
+  // At most one message per operator's day (in the platform tenant's zone), not per 20 hours: a finding reported
+  // earlier today stops the next run, and the dedupe key is the day itself, so a retry after a crash is not a second send.
+  const settings = await loadOwnerSettings(db, tenant), today = localDay(now, settings.time_zone ?? DEFAULT_TIME_ZONE);
+  const recent = await db.from('quality_findings').select('reported_at').gte('reported_at', new Date(now.getTime() - 48 * 3_600_000).toISOString()).limit(500);check(recent.error);
+  if ((recent.data ?? []).some(f => localDay(new Date(String(f.reported_at)), settings.time_zone ?? DEFAULT_TIME_ZONE) === today)) return false;
   const open = await db.from('quality_findings').select('id,tenant_id,kind,reply_excerpt,note,report_date').is('reported_at', null).order('created_at', { ascending: true }).limit(50);check(open.error);
   if (!open.data?.length) return false;
   const instance = await db.from('whatsapp_instances').select('session_name').eq('tenant_id', tenant).maybeSingle();check(instance.error);
@@ -158,9 +174,8 @@ export async function runPlatformQualityReport(db: DatabaseClient, provider: Wha
   const nameOf = new Map((tenants.data ?? []).map(t => [String(t.id), String(t.name ?? '')]));
   const lines = open.data.map(f => `• ${nameOf.get(String(f.tenant_id)) || '—'} — ${f.kind}: «${withoutPersonalData(String(f.reply_excerpt ?? ''), []).slice(0, 200)}»${f.note ? ` (${withoutPersonalData(String(f.note), []).slice(0, 200)})` : ''}`);
   const date = String(open.data.at(-1)!.report_date instanceof Date ? (open.data.at(-1)!.report_date as Date).toISOString() : open.data.at(-1)!.report_date).slice(0, 10);
-  const settings = await loadOwnerSettings(db, tenant);
   const text = renderText(settings, 'operator.quality_report', 'ru', { date, count: String(open.data.length), lines: lines.join('\n') });
-  await enqueueMessage(db, tenant, provider, { session: String(instance.data.session_name), chatId, text }, { kind: 'owner_notice', dedupeKey: `quality-report:${date}:${open.data[0]!.id}` });
+  await enqueueMessage(db, tenant, provider, { session: String(instance.data.session_name), chatId, text }, { kind: 'owner_notice', dedupeKey: `quality-report:${today}` });
   check((await db.from('quality_findings').update({ reported_at: now.toISOString() }).in('id', open.data.map(f => f.id))).error);
   return true;
 }

@@ -94,7 +94,11 @@ test('Z12: the daily review — every dialog once, unknown values safe; the repo
   const r = parseReview('```json\n{"dialogs":[{"id":"a","summary":"хочет абонемент","outcome":"lost","reason":"price"},{"id":"x","outcome":"request"}],"findings":[{"id":"a","kind":"price_not_in_facts","reply_excerpt":"стоит 900 ₪"},{"id":"zz","kind":"other"}]}\n```', ['a', 'b']);
   assert.deepEqual(r.dialogs, [{ id: 'a', summary: 'хочет абонемент', outcome: 'lost', reason: 'price' }, { id: 'b', summary: '—', outcome: 'info_only', reason: null }]);
   assert.deepEqual(r.findings.map(f => f.id), ['a']);
+  assert.equal(r.ok, false, 'a dialog without an outcome — the review is not the day result');
   assert.equal(parseReview('not json', ['a']).dialogs[0]!.outcome, 'info_only');
+  assert.equal(parseReview('{"dialogs":[],"findings":[]}', ['a']).ok, false, 'an empty review is not a success');
+  assert.equal(parseReview('{"dialogs":[{"id":"a","outcome":"maybe"}]}', ['a']).ok, false);
+  assert.equal(parseReview('{"dialogs":[{"id":"a","outcome":"info_only"}]}', ['a']).ok, true);
   const settings = { time_zone: 'Asia/Jerusalem' } as never;
   assert.equal(reportDue(settings, new Date('2026-10-28T05:30:00Z')), null, '07:30 local — not yet');
   assert.deepEqual(reportDue(settings, new Date('2026-10-28T07:05:00Z')), { reportDate: '2026-10-27' });
