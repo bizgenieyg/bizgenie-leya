@@ -18,7 +18,7 @@ export type OutboundKind = 'reply' | 'owner_notice' | 'owner_answer_delivery' | 
 export interface OutboundRow {
   id: string; tenant_id: string; session: string; chat_id: string; text: string; kind: OutboundKind;
   priority: number; not_before: string; deadline_at: string | null; status: string;
-  attempts: number; dedupe_key: string; inbound_message_ids: string[]; created_at: string; started_at: string | null;
+  attempts: number; dedupe_key: string; inbound_message_ids: string[]; created_at: string; started_at: string | null; reply_to?: string | null;
 }
 export interface EnqueueOptions {
   kind?: OutboundKind; dedupeKey?: string; notBefore?: Date; deadlineAt?: Date;
@@ -69,7 +69,7 @@ export async function enqueueMessage(db: DatabaseClient, tenantId: string, provi
   const payload = { tenant_id: tenantId, session: input.session, chat_id: input.chatId, text: input.text,
     kind, priority: outboundPriority(kind), dedupe_key: dedupeKey,
     not_before: (options.notBefore ?? new Date()).toISOString(), deadline_at: options.deadlineAt?.toISOString() ?? null,
-    inbound_message_ids: options.inboundMessageIds ?? [] };
+    inbound_message_ids: options.inboundMessageIds ?? [], ...(input.replyTo ? { reply_to: input.replyTo } : {}) };
   let result = await db.from('outbound_messages').insert(payload).select('id,status,waha_msg_id').single();
   if (result.error?.code === '23505') result = await db.from('outbound_messages').select('id,status,waha_msg_id')
     .eq('tenant_id', tenantId).eq('dedupe_key', dedupeKey).single();
@@ -255,7 +255,7 @@ export class OutboundProcessor {
         catch { console.error('outbound_stop_typing_failed'); }
       }
       if (row.deadline_at && Date.now() + 15_000 > Date.parse(row.deadline_at)) { await this.expire(row); return; }
-      const sent = await this.provider.sendMessage({ session: row.session, chatId: row.chat_id, text: row.text });
+      const sent = await this.provider.sendMessage({ session: row.session, chatId: row.chat_id, text: row.text, ...(row.reply_to ? { replyTo: row.reply_to } : {}) });
       if (!sent.id) throw new Error('Outbound send not confirmed');
       sentId = sent.id;
       const done = await this.db.from('outbound_messages').update({ status: 'sent', sent_at: new Date().toISOString(), waha_msg_id: sent.id, started_at: null })

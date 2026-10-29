@@ -991,7 +991,8 @@ test('Z12: reminders after 4 hours without an answer, at most 2, each with the q
   const h = await pgHarness();
   const id = await seedEscalation(h, { question: 'Делаете ли видео?' });
   const start = new Date('2026-10-28T06:00:00Z');
-  await h.pg.query("update escalations set status='pending',owner_message_ids=array['initial'],pending_since=$2,created_at=$2 where id=$1", [id, start.toISOString()]);
+  const original = (await h.pg.query<{ id: string }>("insert into outbound_messages(tenant_id,session,chat_id,text,kind,priority,status,dedupe_key,waha_msg_id) values($1,'session',$2,'❓ вопрос','owner_notice',0,'sent','z12-original','WA_ORIGINAL') returning id", [h.tenant, needsAnswer])).rows[0]!.id;
+  await h.pg.query("update escalations set status='pending',owner_message_ids=array[$3],pending_since=$2,created_at=$2 where id=$1", [id, start.toISOString(), original]);
   const at = (hours: number) => new Date(start.getTime() + hours * 3_600_000);
   const reminders = () => h.sent.filter(m => /Напоминание/.test(m.text));
   await runEscalationTimeouts(h.db, () => h.provider, at(3.9)); await settleAllOutboundQueues();
@@ -1000,6 +1001,7 @@ test('Z12: reminders after 4 hours without an answer, at most 2, each with the q
   await runEscalationTimeouts(h.db, () => h.provider, at(5)); await settleAllOutboundQueues();
   assert.equal(reminders().length, 1);
   assert.match(reminders()[0]!.text, /«Делаете ли видео\?»/); assert.equal(reminders()[0]!.chatId, needsAnswer);
+  assert.equal(reminders()[0]!.replyTo, 'WA_ORIGINAL', 'a reply to the original question (its WhatsApp id)');
   await runEscalationTimeouts(h.db, () => h.provider, at(8.2)); await settleAllOutboundQueues();
   await runEscalationTimeouts(h.db, () => h.provider, at(11)); await settleAllOutboundQueues();
   assert.equal(reminders().length, 2, 'the second one 4 hours after the first, then no more');
@@ -1041,6 +1043,52 @@ test('Z12: daily report at 09:00 local about yesterday — one line per client, 
   assert.match(report.text, /❌ Анна — спрашивала абонемент \(дорого\)/);
   assert.deepEqual((await g.pg.query<{ kind: string; reply_excerpt: string }>('select kind,reply_excerpt from quality_findings')).rows, [{ kind: 'price_not_in_facts', reply_excerpt: 'Абонемент — 900 ₪.' }]);
   assert.equal(await runTenantDailyReport(g.db, g.tenant, 'session', g.provider, new Date('2026-10-28T08:05:00Z'), ai), 'skipped', 'once a day');
+});
+
+test('Z12 review: a failed review is not sent as a report and is tried again; a crash frees the day after the lease; at most 3 attempts', async () => {
+  const { runTenantDailyReport, DAILY_REPORT_LEASE_MS } = await import('./daily-report.service.js');
+  const h = await pgHarness();
+  await h.pg.query("insert into messages(conversation_id,tenant_id,from_me,body,msg_type,created_at) values($1,$2,false,'Сколько стоит?','text','2026-10-27T10:00:00Z')", [h.conversationId, h.tenant]);
+  const down = { async generateReply(): Promise<never> { throw new Error('down'); } };
+  const t0 = new Date('2026-10-28T07:05:00Z'), later = (n: number) => new Date(t0.getTime() + n * (DAILY_REPORT_LEASE_MS + 60_000));
+  assert.equal(await runTenantDailyReport(h.db, h.tenant, 'session', h.provider, t0, down), 'retry');
+  assert.equal(await runTenantDailyReport(h.db, h.tenant, 'session', h.provider, t0, { async generateReply() { return { text: 'не JSON' }; } }), 'skipped', 'inside the lease');
+  assert.equal(await runTenantDailyReport(h.db, h.tenant, 'session', h.provider, later(1), { async generateReply() { return { text: 'не JSON' }; } }), 'retry', 'unusable answer — not a report');
+  await settleAllOutboundQueues();
+  assert.equal(h.sent.filter(m => m.chatId === reports).length, 0, 'no «информация» report out of a failure');
+  // A crash (thrown error) after the claim: the day is free again after the lease.
+  const crash = { async generateReply() { return { text: JSON.stringify({ dialogs: [{ id: h.conversationId, summary: 'цена', outcome: 'info_only' }], findings: [] }) }; } };
+  assert.equal(await runTenantDailyReport(h.db, h.tenant, 'session', h.provider, later(2), crash), 'sent', 'third attempt succeeds'); await settleAllOutboundQueues();
+  assert.equal(h.sent.filter(m => m.chatId === reports).length, 1);
+  const g = await pgHarness();
+  await g.pg.query("insert into messages(conversation_id,tenant_id,from_me,body,msg_type,created_at) values($1,$2,false,'Сколько стоит?','text','2026-10-27T10:00:00Z')", [g.conversationId, g.tenant]);
+  for (const n of [0, 1, 2]) assert.equal(await runTenantDailyReport(g.db, g.tenant, 'session', g.provider, later(n), down), 'retry');
+  assert.equal(await runTenantDailyReport(g.db, g.tenant, 'session', g.provider, later(3), down), 'skipped');
+  assert.ok((await g.pg.query<{ failed_at: string | null }>('select failed_at from owner_daily_reports')).rows[0]!.failed_at, 'gave up after 3 attempts');
+});
+
+test('Z12 review: findings reach the operator without the client\'s name, phone, e-mail or links', async () => {
+  const { runTenantDailyReport, withoutPersonalData } = await import('./daily-report.service.js');
+  assert.equal(withoutPersonalData('Анна Коэн, перезвоню на +972 50-123-4567 или anna@mail.com, https://x.co/a', ['Анна Коэн']), '…, перезвоню на … или …, …');
+  const h = await pgHarness();
+  await h.pg.query("update clients set preferred_name='Анна', name='Anna Cohen' where id=$1", [h.clientId]);
+  await h.pg.query("insert into messages(conversation_id,tenant_id,from_me,body,msg_type,created_at) values($1,$2,false,'Перезвоните','text','2026-10-27T10:00:00Z')", [h.conversationId, h.tenant]);
+  const ai = { async generateReply() { return { text: JSON.stringify({ dialogs: [{ id: h.conversationId, summary: 'звонок', outcome: 'in_progress' }],
+    findings: [{ id: h.conversationId, kind: 'promise_for_owner', reply_excerpt: 'Анна, Юрий перезвонит вам на 0501234567 в 14:00', note: 'Anna Cohen: время обещано' }] }) }; } };
+  assert.equal(await runTenantDailyReport(h.db, h.tenant, 'session', h.provider, new Date('2026-10-28T07:05:00Z'), ai), 'sent');
+  const row = (await h.pg.query<{ reply_excerpt: string; note: string }>('select reply_excerpt,note from quality_findings')).rows[0]!;
+  assert.equal(row.reply_excerpt, '…, Юрий перезвонит вам на … в 14:00');
+  assert.equal(row.note, '…: время обещано');
+});
+
+test('Z12 review: the new operator settings are saved and validated through the settings API', async () => {
+  const { saveRuntimeSettings, readRuntimeSettings } = await import('./runtime-settings.service.js');
+  const h = await pgHarness();
+  await saveRuntimeSettings(h.db, h.tenant, { escalation_remind_max: 1, daily_report_enabled: false, daily_report_time: '08:30', daily_report_max_dialogs: 10, daily_report_dialog_messages: 20 });
+  const s = await readRuntimeSettings(h.db, h.tenant) as unknown as Record<string, unknown>;
+  assert.deepEqual([s.escalation_remind_max, s.daily_report_enabled, s.daily_report_time, s.daily_report_max_dialogs, s.daily_report_dialog_messages], [1, false, '08:30', 10, 20]);
+  for (const bad of [{ escalation_remind_max: 99 }, { daily_report_enabled: 'yes' }, { daily_report_time: '25:00' }, { daily_report_max_dialogs: 0 }])
+    await assert.rejects(saveRuntimeSettings(h.db, h.tenant, bad), /Invalid/, JSON.stringify(bad));
 });
 
 test('Z12: the operator message — all unreported findings once a day; without platform_report_number only the table', async () => {

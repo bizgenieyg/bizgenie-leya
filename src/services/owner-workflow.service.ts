@@ -43,9 +43,9 @@ async function patch(db:DatabaseClient,e:Escalation,values:Record<string,unknown
 async function claim(db:DatabaseClient,e:Escalation,from:string,to:string):Promise<boolean> {
   const {data,error}=await db.from('escalations').update({status:to}).eq('tenant_id',e.tenant_id).eq('id',e.id).eq('status',from).select('id');check(error);return !!data?.length;
 }
-async function send(db:DatabaseClient,tenantId:string,provider:WhatsAppProvider,session:string,chatId:string,text:string,kind:OutboundKind='owner_notice',dedupeKey?:string,inboundMessageIds:string[]=[]):Promise<string> {
+async function send(db:DatabaseClient,tenantId:string,provider:WhatsAppProvider,session:string,chatId:string,text:string,kind:OutboundKind='owner_notice',dedupeKey?:string,inboundMessageIds:string[]=[],replyTo?:string):Promise<string> {
   if(!ownerChatAllowed(chatId)) throw new Error('Recipient policy blocked escalation');
-  const result=await enqueueMessage(db,tenantId,provider,{session,chatId,text:kind==='owner_notice'||kind==='reminder'?ownerText(text):clientText(text)},{kind,...(dedupeKey?{dedupeKey}:{}),inboundMessageIds});
+  const result=await enqueueMessage(db,tenantId,provider,{session,chatId,text:kind==='owner_notice'||kind==='reminder'?ownerText(text):clientText(text),...(replyTo?{replyTo}:{})},{kind,...(dedupeKey?{dedupeKey}:{}),inboundMessageIds});
   if(!result.id) throw new Error('Message delivery not confirmed');
   return result.id;
 }
@@ -451,8 +451,11 @@ export async function runEscalationTimeouts(db:DatabaseClient,providerFor:()=>Wh
     const to=await ownerChat(db,provider,e.tenant_id,e.session,settings,'needs_answer');
     if(!ownerChatAllowed(to))continue;
     if(!await claim(db,e,'pending','reminding'))continue;
+    // Z12 (as chef-bot): the reminder quotes the original question (its WhatsApp id), so a tap jumps to it.
+    const original=e.owner_message_ids[0]?await db.from('outbound_messages').select('waha_msg_id').eq('tenant_id',e.tenant_id).eq('id',e.owner_message_ids[0]).maybeSingle():null;
+    const replyTo=typeof original?.data?.waha_msg_id==='string'?original.data.waha_msg_id:undefined;
     try{const phone=formatPhone(await escalationPhone(db,e)),remind=renderText(settings,'owner.remind',config.owner_language,{name:e.client_name,phone:phone??'',question:e.question});
-     const id=await send(db,e.tenant_id,provider,e.session,to,phone?remind:remind.replace(/\s*\(\s*\)/,''),'reminder',`escalation:${e.id}:remind${(e.reminder_count??0)>0?`:${(e.reminder_count??0)+1}`:''}`);
+     const id=await send(db,e.tenant_id,provider,e.session,to,phone?remind:remind.replace(/\s*\(\s*\)/,''),'reminder',`escalation:${e.id}:remind${(e.reminder_count??0)>0?`:${(e.reminder_count??0)+1}`:''}`,[],replyTo);
      await patch(db,e,{status:'pending',reminded_at:now.toISOString(),reminder_count:(e.reminder_count??0)+1,owner_message_ids:[...e.owner_message_ids,id]});
     }catch{await patch(db,e,{status:'pending',reminded_at:now.toISOString(),reminder_count:(e.reminder_count??0)+1});console.error('escalation_reminder_uncertain',{tenantId:e.tenant_id,escalationId:e.id});}
     // Some questions of the batch are answered while this one still waits: send what we have.

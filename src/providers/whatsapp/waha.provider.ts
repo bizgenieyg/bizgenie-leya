@@ -31,6 +31,7 @@ export class WahaProvider implements WhatsAppProvider, WhatsAppSessionProvider {
       session: input.session,
       chatId: input.chatId,
       text: input.text,
+      ...(input.replyTo ? { reply_to: input.replyTo } : {}),
     };
 
     const data = await this.request("POST", "/api/sendText", body);

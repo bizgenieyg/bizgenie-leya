@@ -114,6 +114,12 @@ export function validateRuntimePatch(input:Record<string,unknown>) {
   else if(key==='owner_rules_max')behaviorPatch[key]=integer(key,value,1,100);
   else if(key==='owner_rule_max_chars')behaviorPatch[key]=integer(key,value,50,300);
   else if(key==='owner_rule_pending_hours')behaviorPatch[key]=integer(key,value,1,168);
+  // Z12: reminders and the daily report (operator).
+  else if(key==='escalation_remind_max')behaviorPatch[key]=integer(key,value,0,10);
+  else if(key==='daily_report_enabled'){if(typeof value!=='boolean')throw new HttpError(400,`Invalid setting: ${key}`);behaviorPatch[key]=value;}
+  else if(key==='daily_report_time'){if(!time(value))throw new HttpError(400,'Invalid daily report time');behaviorPatch[key]=value;}
+  else if(key==='daily_report_max_dialogs')behaviorPatch[key]=integer(key,value,1,200);
+  else if(key==='daily_report_dialog_messages')behaviorPatch[key]=integer(key,value,1,200);
   else if(key==='owner_channel_check_minutes')behaviorPatch[key]=integer(key,value,1,10080);
   else if(key==='audit_max_open_cards')behaviorPatch[key]=integer(key,value,1,50);
   else if(key==='reply_engine'){if(value!=='legacy'&&value!=='instruction')throw new HttpError(400,'Invalid reply engine');behaviorPatch[key]=value;}

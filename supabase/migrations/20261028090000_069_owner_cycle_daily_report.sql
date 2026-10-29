@@ -12,12 +12,19 @@ alter table public.escalations add constraint escalations_status_check check(sta
   'closing','closed_unanswered','resolved_by_owner','expired','client_left'
 ));
 
+-- A message that quotes another (a reminder replies to the original question; WAHA sendText reply_to).
+alter table public.outbound_messages add column if not exists reply_to text check (reply_to is null or length(reply_to) <= 300);
+
 -- One daily report per tenant and day (the day the report is about, in the tenant's zone).
 create table if not exists public.owner_daily_reports (
   tenant_id uuid not null references public.tenants(id) on delete cascade,
   report_date date not null,
   conversations integer not null default 0,
+  -- A claim is a lease: a failed or crashed review is tried again next hour, at most daily_report_max_attempts times.
+  attempts integer not null default 1,
+  claimed_at timestamptz not null default now(),
   sent_at timestamptz,
+  failed_at timestamptz,
   created_at timestamptz not null default now(),
   primary key (tenant_id, report_date)
 );

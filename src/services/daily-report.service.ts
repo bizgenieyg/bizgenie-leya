@@ -20,6 +20,8 @@ import { DAILY_REVIEW_PROMPT } from '../config/instructions.js';
  * (✅ request / ❌ lost + reason / 💬 in progress / ℹ️ info) under the counts, to the «Отчёты» group. No dialogs — nothing
  * is sent. The same model call (one per tenant) finds doubtful replies for the operator (quality_findings).
  */
+/** A claim older than this is free again (a crashed or failed attempt); attempts per tenant and day. */
+export const DAILY_REPORT_LEASE_MS = 30 * 60_000, DAILY_REPORT_MAX_ATTEMPTS = 3;
 const check = (error: unknown) => { if (error) throw new Error('Daily report persistence failed'); };
 const OUTCOMES = ['request', 'lost', 'in_progress', 'info_only'] as const;
 type Outcome = (typeof OUTCOMES)[number];
@@ -41,9 +43,9 @@ export function reportDue(settings: OwnerSettings, now: Date): { reportDate: str
 }
 
 /** The review answer: every dialog id once (unknown ids dropped, a missing one → info only), findings of known dialogs. */
-export function parseReview(raw: string, ids: string[]): { dialogs: ReviewedDialog[]; findings: Finding[] } {
-  let value: Record<string, unknown> = {};
-  try { const parsed: unknown = JSON.parse(raw.trim().replace(/^```(?:json)?\s*|\s*```$/g, '')); if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) value = parsed as Record<string, unknown>; } catch { /* below: defaults */ }
+export function parseReview(raw: string, ids: string[]): { ok: boolean; dialogs: ReviewedDialog[]; findings: Finding[] } {
+  let value: Record<string, unknown> = {}, ok = false;
+  try { const parsed: unknown = JSON.parse(raw.trim().replace(/^```(?:json)?\s*|\s*```$/g, '')); if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Array.isArray((parsed as Record<string, unknown>).dialogs)) { value = parsed as Record<string, unknown>; ok = true; } } catch { /* not ok: the report is not sent */ }
   const list = (key: string) => Array.isArray(value[key]) ? (value[key] as unknown[]).filter((x): x is Record<string, unknown> => !!x && typeof x === 'object') : [];
   const byId = new Map(list('dialogs').map(d => [String(d.id), d]));
   const dialogs = ids.map(id => {
@@ -55,17 +57,36 @@ export function parseReview(raw: string, ids: string[]): { dialogs: ReviewedDial
   const known = new Set(ids);
   const findings = list('findings').filter(f => known.has(String(f.id))).slice(0, 20).map(f => ({ id: String(f.id), kind: FINDING_KINDS.includes(String(f.kind)) ? String(f.kind) : 'other',
     reply_excerpt: typeof f.reply_excerpt === 'string' ? f.reply_excerpt.slice(0, 500) : '', note: typeof f.note === 'string' ? f.note.slice(0, 500) : '' }));
-  return { dialogs, findings };
+  return { ok, dialogs, findings };
+}
+
+/** Z12 review: what reaches the operator carries no client data — phones, e-mails, links and the client's names are cut. */
+export function withoutPersonalData(text: string, names: string[]): string {
+  let out = text.replace(/[^\s,;:«»()]+@[^\s,;:«»()]+\.[^\s,;:«»()]+/g, '…').replace(/https?:\/\/[^\s,;«»()]+/g, '…').replace(/\+?\d[\d\s().-]{6,}\d/g, '…');
+  for (const name of names.flatMap(n => [n, ...n.split(/\s+/)]).map(n => n.trim()).filter(n => n.length >= 2).sort((a, b) => b.length - a.length))
+    out = out.replace(new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'giu'), '…');
+  return out;
 }
 
 /** One tenant: claims the day (one report per day even after a restart), reviews, sends, keeps the findings. */
-export async function runTenantDailyReport(db: DatabaseClient, tenantId: string, session: string, provider: WhatsAppProvider, now = new Date(), ai?: AIProvider | null): Promise<'sent' | 'empty' | 'skipped'> {
+export async function runTenantDailyReport(db: DatabaseClient, tenantId: string, session: string, provider: WhatsAppProvider, now = new Date(), ai?: AIProvider | null): Promise<'sent' | 'empty' | 'skipped' | 'retry'> {
   const settings = await loadOwnerSettings(db, tenantId), config = behavior(settings), zone = settings.time_zone ?? DEFAULT_TIME_ZONE;
   const due = reportDue(settings, now);
   if (!due || isWithinQuietHours(settings, now) || !hasOwnerContact(settings)) return 'skipped';
-  const claimed = await db.from('owner_daily_reports').insert({ tenant_id: tenantId, report_date: due.reportDate }).select('tenant_id');
-  if (claimed.error?.code === '23505') return 'skipped';
-  check(claimed.error);
+  // The day is claimed as a lease (one report per day even after a restart); a failed or crashed attempt is tried again
+  // after the lease, at most DAILY_REPORT_MAX_ATTEMPTS times, then marked failed.
+  const claimed = await db.from('owner_daily_reports').insert({ tenant_id: tenantId, report_date: due.reportDate, claimed_at: now.toISOString() }).select('tenant_id');
+  let attempt = 1;
+  if (claimed.error?.code === '23505') {
+    const row = await db.from('owner_daily_reports').select('attempts,claimed_at,sent_at,failed_at').eq('tenant_id', tenantId).eq('report_date', due.reportDate).maybeSingle();check(row.error);
+    if (!row.data || row.data.sent_at || row.data.failed_at || new Date(String(row.data.claimed_at)).getTime() > now.getTime() - DAILY_REPORT_LEASE_MS) return 'skipped';
+    attempt = Number(row.data.attempts) + 1;
+    if (attempt > DAILY_REPORT_MAX_ATTEMPTS) { check((await db.from('owner_daily_reports').update({ failed_at: now.toISOString() }).eq('tenant_id', tenantId).eq('report_date', due.reportDate).is('sent_at', null)).error); console.error('daily_report_gave_up', { tenantId }); return 'skipped'; }
+    const taken = await db.from('owner_daily_reports').update({ attempts: attempt, claimed_at: now.toISOString() }).eq('tenant_id', tenantId).eq('report_date', due.reportDate).eq('claimed_at', String(row.data.claimed_at)).is('sent_at', null).select('tenant_id');check(taken.error);
+    if (!taken.data?.length) return 'skipped';
+  } else check(claimed.error);
+  const done = (values: Record<string, unknown>) => db.from('owner_daily_reports').update(values).eq('tenant_id', tenantId).eq('report_date', due.reportDate);
+  try {
   // Messages of the report day (two days back covers any zone), grouped by dialog.
   const rows = await db.from('messages').select('conversation_id,from_me,body,created_at').eq('tenant_id', tenantId)
     .gte('created_at', new Date(now.getTime() - 72 * 3_600_000).toISOString()).order('created_at', { ascending: true }).limit(5000);check(rows.error);
@@ -78,14 +99,16 @@ export async function runTenantDailyReport(db: DatabaseClient, tenantId: string,
   }
   // A dialog is a client's: at least one message from the client that day.
   const ids = [...dialogs.entries()].filter(([, list]) => list.some(m => !m.fromMe)).map(([id]) => id).slice(0, config.daily_report_max_dialogs);
-  if (!ids.length) { check((await db.from('owner_daily_reports').update({ conversations: 0 }).eq('tenant_id', tenantId).eq('report_date', due.reportDate)).error); return 'empty'; }
+  if (!ids.length) { check((await done({ conversations: 0, sent_at: now.toISOString() })).error); return 'empty'; }
   const facts = factsMarkdown(await activeFacts(db, tenantId), null);
   const transcript = ids.map(id => `--- id: ${id}\n${dialogs.get(id)!.slice(-config.daily_report_dialog_messages).map(m => `${m.fromMe ? 'Ассистент' : 'Клиент'}: ${m.text}`).join('\n')}`).join('\n\n');
   const model = ai === undefined ? meterAI(db, tenantId, createAIProvider(), { purpose: 'daily_review' }) : ai;
   let raw = '';
   try { raw = model ? (await model.generateReply({ systemPrompt: DAILY_REVIEW_PROMPT, userMessage: `ФАКТЫ:\n${facts || '(нет)'}\n\nДИАЛОГИ:\n${transcript}`, generation: { maxOutputTokens: 8192 } })).text : ''; }
-  catch { console.warn('daily_review_unavailable', { tenantId }); }
+  catch { console.warn('daily_review_unavailable', { tenantId, attempt }); }
   const review = parseReview(raw, ids);
+  // No model or no usable answer: nothing is sent as if it were the day's result — the next hour tries again.
+  if (!review.ok) { console.warn('daily_review_invalid', { tenantId, attempt }); return 'retry'; }
   // Names for the owner (their own clients): the name the client gave, else the WhatsApp name, else the phone.
   const conversations = await db.from('conversations').select('id,client_id').eq('tenant_id', tenantId).in('id', ids);check(conversations.error);
   const clientIds = (conversations.data ?? []).map(c => String(c.client_id));
@@ -102,13 +125,17 @@ export async function runTenantDailyReport(db: DatabaseClient, tenantId: string,
   });
   const date = zonedDateTimeFormat('ru', { day: '2-digit', month: '2-digit', year: 'numeric' }, 'UTC').format(new Date(`${due.reportDate}T12:00:00Z`));
   const text = renderText(settings, 'owner.daily_report', language, { date, total: String(ids.length), request: String(counts.request), in_progress: String(counts.in_progress), lost: String(counts.lost), info: String(counts.info_only), lines: lines.join('\n') });
-  if (review.findings.length) check((await db.from('quality_findings').insert(review.findings.map(f => ({ tenant_id: tenantId, conversation_id: f.id, report_date: due.reportDate, kind: f.kind, reply_excerpt: f.reply_excerpt || null, note: f.note || null })))).error);
   const { ownerChat, ownerChatAllowed } = await import('./owner-channels.service.js');
   const to = await ownerChat(db, provider, tenantId, session, settings, 'reports');
-  if (!ownerChatAllowed(to)) { console.warn('daily_report_channel_unavailable', { tenantId }); return 'skipped'; }
+  if (!ownerChatAllowed(to)) { console.warn('daily_report_channel_unavailable', { tenantId }); return 'retry'; }
   await enqueueMessage(db, tenantId, provider, { session, chatId: to, text }, { kind: 'summary', dedupeKey: `daily-report:${tenantId}:${due.reportDate}` });
-  check((await db.from('owner_daily_reports').update({ conversations: ids.length, sent_at: new Date().toISOString() }).eq('tenant_id', tenantId).eq('report_date', due.reportDate)).error);
+  // The operator's findings without client data: phones, e-mails, links and the names of that dialog's client are cut.
+  const namesOf = (id: string) => { const c = clientOf.get(id); return [c?.preferred_name, c?.name].filter((n): n is string => typeof n === 'string' && !!n.trim()); };
+  if (review.findings.length) check((await db.from('quality_findings').insert(review.findings.map(f => ({ tenant_id: tenantId, conversation_id: f.id, report_date: due.reportDate, kind: f.kind,
+    reply_excerpt: withoutPersonalData(f.reply_excerpt, namesOf(f.id)) || null, note: withoutPersonalData(f.note, namesOf(f.id)) || null })))).error);
+  check((await done({ conversations: ids.length, sent_at: new Date().toISOString() })).error);
   return 'sent';
+  } catch (error) { console.error('daily_report_attempt_failed', { tenantId, attempt }); throw error; }
 }
 
 async function systemValue(db: DatabaseClient, key: string): Promise<string> {
@@ -129,7 +156,7 @@ export async function runPlatformQualityReport(db: DatabaseClient, provider: Wha
   const tenantIds = [...new Set(open.data.map(f => String(f.tenant_id)))];
   const tenants = await db.from('tenants').select('id,name').in('id', tenantIds);check(tenants.error);
   const nameOf = new Map((tenants.data ?? []).map(t => [String(t.id), String(t.name ?? '')]));
-  const lines = open.data.map(f => `• ${nameOf.get(String(f.tenant_id)) || '—'} — ${f.kind}: «${String(f.reply_excerpt ?? '').slice(0, 200)}»${f.note ? ` (${String(f.note).slice(0, 200)})` : ''}`);
+  const lines = open.data.map(f => `• ${nameOf.get(String(f.tenant_id)) || '—'} — ${f.kind}: «${withoutPersonalData(String(f.reply_excerpt ?? ''), []).slice(0, 200)}»${f.note ? ` (${withoutPersonalData(String(f.note), []).slice(0, 200)})` : ''}`);
   const date = String(open.data.at(-1)!.report_date instanceof Date ? (open.data.at(-1)!.report_date as Date).toISOString() : open.data.at(-1)!.report_date).slice(0, 10);
   const settings = await loadOwnerSettings(db, tenant);
   const text = renderText(settings, 'operator.quality_report', 'ru', { date, count: String(open.data.length), lines: lines.join('\n') });

@@ -3,10 +3,11 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { codeChecks, emptyStats, formatInstructionReport, loadInstructionScenarios, tenantScenarios } from './instruction-eval.js';
 
-test('scenarios: 5 traps + 10 own per tenant, variables and owner name filled', () => {
+test('scenarios: 5 traps + own per tenant (BizGenie + 6 of the 26.10 dialog, Z12), variables and owner name filled', () => {
   const file = loadInstructionScenarios(readFileSync('evals/instructions/scenarios.yaml', 'utf8'));
   const biz = tenantScenarios(file, 'bizgenie', 'Юрий'), ira = tenantScenarios(file, 'ira', 'Ирена');
-  assert.equal(biz.length, 15); assert.equal(ira.length, 15);
+  assert.equal(biz.length, 21); assert.equal(ira.length, 15);
+  assert.deepEqual(biz.filter(x => x.id.startsWith('Z12-')).map(x => x.id), ['Z12-1', 'Z12-2', 'Z12-3', 'Z12-4', 'Z12-5', 'Z12-6']);
   assert.equal(biz[0]!.turns[0], 'Здравствуйте, это Юрий?');
   assert.ok([...biz, ...ira].every(s => s.turns.every(t => !/\{[a-z_0-9]+\}/.test(t))));
   assert.equal(ira.find(s => s.id === 'ira-T2')!.turns[0], 'делаете ли вы лазерную эпиляцию?');
