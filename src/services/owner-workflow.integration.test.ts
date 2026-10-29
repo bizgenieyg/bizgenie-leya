@@ -1073,6 +1073,8 @@ test('Z12 review: findings reach the operator without the client\'s name, phone,
   assert.equal(withoutPersonalData('Иры нет, передайте Ире, Иру ждём; Иркутск остаётся', ['Ира']), '… нет, передайте …, … ждём; Иркутск остаётся');
   assert.equal(withoutPersonalData('תודה לדנה, ודנה ביקשה; דנהל', ['דנה']), 'תודה …, … ביקשה; …');
   assert.equal(withoutPersonalData('Ян и Яну, Яна', ['Яна']), '… и …, …');
+  assert.equal(withoutPersonalData('Перезвоню Павлу, у Павла заказ, Павел ждёт, с Павлом', ['Павел']), 'Перезвоню …, у … заказ, … ждёт, с …');
+  assert.equal(withoutPersonalData('Льву передали, Лев доволен; Петру и Пётру', ['Лев', 'Пётр']), '… передали, … доволен; … и …');
   assert.equal(withoutPersonalData('Юрия попросили, Юрию передали', ['Юрий']), '… попросили, … передали');
   assert.equal(withoutPersonalData('Anna\'s order, Annabelle', ['Anna']), '…\'s order, Annabelle');
   assert.equal(withoutPersonalData('Анна Коэн, перезвоню на +972 50-123-4567 или anna@mail.com, https://x.co/a', ['Анна Коэн']), '…, перезвоню на … или …, …');
@@ -1119,18 +1121,21 @@ test('Z12: the operator message — all unreported findings once a day; without 
   await h.pg.query("update quality_findings set reported_at = date_trunc('day', now() at time zone 'Asia/Jerusalem') at time zone 'Asia/Jerusalem' + interval '1 minute' where reported_at is not null");
   assert.equal(await runPlatformQualityReport(h.db, h.provider), false, 'the same local day');
   await settleAllOutboundQueues(); assert.equal(h.sent.length, sentBefore);
-  await h.pg.query("update quality_findings set reported_at = now() - interval '25 hours' where reported_at is not null");
-  assert.equal(await runPlatformQualityReport(h.db, h.provider), true, 'the next day'); await settleAllOutboundQueues();
+  const day2 = new Date(Date.now() + 24 * 3_600_000), day3 = new Date(Date.now() + 48 * 3_600_000);
+  assert.equal(await runPlatformQualityReport(h.db, h.provider, day2), true, 'the next day'); await settleAllOutboundQueues();
   // The send went out but the mark failed; the retry with the same findings is deduped (no second message) and marks them.
   const sentAfter = h.sent.length;
   await h.pg.query("update quality_findings set reported_at = null where report_date = '2026-10-28'");
-  await runPlatformQualityReport(h.db, h.provider); await settleAllOutboundQueues();
+  await runPlatformQualityReport(h.db, h.provider, day2); await settleAllOutboundQueues();
   assert.equal(h.sent.length, sentAfter, 'same findings — no second message');
   assert.equal((await h.pg.query("select 1 from quality_findings where reported_at is null")).rows.length, 0);
-  // Same failure, but a finding came in before the retry: it goes out, not marked reported unsent.
+  // Same failure, but a finding came in before the retry: still one message that day; the findings that were in it are
+  // marked, the new one waits for tomorrow's message.
   await h.pg.query("update quality_findings set reported_at = null where report_date = '2026-10-28'");
-  await h.pg.query("insert into quality_findings(tenant_id,report_date,kind,reply_excerpt) values($1,'2026-10-28','other','новая находка')", [h.tenant]);
-  assert.equal(await runPlatformQualityReport(h.db, h.provider), true); await settleAllOutboundQueues();
-  assert.equal(h.sent.length, sentAfter + 1);
+  await h.pg.query("insert into quality_findings(tenant_id,report_date,kind,reply_excerpt,created_at) values($1,'2026-10-28','other','новая находка',now() + interval '1 second')", [h.tenant]);
+  assert.equal(await runPlatformQualityReport(h.db, h.provider, day2), false); await settleAllOutboundQueues();
+  assert.equal(h.sent.length, sentAfter, 'one message a day');
+  assert.deepEqual((await h.pg.query<{ reply_excerpt: string }>("select reply_excerpt from quality_findings where reported_at is null")).rows.map(r => r.reply_excerpt), ['новая находка']);
+  assert.equal(await runPlatformQualityReport(h.db, h.provider, day3), true, 'tomorrow'); await settleAllOutboundQueues();
   assert.match(h.sent.at(-1)!.text, /новая находка/);
 });
