@@ -23,7 +23,8 @@ export function ownerAnswerText(question:string,answer:string,settings?:OwnerSet
 }
 export function isDeferredAnswer(text:string):boolean {
   if (/(?:отвечу|скажу|уточню|напишу|проверю).{0,20}(?:позже|потом|завтра|утром)|(?:позже|потом|завтра|утром).{0,20}(?:отвечу|скажу|уточню|напишу|проверю)|^занят[а]?(?: сейчас)?[.!\s]*$/i.test(text.trim())) return true;
-  return /^(?:(?:отвечу|скажу|уточню|напишу|проверю)\s+)?(?:позже|потом|завтра|утром)(?:\s+(?:отвечу|скажу|напишу|проверю|уточню))?[.!\s]*$|^(?:занят[а]?|спокойной ночи|сейчас не могу|отвечу позже|later|tomorrow|i(?:'ll| will) (?:reply|answer) later|אענה אחר כך|מחר|אחר כך)[.!\s]*$/i.test(text.trim());
+  return /^(?:(?:отвечу|скажу|уточню|напишу|проверю)\s+)?(?:позже|потом|завтра|утром)(?:\s+(?:отвечу|скажу|напишу|проверю|уточню))?[.!\s]*$|^(?:занят[а]?|спокойной ночи|сейчас не могу|не сейчас|отвечу позже|later|tomorrow|i(?:'ll| will) (?:reply|answer) later|אענה אחר כך|מחר|אחר כך)[.!\s]*$/i.test(text.trim());
 }
 // Normalize only a known serialized message-ID structure; never infer a chat identity.
-export function replyId(id:string):string { return /^(?:true|false)_[^_]+_(.+)$/.exec(id)?.[1] ?? id; }
+// Z14: a group message id ends with its sender (true_<group>@g.us_<id>_<sender>@c.us) while a quote carries the bare id.
+export function replyId(id:string):string { return /^(?:true|false)_[^_]+_([^_]+)_\d+(?::\d+)?@(?:c\.us|s\.whatsapp\.net|lid)$/.exec(id)?.[1] ?? /^(?:true|false)_[^_]+_(.+)$/.exec(id)?.[1] ?? id; }

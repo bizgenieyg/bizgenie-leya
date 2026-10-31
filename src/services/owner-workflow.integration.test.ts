@@ -53,7 +53,7 @@ async function pgHarness({ withGroups = true }: { withGroups?: boolean } = {}) {
     async getSessionStatus() { return { status: 'WORKING', me: { id: '972500000009@c.us', lid: '99999999@lid' } }; },
     async sendMessage(input) {
       if (failClient && input.chatId === customer) throw new Error('network');
-      const id = `true_${input.chatId}_MSG${sent.length}`;
+      const id = input.chatId.endsWith('@g.us') ? `true_${input.chatId}_MSG${sent.length}_972500000009@c.us` : `true_${input.chatId}_MSG${sent.length}`;
       sent.push({ ...input, id });
       return { id };
     },
@@ -1170,4 +1170,115 @@ test('Z12: the operator message — all unreported findings once a day; without 
   assert.match(h.sent.at(-1)!.text, /после сбоя/);
   assert.equal(await runPlatformQualityReport(h.db, h.provider, day5), false);
   assert.deepEqual(await unmarked(), []);
+});
+
+// ---------------------------------------------------------------- Z14: owner reply in the group, request card, reminder, foreign groups
+const groupReply = (quoted: string, text: string) => { const b = JSON.parse(readFileSync('src/services/fixtures/gows-owner-group-reply.json', 'utf8'));
+  b.payload.body = text; b.payload._data.Message.extendedTextMessage.text = text; b.payload.replyTo.id = quoted; b.payload._data.Message.extendedTextMessage.contextInfo.stanzaID = quoted; return b; };
+const inboundRow = (h: Awaited<ReturnType<typeof pgHarness>>, payload: Record<string, unknown>) => ({ id: randomUUID(), tenant_id: h.tenant, waha_event_id: randomUUID(), chat_id: String((payload.payload as Record<string, unknown> | undefined)?.from ?? 'system'), kind: 'ignored', payload, received_at: new Date().toISOString(), process_after: new Date().toISOString(), status: 'processing', attempts: 0 });
+async function requestInGroup(h: Awaited<ReturnType<typeof pgHarness>>) {
+  await h.pg.query("update notification_settings set owner_chat_id='77777777@lid' where tenant_id=$1", [h.tenant]);
+  await h.pg.query("update owner_channels set owner_chat='77777777@lid' where tenant_id=$1", [h.tenant]);
+  await h.pg.query("insert into whatsapp_instances(tenant_id,waha_url,session_name,status) values($1,'http://waha','session','WORKING') on conflict (tenant_id) do update set session_name='session'", [h.tenant]);
+  invalidateOwnerSettings(h.db, h.tenant);
+  await createEscalation(h.db, h.provider, { tenant_id: h.tenant, conversation_id: h.conversationId, client_chat_id: customer, client_name: 'Diana✨', question: 'consultation\nname: Диана\nservice: AI-ассистент', session: 'session', inbound_id: randomUUID(), client_phone: '972500000077' },
+    { ...h.settings, owner_chat_id: '77777777@lid' }, null, { kind: 'request', clientText: 'Передала.' }); await settleAllOutboundQueues();
+  const id = (await h.pg.query<{ id: string }>("select id from escalations where kind='request' order by created_at desc limit 1")).rows[0]!.id;
+  const notice = h.sent.find(m => m.chatId === needsAnswer)!;
+  return { id, notice, bare: /_(MSG\d+)_/.exec(notice.id)![1]! };
+}
+const forwardAI = (calls: string[]) => ({ async generateReply(input: { systemPrompt: string; userMessage: string }) {
+  calls.push(input.systemPrompt.slice(0, 40));
+  if (input.systemPrompt.includes('Ответь одним словом: ANSWER или DEFER')) return { text: /позже|не сейчас/i.test(input.userMessage) ? 'DEFER' : 'ANSWER' };
+  if (input.systemPrompt.includes('"intro"')) return { text: JSON.stringify({ intro: 'Уточнила у Юрия насчёт консультации по AI-ассистенту', follow_up: 'Если появятся вопросы до встречи — пишите.' }) };
+  return { text: '' };
+} });
+
+test('Z14: the owner\'s reply in the «Нужен ответ» group (real GOWS payload, @lid sender, quote of the request) reaches the client; no reminders', async () => {
+  const { processRows } = await import('../workers/inbound-queue.js');
+  const { handleOwnerGroupMessage } = await import('./owner-group-inbound.service.js');
+  const { runEscalationTimeouts } = await import('./owner-workflow.service.js');
+  const { filterIncoming } = await import('../utils/incoming-policy.js');
+  const h = await pgHarness();
+  const { id, notice, bare } = await requestInGroup(h);
+  assert.match(notice.id, /^true_120363000000001@g\.us_MSG\d+_972500000009@c\.us$/, 'a group id carries the sender, as in production');
+  const body = groupReply(bare, 'Завтра на встрече обсудим');
+  assert.equal((filterIncoming(body) as { reason?: string }).reason, 'non_private_chat');
+  const calls: string[] = [];
+  assert.equal(await handleOwnerGroupMessage(h.db, h.tenant, body, h.provider, forwardAI(calls)), true, 'the owner\'s group message is handled');
+  await settleAllOutboundQueues();
+  const toClient = h.sent.filter(m => m.chatId === customer).at(-1)!;
+  assert.equal(toClient.text, 'Уточнила у Юрия насчёт консультации по AI-ассистенту:\n\n«Завтра на встрече обсудим»\n\nЕсли появятся вопросы до встречи — пишите.');
+  assert.ok(['delivered', 'answered', 'delivering'].includes((await h.escalation(id)).status));
+  const before = h.sent.length;
+  await runEscalationTimeouts(h.db, () => h.provider, new Date(Date.now() + 5 * 3_600_000)); await settleAllOutboundQueues();
+  assert.ok(!h.sent.slice(before).some(m => /Напоминание/.test(m.text)), 'no reminder after the answer');
+  // The same path through the inbound worker (no model: the answer goes as «… пишет»).
+  const g = await pgHarness();
+  const second = await requestInGroup(g);
+  await processRows(g.db, [inboundRow(g, groupReply(second.bare, 'Позвоню ему вечером'))]); await settleAllOutboundQueues();
+  assert.match(g.sent.filter(m => m.chatId === customer).at(-1)!.text, /«Позвоню ему вечером»/);
+});
+
+test('Z14: a postponement is only a word to the assistant — arrangements and plans go to the client', async () => {
+  const { classifyOwnerReply } = await import('./owner-forward.service.js');
+  const calls: string[] = [];
+  for (const text of ['Завтра на встрече обсудим', 'Позвоню ему вечером']) assert.equal(await classifyOwnerReply('заявка', text, forwardAI(calls)), 'ANSWER', text);
+  for (const text of ['позже', 'Не сейчас']) assert.equal(await classifyOwnerReply('заявка', text, forwardAI(calls)), 'DEFER', text);
+  const { OWNER_REPLY_CLASSIFIER_PROMPT } = await import('../config/instructions.js');
+  assert.match(OWNER_REPLY_CLASSIFIER_PROMPT, /завтра на встрече обсудим/); assert.match(OWNER_REPLY_CLASSIFIER_PROMPT, /Сомневаешься — ANSWER/);
+});
+
+test('Z14: a request without the model\'s card — a readable card (no label keys), the client\'s words; the reminder repeats it after 4 hours', async () => {
+  const { runEscalationTimeouts } = await import('./owner-workflow.service.js');
+  const { fallbackRequestCard } = await import('./request-card.js');
+  const h = await pgHarness();
+  const { id, notice } = await requestInGroup(h);
+  assert.equal(notice.text, '📩 Заявка\n👤 Клиент: Диана\n📞 Хочет: консультация\n• Услуга: AI-ассистент\n📱 +972 50-000-0077\n\nОтветьте реплеем — передам клиенту.');
+  assert.doesNotMatch(notice.text, /consultation|name:|service:/);
+  assert.equal(fallbackRequestCard(h.settings, 'ru', { name: 'Diana', type: 'weird_type', fields: { color_code: 'синий' }, clientMessages: ['Здравствуйте', 'Хочу консультацию', 'Когда можно?', 'Завтра удобно'] }),
+    '👤 Клиент: Diana\n📞 Хочет: заявка\n• Детали: синий\n💬 Клиент писал:\n«Хочу консультацию»\n«Когда можно?»\n«Завтра удобно»');
+  const start = new Date('2026-10-31T06:00:00Z');
+  await h.pg.query('update escalations set pending_since=$2,created_at=$2 where id=$1', [id, start.toISOString()]);
+  const reminders = () => h.sent.filter(m => /Напоминание/.test(m.text));
+  await runEscalationTimeouts(h.db, () => h.provider, new Date(start.getTime() + 2.1 * 3_600_000)); await settleAllOutboundQueues();
+  assert.equal(reminders().length, 0, 'not after 2 hours');
+  await runEscalationTimeouts(h.db, () => h.provider, new Date(start.getTime() + 4.1 * 3_600_000)); await settleAllOutboundQueues();
+  assert.equal(reminders().length, 1);
+  assert.equal(reminders()[0]!.text, '🔔 Напоминание — заявка ждёт ответа:\n👤 Клиент: Диана\n📞 Хочет: консультация\n• Услуга: AI-ассистент\n📱 +972 50-000-0077\n\nОтветьте реплеем на это сообщение 🙏');
+});
+
+test('Z14: migration 070 drops the stored pre-Z12 reminder default (120) and keeps a deliberate value', async () => {
+  const h = await pgHarness();
+  const sql = readFileSync('supabase/migrations/20261031090000_070_reset_old_remind_default.sql', 'utf8');
+  await h.pg.query("update notification_settings set behavior='{\"escalation_remind_minutes\":120,\"owner_language\":\"ru\"}'::jsonb where tenant_id=$1", [h.tenant]);
+  await h.pg.exec(sql);
+  assert.deepEqual((await h.notificationSettings()).behavior, { owner_language: 'ru' });
+  await h.pg.query("update notification_settings set behavior='{\"escalation_remind_minutes\":300}'::jsonb where tenant_id=$1", [h.tenant]);
+  await h.pg.exec(sql);
+  assert.deepEqual((await h.notificationSettings()).behavior, { escalation_remind_minutes: 300 });
+});
+
+test('Z14: the business number added to and removed from a foreign group — no reply, no client, no dialog, nothing to the owner', async () => {
+  const { processRows } = await import('../workers/inbound-queue.js');
+  const h = await pgHarness();
+  await h.pg.query("insert into whatsapp_instances(tenant_id,waha_url,session_name,status) values($1,'http://waha','session','WORKING') on conflict (tenant_id) do update set session_name='session'", [h.tenant]);
+  const count = async (table: string) => Number((await h.pg.query<{ c: string }>(`select count(*)::text c from ${table} where tenant_id=$1`, [h.tenant])).rows[0]!.c);
+  const before = { clients: await count('clients'), conversations: await count('conversations'), escalations: await count('escalations'), messages: await count('messages') };
+  const foreign = '120363999999999@g.us';
+  const events = [
+    { event: 'group.v2.join', session: 'session', payload: { group: { id: foreign, subject: 'Чужая группа' }, timestamp: 1 } },
+    { event: 'group.v2.participants', session: 'session', payload: { group: { id: foreign }, type: 'add', participants: [{ id: '972500000009@c.us' }] } },
+    groupReply('NOTHING', 'Всем привет, сколько стоит?'),
+    { event: 'group.v2.leave', session: 'session', payload: { group: { id: foreign } } },
+  ];
+  const message = events[2] as ReturnType<typeof groupReply>;
+  message.payload.from = foreign; message.payload._data.Info.Chat = foreign; message.payload.participant = '55555555@lid'; message.payload._data.Info.Sender = '55555555@lid';
+  for (const payload of events) await processRows(h.db, [inboundRow(h, payload as Record<string, unknown>)]);
+  // From the owner too: a foreign group is not an owner group.
+  const fromOwner = groupReply('NOTHING', 'Это я, владелец'); fromOwner.payload.from = foreign; fromOwner.payload._data.Info.Chat = foreign;
+  await processRows(h.db, [inboundRow(h, fromOwner)]);
+  await settleAllOutboundQueues();
+  assert.equal(h.sent.length, 0, 'nothing sent anywhere');
+  assert.deepEqual({ clients: await count('clients'), conversations: await count('conversations'), escalations: await count('escalations'), messages: await count('messages') }, before);
 });

@@ -16,7 +16,7 @@ import { recordUsageEvent } from './usage.service.js';
  * Returns true when the message was the owner's in an owner group.
  */
 export async function handleOwnerGroupMessage(db: DatabaseClient, tenantId: string, body: Record<string, unknown>,
-  whatsapp?: WhatsAppProvider): Promise<boolean> {
+  whatsapp?: WhatsAppProvider, ai?: import('../providers/ai/ai-provider.interface.js').AIProvider | null): Promise<boolean> {
   const message = await ownerGroupMessage(db, tenantId, body, (id, chat, text) => isOwnQueuedSend(db, tenantId, id, [chat], text, new Date()));
   if (!message) return false;
   const routing = await getTenantRouting(db, tenantId);
@@ -25,7 +25,7 @@ export async function handleOwnerGroupMessage(db: DatabaseClient, tenantId: stri
   const provider = whatsapp ?? createWhatsAppProvider();
   const settings = await loadOwnerSettings(db, tenantId);
   const handled = await handleOwnerMessage(db, provider, tenantId, session, message.from, message.text, message.quoted, settings,
-    meterAI(db, tenantId, createAIProvider()), message.id, message.chat);
+    ai === undefined ? meterAI(db, tenantId, createAIProvider()) : ai, message.id, message.chat);
   if (handled) await recordUsageEvent(db, { tenantId, eventType: 'message_observed', eventKey: message.id ?? `${message.chat}:${Date.now()}`, metadata: { reason: 'owner_control', billable: false } });
   return handled;
 }

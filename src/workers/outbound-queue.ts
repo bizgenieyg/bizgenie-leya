@@ -91,7 +91,7 @@ export async function enqueueMessage(db: DatabaseClient, tenantId: string, provi
 export async function outboundIdsForProviderId(db: DatabaseClient, tenantId: string, providerId: string): Promise<string[]> {
   if (!providerId) return [];
   const short = replyId(providerId);
-  const rows = await db.from('outbound_messages').select('id,waha_msg_id').eq('tenant_id', tenantId).like('waha_msg_id', `%${short}`);
+  const rows = await db.from('outbound_messages').select('id,waha_msg_id').eq('tenant_id', tenantId).like('waha_msg_id', `%${short}%`);
   if (rows.error) throw new Error('Outbound id lookup failed');
   return (rows.data ?? []).filter(row => typeof row.waha_msg_id === 'string' && (row.waha_msg_id === providerId || replyId(row.waha_msg_id) === short))
     .map(row => String(row.id));

@@ -1,0 +1,24 @@
+{
+  "id": "evt_test_owner_group_reply",
+  "me": { "id": "972500000009@c.us", "jid": "972500000009:2@s.whatsapp.net", "lid": "99999999@lid", "pushName": "Business" },
+  "event": "message.any",
+  "session": "session",
+  "payload": {
+    "id": "false_120363000000001@g.us_2AD601FE058F3E8424AE_77777777@lid",
+    "to": "77777777@lid",
+    "ack": 2,
+    "body": "Завтра на встрече обсудим",
+    "from": "120363000000001@g.us",
+    "_data": {
+      "Info": { "ID": "2AD601FE058F3E8424AE", "Chat": "120363000000001@g.us", "Type": "text", "Sender": "77777777@lid", "IsGroup": true, "IsFromMe": false,
+        "PushName": "Owner", "SenderAlt": "972500000002@s.whatsapp.net", "AddressingMode": "lid" },
+      "IsEdit": false, "Status": 3,
+      "Message": { "messageContextInfo": {}, "extendedTextMessage": { "text": "Завтра на встрече обсудим",
+        "contextInfo": { "stanzaID": "QUOTED_ID", "quotedType": 0, "participant": "99999999@lid", "quotedMessage": { "conversation": "📩 Заявка" } } } }
+    },
+    "media": null, "fromMe": false, "source": "app", "vCards": null,
+    "replyTo": { "id": "QUOTED_ID", "body": "📩 Заявка", "media": null, "hasMedia": false, "participant": "99999999@lid" },
+    "hasMedia": false, "location": null, "timestamp": 1793464646,
+    "participant": "77777777@lid"
+  }
+}

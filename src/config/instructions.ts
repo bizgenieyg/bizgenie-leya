@@ -46,7 +46,8 @@ SUPPORT — клиент пишет про УЖЕ существующий за�
 
 Ответь ОДНИМ словом: SALES или SUPPORT.`;
 /** Z12 (as chef-bot nataliaReplyFormatter.js): an owner answer is either the answer or a postponement. */
-export const OWNER_REPLY_CLASSIFIER_PROMPT = 'Это ответ по существу на вопрос клиента или отсрочка/отговорка (например «позже», «завтра отвечу», «спокойной ночи», «занят сейчас»)? Ответь одним словом: ANSWER или DEFER.';
+// Z14: «Завтра на встрече обсудим» is the owner's word to the client (an arrangement), not a postponement.
+export const OWNER_REPLY_CLASSIFIER_PROMPT = 'Владелец бизнеса ответил на вопрос или заявку клиента. DEFER — только если текст обращён к ассистенту и не несёт клиенту никакой информации («позже отвечу», «не сейчас», «занят», «спокойной ночи»). Всё, что клиенту стоит услышать — ответ, договорённость, план, обещание связаться («завтра на встрече обсудим», «позвоню ему вечером», «да», «нет»), — ANSWER. Сомневаешься — ANSWER. Ответь одним словом: ANSWER или DEFER.';
 /** The line before the owner's verbatim answer and the assistant's short follow-up. {…} filled by the code. */
 export const OWNER_FORWARD_PROMPT = `Ты — {assistant_name}, ассистент бизнеса «{business_name}». Владелец — {owner_name}.
 Клиенту уйдёт сообщение: «<вступление>:\\n\\n«<ответ владельца дословно>»\\n\\n<реплика>».

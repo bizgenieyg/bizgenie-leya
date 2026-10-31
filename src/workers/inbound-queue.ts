@@ -67,7 +67,7 @@ export async function enqueueInbound(db: DatabaseClient, tenantId: string, body:
   return true;
 }
 
-async function processRows(db: DatabaseClient, rows: InboundRow[]): Promise<void> {
+export async function processRows(db: DatabaseClient, rows: InboundRow[]): Promise<void> {
   const first = rows[0]!;
   const sessionStatus = sessionStatusFromWebhook(first.payload);
   if (sessionStatus) { await updateSessionStatus(db, first.tenant_id, sessionStatus); return; }

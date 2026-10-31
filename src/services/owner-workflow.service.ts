@@ -24,6 +24,7 @@ import { hasOwnerContact, invalidateOwnerSettings, isBusinessOwner, loadOwnerSet
 import { ownerChat, ownerChatAllowed } from './owner-channels.service.js';
 import { nextEscalationDeadline } from './escalation-deadline.js';
 import { scheduleWake } from '../workers/job-wake.js';
+import { fallbackRequestCard, parseRequestSummary } from './request-card.js';
 
 export interface Escalation {
   id:string;tenant_id:string;conversation_id:string;client_chat_id:string;client_name:string;question:string;session:string;
@@ -129,10 +130,21 @@ async function escalationPhone(db:DatabaseClient,e:Escalation):Promise<string|nu
   const client=await db.from('clients').select('phone').eq('tenant_id',e.tenant_id).eq('id',conversation.data.client_id).maybeSingle();check(client.error);
   return storedPhone(client.data?.phone);
 }
+/**
+ * Z14: the owner's card of a request — the model's, else built by the code from the stored label summary
+ * (type + «key: value»), never the raw keys. Null for a request whose summary is not a label (older free text).
+ */
+function requestCard(e:Escalation,settings:OwnerSettings):string|null{
+  if(e.owner_card?.trim())return clientText(e.owner_card);
+  if(e.kind!=='request')return null;
+  const parsed=parseRequestSummary(e.question);
+  return parsed.type?fallbackRequestCard(settings,behavior(settings).owner_language,{name:e.client_name??'',...parsed}):null;
+}
 /** 📩 request notice: what the client asks (+ named time) and up to two facts Leya already knows. */
 async function requestNotice(db:DatabaseClient,e:Escalation,settings:OwnerSettings,phone:string|null):Promise<string>{
   // Z12: the card the model wrote (👤 Клиент, 📞 Хочет, 🕐 Удобно, 📝 Детали) + the client's phone from the code.
-  if(e.owner_card?.trim()){const text=renderText(settings,'owner.request_card',behavior(settings).owner_language,{card:clientText(e.owner_card),phone:phone??''});return phone?text:text.replace(/\n📱 \n/,'\n');}
+  const card=requestCard(e,settings);
+  if(card){const text=renderText(settings,'owner.request_card',behavior(settings).owner_language,{card,phone:phone??''});return phone?text:text.replace(/\n📱 \n/,'\n');}
   const conversation=await db.from('conversations').select('client_id').eq('tenant_id',e.tenant_id).eq('id',e.conversation_id).maybeSingle();check(conversation.error);
   const profile=conversation.data?.client_id?await loadClientProfile(db,e.tenant_id,String(conversation.data.client_id)):'';
   const known=profile.split('\n').map(line=>line.replace(/^- \d{2}\.\d{2}: /,'').trim()).filter(Boolean).slice(-2);
@@ -454,8 +466,10 @@ export async function runEscalationTimeouts(db:DatabaseClient,providerFor:()=>Wh
     // Z12 (as chef-bot): the reminder quotes the original question (its WhatsApp id), so a tap jumps to it.
     const original=e.owner_message_ids[0]?await db.from('outbound_messages').select('waha_msg_id').eq('tenant_id',e.tenant_id).eq('id',e.owner_message_ids[0]).maybeSingle():null;
     const replyTo=typeof original?.data?.waha_msg_id==='string'?original.data.waha_msg_id:undefined;
-    try{const phone=formatPhone(await escalationPhone(db,e)),remind=renderText(settings,'owner.remind',config.owner_language,{name:e.client_name,phone:phone??'',question:e.question});
-     const id=await send(db,e.tenant_id,provider,e.session,to,phone?remind:remind.replace(/\s*\(\s*\)/,''),'reminder',`escalation:${e.id}:remind${(e.reminder_count??0)>0?`:${(e.reminder_count??0)+1}`:''}`,[],replyTo);
+    // Z14: a request's reminder repeats its card (the same human text), not the stored label fields.
+    try{const phone=formatPhone(await escalationPhone(db,e)),card=requestCard(e,settings);
+     const remind=card?renderText(settings,'owner.remind_request',config.owner_language,{card,phone:phone??''}):renderText(settings,'owner.remind',config.owner_language,{name:e.client_name,phone:phone??'',question:e.question});
+     const id=await send(db,e.tenant_id,provider,e.session,to,card?(phone?remind:remind.replace(/\n📱 \n/,'\n')):(phone?remind:remind.replace(/\s*\(\s*\)/,'')),'reminder',`escalation:${e.id}:remind${(e.reminder_count??0)>0?`:${(e.reminder_count??0)+1}`:''}`,[],replyTo);
      await patch(db,e,{status:'pending',reminded_at:now.toISOString(),reminder_count:(e.reminder_count??0)+1,owner_message_ids:[...e.owner_message_ids,id]});
     }catch{await patch(db,e,{status:'pending',reminded_at:now.toISOString(),reminder_count:(e.reminder_count??0)+1});console.error('escalation_reminder_uncertain',{tenantId:e.tenant_id,escalationId:e.id});}
     // Some questions of the batch are answered while this one still waits: send what we have.

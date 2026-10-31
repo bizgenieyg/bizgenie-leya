@@ -1,6 +1,10 @@
 export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
   // Z12: the owner cycle as in chef-bot; the daily report; the operator's quality review.
   "owner.request_card": {"ru": "📩 Заявка\n{card}\n📱 {phone}\n\nОтветьте реплеем — передам клиенту.", "he": "📩 בקשה\n{card}\n📱 {phone}\n\nהשיבו בציטוט — אעביר ללקוח.", "en": "📩 Request\n{card}\n📱 {phone}\n\nReply to this message — I'll pass it to the client."},
+  // Z14: the card built by the code when the model wrote none; the reminder of a request repeats the card.
+  "owner.request_fallback_card": {"ru": "👤 Клиент: {name}\n📞 Хочет: {type}{fields}{messages}", "he": "👤 לקוח: {name}\n📞 מבקש: {type}{fields}{messages}", "en": "👤 Client: {name}\n📞 Wants: {type}{fields}{messages}"},
+  "owner.request_fallback_messages": {"ru": "💬 Клиент писал:\n{messages}", "he": "💬 הלקוח כתב:\n{messages}", "en": "💬 The client wrote:\n{messages}"},
+  "owner.remind_request": {"ru": "🔔 Напоминание — заявка ждёт ответа:\n{card}\n📱 {phone}\n\nОтветьте реплеем на это сообщение 🙏", "he": "🔔 תזכורת — בקשה מחכה לתשובה:\n{card}\n📱 {phone}\n\nנא להשיב בציטוט להודעה זו 🙏", "en": "🔔 Reminder — a request is waiting for your answer:\n{card}\n📱 {phone}\n\nReply to this message 🙏"},
   "owner.human_request": {"ru": "Клиент просит связаться с вами лично.", "he": "הלקוח מבקש שתיצרו איתו קשר אישית.", "en": "The client asks you to contact them personally."},
   "owner.client_left": {"ru": "Клиент уже попрощался — ответ не пересылаю, сохранила в знания.", "he": "הלקוח כבר נפרד — לא מעבירה את התשובה, שמרתי אותה בידע.", "en": "The client has already said goodbye — I'm not forwarding the answer; I saved it to the knowledge."},
   "client.model_apology": {"ru": "Прошу прощения, небольшая заминка. Напишите, пожалуйста, ещё раз через минуту.", "he": "סליחה, יש תקלה קטנה. אפשר לכתוב שוב בעוד דקה?", "en": "Sorry, a small hiccup. Please write again in a minute."},

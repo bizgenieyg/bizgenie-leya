@@ -16,6 +16,7 @@ import { meterAI } from './metered-providers.js';
 import { behavior } from './runtime-settings.service.js';
 import { agentIntent, asksListedQuestion, discoveryGate, markAnswered, normalizeDialogState, replyQuestions, untilFirstQuestion, type DialogState, type DiscoveryGate } from './dialog-state.js';
 import { isAcknowledgement, isBareGreeting, withoutLeadingGreeting } from '../utils/small-talk.js';
+import { fallbackRequestCard } from './request-card.js';
 import { analyzeChatHistory } from './chat-history-analysis.service.js';
 import { assignConversationRoute } from './conversation-routing.service.js';
 import { registry } from '../agents/index.js';
@@ -278,7 +279,10 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
           delete state.pending_offer;
           // Z12: a request closes the role; the next message chooses again.
           delete state.role;
-          const reply = await sink.createRequest(language, a.summary, clientReply(a.text), clientFirstName(), a.card);
+          // Z14: no card from the model → the code builds a readable one (never the label keys) with the client's words.
+          const card = a.card?.trim() || fallbackRequestCard(settings, config.owner_language, { name: clientFirstName() ?? client.name ?? '', type: a.request.type, fields: a.request.fields,
+            clientMessages: memory.messages.filter(m => !m.fromMe).map(m => m.text) });
+          const reply = await sink.createRequest(language, a.summary, clientReply(a.text), clientFirstName(), card);
           await sink.recordUsage('request_created');
           if (reply) memory.introduced = true;
           state.stage = 'request';
