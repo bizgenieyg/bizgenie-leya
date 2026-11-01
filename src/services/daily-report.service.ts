@@ -125,7 +125,7 @@ export async function runTenantDailyReport(db: DatabaseClient, tenantId: string,
       const { ownerChat, ownerChatAllowed } = await import('./owner-channels.service.js');
       const to = await ownerChat(db, provider, tenantId, session, settings, 'reports');
       if (!ownerChatAllowed(to)) { console.warn('daily_report_channel_unavailable', { tenantId }); return 'retry'; }
-      await enqueueMessage(db, tenantId, provider, { session, chatId: to, text: pausedLine }, { kind: 'summary', dedupeKey: `daily-report:${tenantId}:${due.reportDate}` });
+      await enqueueMessage(db, tenantId, provider, { session, chatId: to, text: `${pausedLine}\n\n${await helpLine(db, tenantId, settings)}` }, { kind: 'summary', dedupeKey: `daily-report:${tenantId}:${due.reportDate}` });
     }
     check((await done({ conversations: 0, sent_at: now.toISOString() })).error); return 'empty';
   }
@@ -157,7 +157,7 @@ export async function runTenantDailyReport(db: DatabaseClient, tenantId: string,
   const { ownerChat, ownerChatAllowed } = await import('./owner-channels.service.js');
   const to = await ownerChat(db, provider, tenantId, session, settings, 'reports');
   if (!ownerChatAllowed(to)) { console.warn('daily_report_channel_unavailable', { tenantId }); return 'retry'; }
-  await enqueueMessage(db, tenantId, provider, { session, chatId: to, text: pausedLine ? `${pausedLine}\n\n${text}` : text }, { kind: 'summary', dedupeKey: `daily-report:${tenantId}:${due.reportDate}` });
+  await enqueueMessage(db, tenantId, provider, { session, chatId: to, text: `${pausedLine ? `${pausedLine}\n\n` : ''}${text}\n\n${await helpLine(db, tenantId, settings)}` }, { kind: 'summary', dedupeKey: `daily-report:${tenantId}:${due.reportDate}` });
   // The operator's findings without client data: phones, e-mails, links and the names of that dialog's client are cut.
   const namesOf = (id: string) => { const c = clientOf.get(id); return [c?.preferred_name, c?.name].filter((n): n is string => typeof n === 'string' && !!n.trim()); };
   if (review.findings.length) check((await db.from('quality_findings').insert(review.findings.map(f => ({ tenant_id: tenantId, conversation_id: f.id, report_date: due.reportDate, kind: f.kind,
@@ -165,6 +165,12 @@ export async function runTenantDailyReport(db: DatabaseClient, tenantId: string,
   check((await done({ conversations: ids.length, sent_at: new Date().toISOString() })).error);
   return 'sent';
   } catch (error) { console.error('daily_report_attempt_failed', { tenantId, attempt }); throw error; }
+}
+
+/** Z16: the report's last line — where to ask for help. */
+async function helpLine(db: DatabaseClient, tenantId: string, settings: OwnerSettings): Promise<string> {
+  const { channelName } = await import('./owner-channels.service.js');
+  return renderText(settings, 'owner.daily_report_help', behavior(settings).owner_language, { group: await channelName(db, tenantId, settings, 'needs_answer') });
 }
 
 async function systemValue(db: DatabaseClient, key: string): Promise<string> {
@@ -218,6 +224,7 @@ export async function runDailyReports(db: DatabaseClient, providerFor: () => Wha
     catch { console.error('daily_report_failed', { tenantId: row.tenant_id }); }
   }
   try { await runPlatformQualityReport(db, providerFor(), now); } catch { console.error('quality_report_failed'); }
-  // Z15: «Нужен ответ» groups created before the hint get it once.
+  // Z16: both owner groups for owners connected before; then every group's welcome, once.
+  try { const { ensureAllOwnerChannels } = await import('./owner-channels.service.js'); await ensureAllOwnerChannels(db, providerFor); } catch { console.error('owner_channels_ensure_failed'); }
   try { const { sendPendingHints } = await import('./owner-channels.service.js'); await sendPendingHints(db, providerFor); } catch { console.error('owner_channel_hints_failed'); }
 }

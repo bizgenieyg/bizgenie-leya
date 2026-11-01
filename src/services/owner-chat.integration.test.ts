@@ -6,7 +6,9 @@ import { OWNER_GROUPS, seedOwnerGroups } from './test-support/owner-groups.js';
 import { handleOwnerMessage } from './owner-workflow.service.js';
 import { invalidateOwnerSettings, loadOwnerSettings } from './owner-settings.service.js';
 import { handleOwnerGroupMessage } from './owner-group-inbound.service.js';
-import { sendPendingHints } from './owner-channels.service.js';
+import { createHash } from 'node:crypto';
+import { ensureAllOwnerChannels, sendPendingHints } from './owner-channels.service.js';
+import { runDailyReports } from './daily-report.service.js';
 import { settleAllOutboundQueues, stopOutboundQueue } from '../workers/outbound-queue.js';
 
 process.env.GEMINI_API_KEY = '';
@@ -14,6 +16,7 @@ process.env.SUPABASE_URL = 'https://database.invalid';
 process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-only';
 
 const owner = '972500000002@c.us', group = OWNER_GROUPS.needsAnswer, supportGroup = '120363000000099@g.us', operator = '972500000077';
+const REPORTS = 'Сюда каждое утро приходит отчёт за вчера: кто писал, кто оставил заявку, кто ушёл и почему. Здесь тоже можно спросить ассистента — напишите „помощь“.';
 const HELP = 'Сюда приходят вопросы клиентов и заявки — отвечайте реплеем.\nМожно писать обычными словами:\n• правило: „не спрашивай город“\n• настройка: „не пиши мне после 22:00“\n• „стоп“ — остановить все ответы, „включи“ — вернуть\n• проблема или пожелание — передам в BizGenie\n• „что ты умеешь?“ — покажу всё';
 
 /** Z15: the owner writes in «Нужен ответ»; the task model is a stub answering the next queued JSON. A platform tenant (BizGenie) has the support group. */
@@ -161,7 +164,7 @@ test('Z15: a request to BizGenie → «Передать?» → support_requests 
     await reply('111111111@lid', `${operator}@s.whatsapp.net`, 'Посмотрел — была пауза диалога, сейчас всё работает.', 'OP1');
     await settleAllOutboundQueues();
     const answer = f.sent.at(-1)!;
-    assert.deepEqual([answer.session, answer.chatId, answer.text], ['session', group, 'Ответ BizGenie: «Посмотрел — была пауза диалога, сейчас всё работает.»']);
+    assert.deepEqual([answer.session, answer.chatId, answer.text], ['session', group, 'Ответ BizGenie: «Посмотрел — была пауза диалога, сейчас всё работает.»\n\nОтветьте реплеем, если нужно уточнить.']);
     assert.equal((await f.pg.query<{ status: string }>('select status from support_requests')).rows[0]!.status, 'answered');
     // The owner quotes the answer — the same request, to the operator again.
     assert.equal((await f.say('а почему пауза включилась?', answer.id)).last.text, 'Передала в BizGenie');
@@ -191,7 +194,7 @@ test('Z15: a quote of the assistant\'s answer to a client with a correction → 
   } finally { await f.close(); }
 });
 
-test('Z15: the hint goes once to a «Нужен ответ» group created before — description and first message', async () => {
+test('Z15/Z16: the welcome goes once to each owner group created before — description and first message', async () => {
   const f = await fixture();
   try {
     await f.pg.query('update owner_channels set hint_sent_at=null');
@@ -199,8 +202,68 @@ test('Z15: the hint goes once to a «Нужен ответ» group created befor
     await settleAllOutboundQueues();
     await sendPendingHints(f.db, () => f.provider);
     await settleAllOutboundQueues();
-    assert.deepEqual(f.sent.map(m => [m.chatId, m.text]), [[group, HELP]], 'once, only to «Нужен ответ»');
-    assert.deepEqual(f.descriptions, [HELP]);
+    assert.deepEqual(f.sent.map(m => [m.chatId, m.text]).sort(), [[group, HELP], [OWNER_GROUPS.reports, REPORTS]].sort(), 'once to each group');
+    assert.deepEqual(f.descriptions.sort(), [HELP, REPORTS].sort());
+  } finally { await f.close(); }
+});
+
+/** Z16: an owner without groups; createGroup gives a new group id each time. */
+function withGroupCreation(f: Awaited<ReturnType<typeof fixture>>) {
+  let n = 0;
+  f.provider.createGroup = async (session, input) => { f.groups.push({ session, ...input }); return `12036300000010${n++}@g.us`; };
+}
+
+test('Z16: both groups as soon as the owner\'s number is confirmed — description and first message in each, once', async () => {
+  const f = await fixture();
+  try {
+    withGroupCreation(f);
+    await f.pg.query('delete from owner_channels where tenant_id=$1', [f.tenantId]);
+    await f.pg.query("update notification_settings set owner_chat_id=null,owner_pairing_hash=$2,owner_pairing_expires_at=now()+interval '10 minutes' where tenant_id=$1", [f.tenantId, createHash('sha256').update('123456').digest('hex')]);
+    await f.say('123456');
+    assert.deepEqual(f.groups.map(g => [g.name, g.participants]), [['Leya · Нужен ответ', [owner]], ['Leya · Отчёты', [owner]]], 'both at once, not at the first message');
+    const welcome = f.sent.filter(m => m.chatId.startsWith('1203630000001'));
+    assert.deepEqual(welcome.map(m => [m.chatId, m.text]), [['120363000000100@g.us', HELP], ['120363000000101@g.us', REPORTS]]);
+    assert.ok(f.descriptions.includes(HELP) && f.descriptions.includes(REPORTS));
+    // The hourly job: nothing more — no group twice, no welcome twice.
+    const before = [f.groups.length, f.sent.length];
+    await ensureAllOwnerChannels(f.db, () => f.provider);
+    await sendPendingHints(f.db, () => f.provider);
+    await settleAllOutboundQueues();
+    assert.deepEqual([f.groups.length, f.sent.length], before);
+  } finally { await f.close(); }
+});
+
+test('Z16: an owner connected before, without «Отчёты» — the hourly job creates it once, with its welcome', async () => {
+  const f = await fixture();
+  try {
+    withGroupCreation(f);
+    await f.pg.query("delete from owner_channels where tenant_id=$1 and topic='reports'", [f.tenantId]);
+    await ensureAllOwnerChannels(f.db, () => f.provider);
+    await settleAllOutboundQueues();
+    await ensureAllOwnerChannels(f.db, () => f.provider);
+    await settleAllOutboundQueues();
+    assert.deepEqual(f.groups.map(g => g.name), ['Leya · Отчёты']);
+    assert.deepEqual(f.sent.map(m => [m.chatId, m.text]), [['120363000000100@g.us', REPORTS]]);
+  } finally { await f.close(); }
+});
+
+test('Z16: «помощь» works in «Отчёты» too — the answer goes there; the morning report ends with where to ask for help', async () => {
+  const f = await fixture();
+  try {
+    await handleOwnerGroupMessage(f.db, f.tenantId, { event: 'message', session: 'session', payload: { id: `false_${OWNER_GROUPS.reports}_H1_${owner}`, from: OWNER_GROUPS.reports, participant: owner, fromMe: false, body: 'помощь', _data: { Info: { Chat: OWNER_GROUPS.reports, Sender: owner } } } }, f.provider, null);
+    await settleAllOutboundQueues();
+    assert.deepEqual([f.sent.at(-1)!.chatId, f.sent.at(-1)!.text], [OWNER_GROUPS.reports, HELP]);
+    for (const word of ['עזרה', 'help', 'что ты умеешь?']) {
+      await f.say(word);
+      assert.equal(f.sent.at(-1)!.text, HELP, word);
+    }
+    // The report (here: replies stopped, no dialogs) — the last line is the help line.
+    await f.pg.query("update notification_settings set auto_replies_paused=true,behavior=behavior||'{\"daily_report_enabled\":true,\"daily_report_time\":\"00:00\"}' where tenant_id=$1", [f.tenantId]);
+    invalidateOwnerSettings(f.db, f.tenantId);
+    await runDailyReports(f.db, () => f.provider, new Date('2026-11-02T09:00:00Z'));
+    await settleAllOutboundQueues();
+    const report = f.sent.filter(m => m.chatId === OWNER_GROUPS.reports).at(-1)!;
+    assert.match(report.text, /\n\nНужна помощь\? Напишите „помощь“ в группе „Leya · Нужен ответ“\.$/);
   } finally { await f.close(); }
 });
 
@@ -238,7 +301,7 @@ test('Z15 review: a failed save keeps the setting waiting — the next «Да» 
     await handleOwnerGroupMessage(f.db, f.platformId, { event: 'message', session: 'platform', payload: { id: `false_${supportGroup}_OP2_111111111@lid`, from: supportGroup,
       participant: '111111111@lid', fromMe: false, body: 'Голосовых пока нет.', replyTo: { id: unbound.id.split('_')[2]! }, _data: { Info: { Chat: supportGroup, Sender: '111111111@lid', SenderAlt: `${operator}@s.whatsapp.net` } } } }, f.provider, null);
     await settleAllOutboundQueues();
-    assert.deepEqual([f.sent.at(-1)!.chatId, f.sent.at(-1)!.text], [group, 'Ответ BizGenie: «Голосовых пока нет.»'], 'the answer is not lost');
+    assert.deepEqual([f.sent.at(-1)!.chatId, f.sent.at(-1)!.text], [group, 'Ответ BizGenie: «Голосовых пока нет.»\n\nОтветьте реплеем, если нужно уточнить.'], 'the answer is not lost');
     assert.equal((await f.pg.query<{ status: string }>("select status from support_requests where text like 'пусть%'")).rows[0]!.status, 'answered');
   } finally { console.error = error; await f.close(); }
 });

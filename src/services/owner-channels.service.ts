@@ -68,27 +68,57 @@ export async function ownerChannel(db: DatabaseClient, provider: WhatsAppProvide
   tails.set(key, tail);
   let chat: string | null;
   try { chat = await run; } finally { if (tails.get(key) === tail) tails.delete(key); }
-  if (chat && topic === 'needs_answer') await sendHintOnce(db, provider, tenantId, session, settings, chat, deps);
+  if (chat) await sendHintOnce(db, provider, tenantId, session, settings, topic, chat, deps);
   return chat;
 }
 
+/** Z16: what a group is for and what can be written there — its description and first message. A topic without it
+ *  cannot be switched on (test). «Нужен ответ» — the help list of Z15. */
+export const welcomeTemplate = (topic: OwnerTopic) => topic === 'needs_answer' ? 'owner.help' : `owner.channel_${topic}_welcome`;
+
 /**
- * Z15: «Можно писать обычными словами …» — once per «Нужен ответ» group (new ones and those created before Z15):
- * the group description and the first message. Claimed by hint_sent_at, so it never goes twice.
+ * Z15/Z16: the welcome — once per owner group of every topic (new ones and those created before): the group
+ * description and the first message. Claimed by hint_sent_at, so it never goes twice.
  */
 export async function sendHintOnce(db: DatabaseClient, provider: WhatsAppProvider, tenantId: string, session: string,
-  settings: OwnerSettings, chatId: string, deps: Pick<Deps, 'send'>): Promise<void> {
+  settings: OwnerSettings, topic: OwnerTopic, chatId: string, deps: Pick<Deps, 'send'>): Promise<void> {
   const claimed = await db.from('owner_channels').update({ hint_sent_at: new Date().toISOString() }).eq('tenant_id', tenantId).eq('chat_id', chatId).eq('status', 'active').is('hint_sent_at', null).select('id');
   if (claimed.error) throw new Error('Owner channel update failed');
   if (!claimed.data?.length) return;
-  const hint = renderText(settings, 'owner.help', channelLanguage(settings));
+  const hint = renderText(settings, welcomeTemplate(topic), channelLanguage(settings));
   try { await provider.setGroupDescription?.(session, chatId, hint); } catch { console.warn('owner_channel_description_failed'); }
   await deps.send(session, chatId, hint, `owner-channel:hint:${chatId}`);
 }
 
-/** Z15: the hint for «Нужен ответ» groups that got no message since Z15 (the hourly job). */
+/**
+ * Z16: both groups at once — after the WhatsApp connection and the owner's number are confirmed, not at the first
+ * message of the topic (that stays the fallback when a group is gone). Each gets its welcome once.
+ */
+export async function ensureOwnerChannels(db: DatabaseClient, provider: WhatsAppProvider, tenantId: string, session: string): Promise<void> {
+  const settings = await loadOwnerSettings(db, tenantId);
+  for (const topic of OWNER_TOPICS) await ownerChat(db, provider, tenantId, session, settings, topic);
+}
+
+/** Z16, the hourly job: confirmed owners without a group of some topic (connected before Z16, or the creation failed) get it. */
+export async function ensureAllOwnerChannels(db: DatabaseClient, providerFor: () => WhatsAppProvider): Promise<void> {
+  const owners = await db.from('notification_settings').select('tenant_id').not('owner_chat_id', 'is', null);
+  if (owners.error) throw new Error('Owner settings lookup failed');
+  for (const row of owners.data ?? []) {
+    const tenantId = String(row.tenant_id);
+    try {
+      const have = await db.from('owner_channels').select('topic').eq('tenant_id', tenantId).eq('status', 'active');
+      if (have.error) throw new Error('Owner channel lookup failed');
+      if (OWNER_TOPICS.every(topic => (have.data ?? []).some(c => c.topic === topic))) continue;
+      const instance = await db.from('whatsapp_instances').select('session_name').eq('tenant_id', tenantId).maybeSingle();
+      if (instance.error || !instance.data?.session_name) continue;
+      await ensureOwnerChannels(db, providerFor(), tenantId, String(instance.data.session_name));
+    } catch { console.error('owner_channels_ensure_failed', { tenantId }); }
+  }
+}
+
+/** Z15/Z16: the welcome for owner groups that have not had it (the hourly job). */
 export async function sendPendingHints(db: DatabaseClient, providerFor: () => WhatsAppProvider): Promise<void> {
-  const rows = await db.from('owner_channels').select('tenant_id,chat_id').eq('topic', 'needs_answer').eq('status', 'active').is('hint_sent_at', null).limit(50);
+  const rows = await db.from('owner_channels').select('tenant_id,chat_id,topic').eq('status', 'active').is('hint_sent_at', null).limit(50);
   if (rows.error) throw new Error('Owner channel lookup failed');
   const { enqueueMessage } = await import('../workers/outbound-queue.js');
   for (const row of rows.data ?? []) {
@@ -97,7 +127,8 @@ export async function sendPendingHints(db: DatabaseClient, providerFor: () => Wh
       const instance = await db.from('whatsapp_instances').select('session_name').eq('tenant_id', tenantId).maybeSingle();
       if (instance.error || !instance.data?.session_name) continue;
       const provider = providerFor();
-      await sendHintOnce(db, provider, tenantId, String(instance.data.session_name), await loadOwnerSettings(db, tenantId), String(row.chat_id), { send: async (s, chatId, text, dedupeKey) => {
+      if (!(OWNER_TOPICS as readonly string[]).includes(String(row.topic))) continue;
+      await sendHintOnce(db, provider, tenantId, String(instance.data.session_name), await loadOwnerSettings(db, tenantId), row.topic as OwnerTopic, String(row.chat_id), { send: async (s, chatId, text, dedupeKey) => {
         await enqueueMessage(db, tenantId, provider, { session: s, chatId, text }, { kind: 'owner_notice', dedupeKey });
       } });
     } catch { console.error('owner_channel_hint_failed', { tenantId }); }

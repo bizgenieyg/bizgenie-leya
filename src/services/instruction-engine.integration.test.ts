@@ -23,6 +23,8 @@ async function fixture(options: { owner?: string; engine?: 'instruction' | 'lega
   await pg.query("insert into business_facts(tenant_id,topic,text,status,created_by) values($1,'services_prices','Базовый ассистент — от 249 ₪ в месяц, установка от 500 ₪.','active','migration')", [tenantId]);
   // The model under test is the injected one (reply_model '' → the caller's model), no fallback.
   await saveRuntimeSettings(db, tenantId, { reply_engine: options.engine ?? 'instruction', reply_model: '', reply_fallback_model: '' });
+  // Z16: this fixture is BizGenie — the demo tenant (showing another business is its right only).
+  await pg.query("insert into system_config(key,value) values('demo_tenant',to_jsonb($1::text))", [tenantId]);
   if (options.instruction !== null) { await uploadInstruction(db, { kind: 'business', tenantId }, options.instruction ?? INSTRUCTION); await activateInstruction(db, { kind: 'business', tenantId }, 1); }
   const prompts: Array<{ system: string; user: string; history: number }> = [];
   let replies: string[] = [];
@@ -162,6 +164,34 @@ test('Z15: [[DEMO_START: client]] — the demo on the client\'s own business: no
     assert.equal((await f.pg.query<{ demo_key: string | null }>('select demo_key from simulator_sessions')).rows[0]!.demo_key, null);
     assert.ok(!warnings.some(w => w[0] === 'instruction_demo_unknown_key' || w[0] === 'instruction_unknown_labels'), 'client is a known demo');
   } finally { console.warn = warn; await f.pg.close(); }
+});
+
+test('Z16: only demo_tenant shows another business — others get the core line, DEMO labels are cut and not done, no demo text', async () => {
+  const f = await fixture();
+  try {
+    const line = 'Ты отвечаешь только от имени этого бизнеса. Не изображай ассистента другого бизнеса, не отвечай за другой бизнес и не придумывай цены или даты „для примера“.';
+    f.reply('Здравствуйте!');
+    await f.say('привет');
+    assert.ok(!f.prompts.at(-1)!.system.includes(line), 'the demo tenant has no such line');
+    await f.pg.query("update system_config set value=to_jsonb('00000000-0000-0000-0000-000000000000'::text) where key='demo_tenant'");
+    f.reply('Курс стоит 300 ₪ — цены здесь для примера.\n[[DEMO_START: client]]');
+    const r = await f.say('покажи, как ты ответишь для моего бизнеса, я школа');
+    assert.equal(f.prompts.length, 2, 'no second call with a demo text');
+    assert.ok(f.prompts.at(-1)!.system.includes(line), 'the core line for every other tenant');
+    assert.equal(r.reply, 'Курс стоит 300 ₪ — цены здесь для примера.', 'the label is cut');
+    assert.equal((await f.pg.query<{ demo_key: string | null }>('select demo_key from simulator_sessions')).rows[0]!.demo_key, null, 'the demo is not on');
+    assert.equal((await f.pg.query<{ n: number }>("select count(*)::int n from system_logs where event='demo_label_blocked'")).rows[0]!.n, 1);
+    // A ready demo key: not loaded either.
+    f.reply('Хорошо.\n[[DEMO_START: home_cook]]');
+    await f.say('покажи пример');
+    assert.equal(f.prompts.length, 3);
+    assert.doesNotMatch(f.prompts.at(-1)!.system, /РЕЖИМ ПОКАЗА/);
+    // Not set — no one has the right.
+    await f.pg.query("delete from system_config where key='demo_tenant'");
+    f.reply('Хорошо.');
+    await f.say('ещё');
+    assert.ok(f.prompts.at(-1)!.system.includes(line));
+  } finally { await f.pg.close(); }
 });
 
 test('HUMAN and ASK_OWNER become escalations with the model text; without an active instruction the legacy path answers', async () => {

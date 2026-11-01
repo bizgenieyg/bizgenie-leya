@@ -1251,7 +1251,7 @@ test('Z14: a request without the model\'s card — a readable card (no label key
   assert.equal(reminders().length, 0, 'not after 2 hours');
   await runEscalationTimeouts(h.db, () => h.provider, new Date(start.getTime() + 4.1 * 3_600_000)); await settleAllOutboundQueues();
   assert.equal(reminders().length, 1);
-  assert.equal(reminders()[0]!.text, '🔔 Напоминание — заявка ждёт ответа:\n👤 Клиент: Диана\n📞 Хочет: консультация\n• Услуга: AI-ассистент\n📱 +972 50-000-0077\n\nОтветьте реплеем на это сообщение 🙏');
+  assert.equal(reminders()[0]!.text, '🔔 Напоминание — заявка ждёт ответа:\n👤 Клиент: Диана\n📞 Хочет: консультация\n• Услуга: AI-ассистент\n📱 +972 50-000-0077\n\nОтветьте реплеем — передам клиенту.');
 });
 
 test('Z14: migration 070 drops the stored pre-Z12 reminder default (120) and keeps a deliberate value', async () => {

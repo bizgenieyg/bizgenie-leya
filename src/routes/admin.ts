@@ -108,6 +108,11 @@ adminRouter.post('/owner-settings', async (request,response) => {
   // a service message (not client traffic, no usage metering): the owner replies with the digits.
   const result=await submitOwnerSettings(supabase,tenantId,objectBody(request.body),provider,routing?.instance?.session_name??null,
     async(session,chatId,text)=>{await enqueueMessage(supabase,tenantId,provider,{session,chatId,text},{kind:'owner_notice'});});
+  // Z16: one number for business and owner — nothing to confirm, both owner groups now.
+  if('sameNumber' in result&&routing?.instance?.session_name){
+    try{const {ensureOwnerChannels}=await import('../services/owner-channels.service.js');await ensureOwnerChannels(supabase,provider,tenantId,routing.instance.session_name);}
+    catch{console.error('owner_channels_ensure_failed',{tenantId});}
+  }
   response.setHeader('Cache-Control','no-store');
   response.json(result);
 });

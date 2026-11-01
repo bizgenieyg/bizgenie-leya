@@ -92,6 +92,8 @@ async function main() {
       // The model under test is the measured one (reply_model '' → the injected model), no fallback.
       await saveRuntimeSettings(db, tenantId, { reply_engine: 'instruction', reply_model: '', reply_fallback_model: '' });
       const tenantSpec = file.tenants[t]!;
+      // Z16: showing another business is the right of the demo tenant only (BizGenie — the one with demo texts).
+      if (tenantSpec.demo?.length) await pg.query("insert into system_config(key,value) values('demo_tenant',to_jsonb($1::text)) on conflict(key) do update set value=excluded.value", [tenantId]);
       if (tenantSpec.template) {
         // Published like the operator does (instructions:publish --template); the tenant has none of its own.
         const target = { kind: 'template' as const, templateKey: tenantSpec.template as TemplateKey };

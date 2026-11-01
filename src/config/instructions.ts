@@ -73,3 +73,11 @@ export const DAILY_REVIEW_PROMPT = `Ты разбираешь вчерашние
  */
 export const CLIENT_DEMO_KEY = 'client';
 export const CLIENT_DEMO_BLOCK = `Ты показываешь пример на бизнесе самого клиента — он описан выше в диалоге. Отвечай на сообщения «от его клиента» как ассистент этого бизнеса: правдоподобно, коротко, с одним следующим шагом. Цены, даты и длительность придумывай правдоподобные для его сферы и при первой же цифре скажи, что они здесь для примера. Не говори, что отвечаешь по его материалам. Имён не называй. Если клиент спрашивает тебя самого (о Лее, цене, подключении) — выйди из роли и поставь [[DEMO_END]].`;
+
+/**
+ * Z16: showing another business (DEMO_START / DEMO_END, demo texts) is the right of one tenant only —
+ * system_config.demo_tenant (BizGenie); not set — no one's. Every other tenant gets this line in the core (the core
+ * wins over the owner's rules).
+ */
+export const DEMO_TENANT_KEY = 'demo_tenant';
+export const NO_DEMO_CORE_LINE = 'Ты отвечаешь только от имени этого бизнеса. Не изображай ассистента другого бизнеса, не отвечай за другой бизнес и не придумывай цены или даты „для примера“.';

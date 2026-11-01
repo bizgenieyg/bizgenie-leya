@@ -256,7 +256,14 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
   const reply=replyChat??from;
   // Z11: replies to the owner go to the chat the owner wrote in; proposals keep the id, so a quoted «Да» finds them.
   const sendReply=(message:string,dedupe:string)=>send(db,tenantId,provider,session,reply,message,'owner_notice',dedupe);
-  if(await pairOwner(db,tenantId,from,text,settings)) return true;
+  if(await pairOwner(db,tenantId,from,text,settings)){
+    // Z16: the number is confirmed — both owner groups now, each with its welcome (not at the first message).
+    if((await loadOwnerSettings(db,tenantId)).owner_chat_id){
+      try{const {ensureOwnerChannels}=await import('./owner-channels.service.js');await ensureOwnerChannels(db,provider,tenantId,session);}
+      catch{console.error('owner_channels_ensure_failed',{tenantId});}
+    }
+    return true;
+  }
   if(!isBusinessOwner(from,settings)) return false;
   // Z15: «стоп» / «включи» / «что ты умеешь?» — the whole message, at once, without the model.
   const {instantCommand,helpText,setAllPaused}=await import('./owner-chat.service.js');

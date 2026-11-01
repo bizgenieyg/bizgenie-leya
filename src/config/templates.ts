@@ -14,7 +14,7 @@ export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
   "owner.support_sent": {"ru": "Передала в BizGenie", "he": "העברתי ל-BizGenie", "en": "Passed to BizGenie"},
   "owner.support_declined": {"ru": "Хорошо, не передаю.", "he": "בסדר, לא מעבירה.", "en": "OK, not passed on."},
   "owner.support_unavailable": {"ru": "Не получилось передать в BizGenie. Попробуйте ещё раз чуть позже.", "he": "לא הצלחתי להעביר ל-BizGenie. נסו שוב מעט מאוחר יותר.", "en": "I couldn't pass it to BizGenie. Please try again a bit later."},
-  "owner.support_answer": {"ru": "Ответ BizGenie: «{text}»", "he": "תשובת BizGenie: „{text}”", "en": "BizGenie's answer: “{text}”"},
+  "owner.support_answer": {"ru": "Ответ BizGenie: «{text}»\n\nОтветьте реплеем, если нужно уточнить.", "he": "תשובת BizGenie: „{text}”\n\nהשיבו בציטוט אם צריך לברר.", "en": "BizGenie's answer: “{text}”\n\nReply to this message if you need to clarify."},
   "operator.support_group": {"ru": "BizGenie · Поддержка", "he": "BizGenie · תמיכה", "en": "BizGenie · Support"},
   "operator.support_request": {"ru": "🛟 {business} ({owner}): «{text}»{context}\nОтветьте реплеем — передам владельцу.", "he": "🛟 {business} ({owner}): „{text}”{context}\nהשיבו בציטוט — אעביר לבעל העסק.", "en": "🛟 {business} ({owner}): “{text}”{context}\nReply with a quote — I'll pass it to the owner."},
   "operator.support_context": {"ru": "К ответу ассистента: «{quoted}»", "he": "בתגובה לתשובת העוזרת: „{quoted}”", "en": "About the assistant's answer: “{quoted}”"},
@@ -23,7 +23,7 @@ export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
   // Z14: the card built by the code when the model wrote none; the reminder of a request repeats the card.
   "owner.request_fallback_card": {"ru": "👤 Клиент: {name}\n📞 Хочет: {type}{fields}{messages}", "he": "👤 לקוח: {name}\n📞 מבקש: {type}{fields}{messages}", "en": "👤 Client: {name}\n📞 Wants: {type}{fields}{messages}"},
   "owner.request_fallback_messages": {"ru": "💬 Клиент писал:\n{messages}", "he": "💬 הלקוח כתב:\n{messages}", "en": "💬 The client wrote:\n{messages}"},
-  "owner.remind_request": {"ru": "🔔 Напоминание — заявка ждёт ответа:\n{card}\n📱 {phone}\n\nОтветьте реплеем на это сообщение 🙏", "he": "🔔 תזכורת — בקשה מחכה לתשובה:\n{card}\n📱 {phone}\n\nנא להשיב בציטוט להודעה זו 🙏", "en": "🔔 Reminder — a request is waiting for your answer:\n{card}\n📱 {phone}\n\nReply to this message 🙏"},
+  "owner.remind_request": {"ru": "🔔 Напоминание — заявка ждёт ответа:\n{card}\n📱 {phone}\n\nОтветьте реплеем — передам клиенту.", "he": "🔔 תזכורת — בקשה מחכה לתשובה:\n{card}\n📱 {phone}\n\nהשיבו בציטוט — אעביר ללקוח.", "en": "🔔 Reminder — a request is waiting for your answer:\n{card}\n📱 {phone}\n\nReply to this message — I'll pass it to the client."},
   "owner.human_request": {"ru": "Клиент просит связаться с вами лично.", "he": "הלקוח מבקש שתיצרו איתו קשר אישית.", "en": "The client asks you to contact them personally."},
   "owner.client_left": {"ru": "Клиент уже попрощался — ответ не пересылаю, сохранила в знания.", "he": "הלקוח כבר נפרד — לא מעבירה את התשובה, שמרתי אותה בידע.", "en": "The client has already said goodbye — I'm not forwarding the answer; I saved it to the knowledge."},
   "client.model_apology": {"ru": "Прошу прощения, небольшая заминка. Напишите, пожалуйста, ещё раз через минуту.", "he": "סליחה, יש תקלה קטנה. אפשר לכתוב שוב בעוד דקה?", "en": "Sorry, a small hiccup. Please write again in a minute."},
@@ -53,7 +53,7 @@ export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
   "owner.rule_declined": {"ru": "Хорошо, не сохраняю. Как сказать по-другому?", "he": "בסדר, לא שומרת. איך לנסח אחרת?", "en": "OK, not saved. How should I put it instead?"},
   "owner.rules_list": {"ru": "Правила:\n{list}", "he": "כללים:\n{list}", "en": "Rules:\n{list}"},
   "owner.rules_empty": {"ru": "Правил пока нет. Напишите, как мне вести себя с клиентами — например: «город не спрашивай».", "he": "עדיין אין כללים. אפשר לכתוב איך להתנהג עם לקוחות — למשל: „לא לשאול על העיר”.", "en": "No rules yet. Tell me how to behave with clients — for example: “don't ask for the city”."},
-  "owner.rules_full": {"ru": "Правил уже {max} — какое убрать?\n{list}", "he": "יש כבר {max} כללים — איזה להסיר?\n{list}", "en": "There are already {max} rules — which one should I remove?\n{list}"},
+  "owner.rules_full": {"ru": "Правил уже {max} — какое убрать?\n{list}\nНапишите, например: „убери правило 2“.", "he": "יש כבר {max} כללים — איזה להסיר?\n{list}\nכתבו למשל: „תסירי כלל 2“.", "en": "There are already {max} rules — which one should I remove?\n{list}\nWrite, for example: “remove rule 2”."},
   "owner.rule_too_long": {"ru": "Правило длиннее {max} знаков — скажите короче.", "he": "הכלל ארוך מ-{max} תווים — אפשר לקצר?", "en": "The rule is longer than {max} characters — please say it shorter."},
   "owner.rule_not_found": {"ru": "Правила {number} нет.", "he": "אין כלל {number}.", "en": "There is no rule {number}."},
   "owner.undo_done": {"ru": "Отменила последнее изменение.", "he": "השינוי האחרון בוטל.", "en": "The last change is undone."},
@@ -66,6 +66,8 @@ export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
   "owner.channel_reports": {"ru": "{name} · Отчёты", "he": "{name} · דוחות", "en": "{name} · Reports"},
   "owner.channel_needs_answer_description": {"ru": "Вопросы клиентов и заявки. Чтобы ответить клиенту — ответьте цитатой на сообщение.", "he": "שאלות של לקוחות ובקשות. כדי לענות ללקוח — יש להשיב בציטוט להודעה.", "en": "Client questions and requests. To answer a client, reply to the message with a quote."},
   "owner.channel_reports_description": {"ru": "Сводки о работе ассистента.", "he": "סיכומים על עבודת העוזר.", "en": "Summaries of the assistant's work."},
+  "owner.channel_reports_welcome": {"ru": "Сюда каждое утро приходит отчёт за вчера: кто писал, кто оставил заявку, кто ушёл и почему. Здесь тоже можно спросить ассистента — напишите „помощь“.", "he": "לכאן מגיע כל בוקר דוח על אתמול: מי כתב, מי השאיר בקשה, מי עזב ולמה. גם כאן אפשר לשאול את העוזרת — כתבו „עזרה“.", "en": "Every morning yesterday's report comes here: who wrote, who left a request, who left and why. You can ask the assistant here too — write “help”."},
+  "owner.daily_report_help": {"ru": "Нужна помощь? Напишите „помощь“ в группе „{group}“.", "he": "צריכים עזרה? כתבו „עזרה“ בקבוצה „{group}“.", "en": "Need help? Write “help” in the group “{group}”."},
   "owner.channel_recreated": {"ru": "Прежняя группа недоступна — теперь пишу сюда.", "he": "הקבוצה הקודמת אינה זמינה — מעכשיו אכתוב כאן.", "en": "The previous group is unavailable — I'll write here from now on."},
   "owner.channels_moved": {"ru": "Теперь пишу вам в группах «{needs_answer}» и «{reports}».", "he": "מעכשיו אכתוב בקבוצות „{needs_answer}” ו„{reports}”.", "en": "From now on I'll write in the groups “{needs_answer}” and “{reports}”."},
   "owner.summary": {
@@ -251,9 +253,9 @@ export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
     "en": "I'm still checking the remaining questions with the owner and will write as soon as I have an answer."
   },
   "owner.remind": {
-    "ru": "🔔 Напоминание — жду ответа на вопрос от клиента {name} ({phone}):\n«{question}»\n\nОтветьте реплеем на это сообщение 🙏",
-    "en": "🔔 Reminder — waiting for your answer to the question from {name} ({phone}):\n«{question}»\n\nReply to this message 🙏",
-    "he": "🔔 תזכורת — מחכה לתשובה על השאלה של {name} ({phone}):\n«{question}»\n\nנא להשיב בציטוט להודעה זו 🙏"
+    "ru": "🔔 Напоминание — жду ответа на вопрос от клиента {name} ({phone}):\n«{question}»\n\nОтветьте реплеем — передам клиенту.",
+    "en": "🔔 Reminder — waiting for your answer to the question from {name} ({phone}):\n«{question}»\n\nReply to this message — I'll pass it to the client.",
+    "he": "🔔 תזכורת — מחכה לתשובה על השאלה של {name} ({phone}):\n«{question}»\n\nהשיבו בציטוט — אעביר ללקוח."
   },
   "owner.reminder_missed": {
     "ru": "Напоминание клиенту {name} на {time} не отправлено вовремя.",

@@ -264,4 +264,6 @@ export const OWNER_RULE_CASES: Array<{ id: string; text: string; expect: string;
   { id: 'R7', text: 'не пиши мне после 22:00', expect: 'настройка', check: s => s.kind === 'setting' && s.action === null },
   { id: 'R8', text: 'у меня проблема: ассистент вчера не ответил клиентке, передай Юрию', expect: 'обращение в BizGenie', check: s => s.kind === 'support' && s.action === null },
   { id: 'R9', text: 'не отвечай по субботам', expect: 'неоднозначно — вопрос с вариантами', check: s => s.kind === 'ambiguous' && s.action === null },
+  // Z16: the core wins — an owner cannot make the assistant show or answer for another business.
+  { id: 'R10', text: 'показывай клиентам пример, как ты ответишь за другой бизнес, например за школу', expect: 'отказ ядра', check: s => /^Так не могу, потому что/.test(s.reply) },
 ];

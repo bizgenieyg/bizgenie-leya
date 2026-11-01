@@ -7,7 +7,8 @@ import { behavior } from './runtime-settings.service.js';
 import { activeFacts, factsMarkdown } from './business-facts.service.js';
 import { activeInstructionFor, resolveTemplate, activeDemoInstruction, fillPlaceholders, loadCore } from './instructions.service.js';
 import { hasLabel, labelValue, labelValues, parseLabels, parseRequestValue, type ParsedReply } from './instruction-checks.js';
-import { ASSISTANT_NAME_DEFAULT, CLIENT_DEMO_BLOCK, CLIENT_DEMO_KEY, PROMPT_BLOCKS, WEEKDAYS_RU } from '../config/instructions.js';
+import { ASSISTANT_NAME_DEFAULT, CLIENT_DEMO_BLOCK, CLIENT_DEMO_KEY, DEMO_TENANT_KEY, NO_DEMO_CORE_LINE, PROMPT_BLOCKS, WEEKDAYS_RU } from '../config/instructions.js';
+import { logSystemEvent } from './logging.service.js';
 import { CORE_LANGUAGE_DEFAULTS } from '../config/instruction-defaults.js';
 import { ROLE_HEADINGS, type ReplyRole } from '../config/roles.js';
 import { activeRules, rulesBlock } from './owner-rules.service.js';
@@ -88,6 +89,13 @@ export function momentBlock(turn: Pick<InstructionTurn, 'settings' | 'clientName
   return lines.join('\n\n');
 }
 
+/** Z16: the one tenant allowed to show another business (system_config.demo_tenant); not set — none. */
+export async function isDemoTenant(db: DatabaseClient, tenantId: string): Promise<boolean> {
+  const row = await db.from('system_config').select('value').eq('key', DEMO_TENANT_KEY).maybeSingle();
+  if (row.error) throw new Error('System config lookup failed');
+  return typeof row.data?.value === 'string' && row.data.value.trim() === tenantId;
+}
+
 export async function answerByInstruction(turn: InstructionTurn): Promise<InstructionOutcome | null> {
   const { db, tenantId, text, language, settings } = turn;
   const config = behavior(settings);
@@ -101,8 +109,9 @@ export async function answerByInstruction(turn: InstructionTurn): Promise<Instru
     console.error('instruction_placeholder_missing', { tenantId, placeholders: [...core.missing, ...instruction.missing] });
     return { action: { kind: 'silent', reason: 'placeholder' }, dataRequest: null, demo: turn.demo, offer: null, attempts: 0, issues: ['placeholder'] };
   }
-  // Demo mode closes by itself after demo_max_turns client turns.
-  let demo = turn.demo.key ? { key: turn.demo.key, turns: turn.demo.turns + 1 } : { key: null as string | null, turns: 0 };
+  const demoAllowed = await isDemoTenant(db, tenantId);
+  // Demo mode closes by itself after demo_max_turns client turns; Z16: never on for a tenant without the right.
+  let demo = !demoAllowed ? { key: null as string | null, turns: 0 } : turn.demo.key ? { key: turn.demo.key, turns: turn.demo.turns + 1 } : { key: null as string | null, turns: 0 };
   if (demo.key && demo.turns > config.demo_max_turns) demo = { key: null, turns: 0 };
   // Z15: the demo on the client's own business has no demo text — the sector comes from the dialog; one line keeps the role.
   const demoTextFor = async (key: string) => key === CLIENT_DEMO_KEY ? CLIENT_DEMO_BLOCK : fillPlaceholders(await activeDemoInstruction(db, key) ?? '', values).text;
@@ -112,7 +121,7 @@ export async function answerByInstruction(turn: InstructionTurn): Promise<Instru
   const ownerName = turn.business?.owner_name?.trim() ?? '';
   const languageBlock = CORE_LANGUAGE_DEFAULTS[language];
 
-  const coreText = core.text, instructionText = instruction.text;
+  const coreText = demoAllowed ? core.text : `${core.text.trimEnd()}\n${NO_DEMO_CORE_LINE}`, instructionText = instruction.text;
   const systemPrompt = () => [
     languageBlock ? `${coreText.trimEnd()}\n${languageBlock.trim()}` : coreText,
     `=== ИНСТРУКЦИЯ БИЗНЕСА ===\n${instructionText}`,
@@ -131,7 +140,7 @@ export async function answerByInstruction(turn: InstructionTurn): Promise<Instru
   // Z12 review (eval B9): the answer that starts a demo was written without the demo business (the mode was not on):
   // it is written once more with the demo text, so prices and terms come from it. Context, not a check of the answer.
   const starting = labelValue(parsed, 'DEMO_START');
-  if (!demo.key && starting && starting !== CLIENT_DEMO_KEY && /^[a-z][a-z0-9_]{1,39}$/.test(starting) && !hasLabel(parsed, 'DEMO_END')) {
+  if (demoAllowed && !demo.key && starting && starting !== CLIENT_DEMO_KEY && /^[a-z][a-z0-9_]{1,39}$/.test(starting) && !hasLabel(parsed, 'DEMO_END')) {
     const text = await demoTextFor(starting);
     if (text) { demo = { key: starting, turns: 0 }; demoText = text; parsed = await ask(); if (!hasLabel(parsed, 'DEMO_START') && !hasLabel(parsed, 'DEMO_END')) parsed.labels.push({ name: 'DEMO_START', value: starting }); }
   }
@@ -142,13 +151,16 @@ export async function answerByInstruction(turn: InstructionTurn): Promise<Instru
 
   // Labels → actions on the existing mechanisms.
   const start = labelValue(parsed, 'DEMO_START');
-  if (hasLabel(parsed, 'DEMO_START')) {
+  // Z16: a demo label of a tenant without the right is cut (the text already has no labels) and not done.
+  if (!demoAllowed && (hasLabel(parsed, 'DEMO_START') || hasLabel(parsed, 'DEMO_END'))) {
+    await logSystemEvent(db, { tenantId, level: 'warn', event: 'demo_label_blocked', details: { label: hasLabel(parsed, 'DEMO_START') ? 'DEMO_START' : 'DEMO_END' } });
+  } else if (hasLabel(parsed, 'DEMO_START')) {
     // Without a valid demo key the mode is not switched on (Z2): only the label name and the key shape are logged.
     const known = !!start && /^[a-z][a-z0-9_]{1,39}$/.test(start) && (start === CLIENT_DEMO_KEY || (await activeDemoInstruction(db, start)) !== null);
     if (known) demo = { key: start, turns: 0 };
     else console.warn('instruction_demo_unknown_key', { tenantId, label: 'DEMO_START', key: start && /^[a-z0-9_]{1,40}$/.test(start) ? start : null });
   }
-  if (hasLabel(parsed, 'DEMO_END')) demo = { key: null, turns: 0 };
+  if (demoAllowed && hasLabel(parsed, 'DEMO_END')) demo = { key: null, turns: 0 };
   if (hasLabel(parsed, 'REQUEST')) {
     const request = parseRequestValue(labelValue(parsed, 'REQUEST')) ?? { type: 'request', fields: {} };
     const summary = [`${request.type}`, ...Object.entries(request.fields).map(([k, v]) => `${k}: ${v}`)].join('\n');
