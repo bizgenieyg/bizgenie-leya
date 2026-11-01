@@ -84,8 +84,12 @@ async function toOperator(db: DatabaseClient, provider: WhatsAppProvider, reques
   const context = request.quoted_text ? '\n' + renderText(settings, 'operator.support_context', 'ru', { quoted: request.quoted_text.slice(0, 300) }) : '';
   const text = renderText(settings, 'operator.support_request', 'ru', { business: String(tenant.data?.business_name || '—'), owner: String(tenant.data?.name || '—'), text: request.text, context });
   const sent = await enqueueMessage(db, p.tenant, provider, { session: p.session, chatId: group, text }, { kind: 'owner_notice', dedupeKey: dedupe });
-  const row = await db.from('support_requests').select('operator_message_ids').eq('id', request.id).single();check(row.error, 'Support request lookup failed');
-  check((await db.from('support_requests').update({ operator_message_ids: [...(row.data!.operator_message_ids as string[]), sent.id], status: 'new' }).eq('id', request.id)).error, 'Support request update failed');
+  // Z15 review: from here the message is in the queue — the request is sent whatever happens next. A failed binding
+  // (the operator's quote would not find the request) is logged; the request itself is never undone.
+  try {
+    const row = await db.from('support_requests').select('operator_message_ids').eq('id', request.id).single();check(row.error, 'Support request lookup failed');
+    check((await db.from('support_requests').update({ operator_message_ids: [...(row.data!.operator_message_ids as string[]), sent.id], status: 'new' }).eq('id', request.id)).error, 'Support request update failed');
+  } catch { console.error('support_request_bind_failed', { tenantId: request.tenant_id, requestId: request.id }); }
   return true;
 }
 

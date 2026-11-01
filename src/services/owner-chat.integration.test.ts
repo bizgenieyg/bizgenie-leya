@@ -225,5 +225,13 @@ test('Z15 review: a failed save keeps the setting waiting — the next «Да» 
     await f.pg.query("insert into system_config(key,value) values('platform_report_number',to_jsonb($1::text))", [operator]);
     assert.equal((await f.say('да')).last.text, 'Передала в BizGenie');
     assert.equal((await f.pg.query<{ n: number }>('select count(*)::int n from support_requests')).rows[0]!.n, 1);
+    // Z15 review: the message is queued but binding it to the request fails — the request stays, the owner hears «Передала».
+    await f.pg.query('alter table support_requests add constraint z15_bind check (cardinality(operator_message_ids) = 0) not valid');
+    f.model({ kind: 'support', support: 'x' });
+    await f.say('пусть ассистент присылает мне голосовые');
+    assert.equal((await f.say('да')).last.text, 'Передала в BizGenie');
+    assert.equal(f.sent.filter(m => m.chatId === supportGroup).length, 2, 'the operator got it');
+    assert.equal((await f.pg.query<{ n: number }>('select count(*)::int n from support_requests')).rows[0]!.n, 2, 'the sent request is kept');
+    assert.equal((await f.pg.query<{ status: string }>("select status from owner_rule_proposals where action='support' order by created_at desc limit 1")).rows[0]!.status, 'applied');
   } finally { console.error = error; await f.close(); }
 });
