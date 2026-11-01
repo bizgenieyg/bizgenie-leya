@@ -4,7 +4,7 @@ import type { EmbeddingProvider } from '../providers/embedding/embedding-provide
 import { createTaskAIProvider } from '../providers/ai/index.js';
 import { createEmbeddingProvider } from '../providers/embedding/index.js';
 import { isKnowledgeTopic } from '../config/knowledge-topics.js';
-import { FACT_LIKE_RULE, OWNER_MESSAGE_KINDS, OWNER_MESSAGE_PROMPT, RULE_NO_WORDS, RULE_YES_WORDS, type OwnerMessageKind } from '../config/owner-rules.js';
+import { FACT_LIKE_RULE, OWNER_MESSAGE_KINDS, ownerMessagePrompt, RULE_NO_WORDS, RULE_YES_WORDS, type OwnerMessageKind } from '../config/owner-rules.js';
 import { activeFacts, embedTexts } from './business-facts.service.js';
 import { meterAI } from './metered-providers.js';
 import { reserveKnowledgeIndex } from './knowledge-index-rate-limit.js';
@@ -86,9 +86,12 @@ export async function understandOwnerMessage(db: DatabaseClient, tenantId: strin
   const today = new Intl.DateTimeFormat('en-CA', { timeZone: intlTimeZone(settings.time_zone ?? DEFAULT_TIME_ZONE) }).format(now);
   const message = [`Язык владельца: ${lang(settings)}.`, `Сегодня: ${today}.`, `Правила сейчас:\n${numbered(rules) || '(нет)'}`, `Факты:\n${facts || '(нет)'}`,
     ...(options.context ? [`Контекст:\n${options.context.slice(0, 3000)}`] : []), `Сообщение владельца:\n${text.slice(0, 3000)}`].join('\n\n');
+  // Z16: only the demo tenant may keep a rule about showing another business; lazy import — no import cycle.
+  const { isDemoTenant } = await import('./instruction-engine.service.js');
+  const systemPrompt = ownerMessagePrompt(await isDemoTenant(db, tenantId));
   try {
     const model = meterAI(db, tenantId, base, { purpose: 'owner_rules', billable_message: false })!;
-    return parseUnderstanding((await model.generateReply({ systemPrompt: OWNER_MESSAGE_PROMPT, userMessage: message })).text);
+    return parseUnderstanding((await model.generateReply({ systemPrompt, userMessage: message })).text);
   } catch { console.warn('owner_rules_understand_failed', { tenantId }); return null; }
 }
 

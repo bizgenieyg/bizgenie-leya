@@ -12,14 +12,17 @@ export const OWNER_MESSAGE_KINDS = ['add_rule', 'edit_rule', 'remove_rule', 'lis
 export type OwnerMessageKind = (typeof OWNER_MESSAGE_KINDS)[number];
 
 /** The task model reads one owner message (with the current rules and facts) and returns JSON. */
-export const OWNER_MESSAGE_PROMPT = `Ты разбираешь сообщение владельца бизнеса своему ИИ-ассистенту в WhatsApp.
+/** Z16: the demo tenant (system_config.demo_tenant) may show an example for another business; everyone else may not. */
+const OTHER_BUSINESS_CONFLICT = ', представляться другим бизнесом или отвечать за другой бизнес (в том числе показывать «пример» за чужой бизнес)';
+
+export const ownerMessagePrompt = (demoAllowed: boolean) => `Ты разбираешь сообщение владельца бизнеса своему ИИ-ассистенту в WhatsApp.
 Владелец может: добавить правило поведения ассистента, изменить правило N, убрать правило N, попросить показать правила, отменить последнее изменение, сообщить факт о бизнесе, задать вопрос или написать что-то другое.
 
 Правило — как ассистенту вести себя с клиентами («город не спрашивай», «в субботу не предлагай запись», «всегда предлагай абонемент»). Правило не содержит цен, дат, часов, адресов и других данных — такие сообщения это факт.
 Факт — данные о бизнесе (цены, адрес, часы, условия, услуги). Тема факта — одна из: services_prices, location_hours, booking, faq, payment_cancel, why_us, about, other.
 
 Правило формулируй коротко, до 300 знаков, на языке владельца, как указание ассистенту, без «пожалуйста».
-Правило нельзя сохранить, если оно требует обманывать клиента, выдавать себя за человека или за владельца, придумывать цены и данные, которых нет в фактах, представляться другим бизнесом или отвечать за другой бизнес (в том числе показывать «пример» за чужой бизнес), дискриминировать, обещать результат для здоровья или нарушать закон. Тогда заполни conflict: причина простыми словами и допустимый вариант правила.
+Правило нельзя сохранить, если оно требует обманывать клиента, выдавать себя за человека или за владельца, придумывать цены и данные, которых нет в фактах${demoAllowed ? '' : OTHER_BUSINESS_CONFLICT}, дискриминировать, обещать результат для здоровья или нарушать закон. Тогда заполни conflict: причина простыми словами и допустимый вариант правила.
 Если правило опирается на данные, которых нет в фактах (например «предлагай абонемент», а условий абонемента в фактах нет), заполни needs_details — один короткий вопрос владельцу об этих данных — и всё равно дай rule.
 Настройка (kind "setting") — как работает ассистент, а не что он говорит клиентам. Верни setting: {"key":"...","value":...}, только ключ из списка:
 - quiet_hours — когда не писать владельцу: {"start":"HH:MM","end":"HH:MM"} или null (писать всегда). «Не пиши мне после 22:00» → {"start":"22:00","end":"08:00"}, если утро не названо.
@@ -41,6 +44,8 @@ export const OWNER_MESSAGE_PROMPT = `Ты разбираешь сообщени�
 Верни строго JSON без пояснений:
 {"kind":"add_rule|edit_rule|remove_rule|list_rules|undo|fact|setting|support|help|ambiguous|question|other","number":null,"rule":null,"fact":null,"fact_topic":null,"conflict":null,"needs_details":null,"setting":null,"support":null,"options":null,"answer":null}
 conflict, если есть: {"reason":"...","alternative":"..."}.`;
+
+export const OWNER_MESSAGE_PROMPT = ownerMessagePrompt(false);
 
 /**
  * Z11, several addresses: a «Адрес и часы» fact that names a place (street words in ru/he/en, or «адрес»). Two or more

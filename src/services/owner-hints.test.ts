@@ -32,3 +32,25 @@ test('Z16: a topic cannot be on without its welcome — name, description and th
 test('Z16: an owner rule to act as another business is refused (core over rules)', () => {
   assert.match(OWNER_MESSAGE_PROMPT, /нельзя сохранить[^\n]*отвечать за другой бизнес/);
 });
+
+test('Z16 review: a stored copy of a former default does not hide the new «how to answer» line; a real edit stays', async () => {
+  const { LEGACY_TEMPLATE_DEFAULTS } = await import('../config/templates.js');
+  const { renderText } = await import('./templates.service.js');
+  for (const key of ['owner.support_answer', 'owner.remind', 'owner.remind_request', 'owner.rules_full']) {
+    const olds = LEGACY_TEMPLATE_DEFAULTS[key] ?? [];
+    for (const language of ['ru', 'he', 'en'] as const) {
+      const old = olds.find(t => TEMPLATE_DEFAULTS[key]![language] !== t && (language === 'he' ? /[א-ת]/.test(t) : language === 'ru' ? /[а-я]/i.test(t) : !/[א-תа-я]/i.test(t)));
+      assert.ok(old, `${key}.${language}`);
+      const settings = { templates: { [key]: { [language]: old } } } as never;
+      assert.equal(renderText(settings, key, language), renderText(undefined, key, language), `${key}.${language}`);
+    }
+  }
+  const edited = { templates: { 'owner.support_answer': { ru: 'Юрий ответил: «{text}»' } } } as never;
+  assert.equal(renderText(edited, 'owner.support_answer', 'ru', { text: 'ок' }), 'Юрий ответил: «ок»');
+});
+
+test('Z16 review: the demo tenant may keep a rule about showing another business; others may not', async () => {
+  const { ownerMessagePrompt } = await import('../config/owner-rules.js');
+  assert.match(ownerMessagePrompt(false), /отвечать за другой бизнес/);
+  assert.doesNotMatch(ownerMessagePrompt(true), /другим бизнесом|другой бизнес/);
+});

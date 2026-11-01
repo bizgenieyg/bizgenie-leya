@@ -7,7 +7,8 @@ import { handleOwnerMessage } from './owner-workflow.service.js';
 import { invalidateOwnerSettings, loadOwnerSettings } from './owner-settings.service.js';
 import { handleOwnerGroupMessage } from './owner-group-inbound.service.js';
 import { createHash } from 'node:crypto';
-import { ensureAllOwnerChannels, sendPendingHints } from './owner-channels.service.js';
+import { ensureAllOwnerChannels, sendHintOnce, sendPendingHints } from './owner-channels.service.js';
+import { understandOwnerMessage } from './owner-rules.service.js';
 import { runDailyReports } from './daily-report.service.js';
 import { settleAllOutboundQueues, stopOutboundQueue } from '../workers/outbound-queue.js';
 
@@ -204,6 +205,44 @@ test('Z15/Z16: the welcome goes once to each owner group created before — desc
     await settleAllOutboundQueues();
     assert.deepEqual(f.sent.map(m => [m.chatId, m.text]).sort(), [[group, HELP], [OWNER_GROUPS.reports, REPORTS]].sort(), 'once to each group');
     assert.deepEqual(f.descriptions.sort(), [HELP, REPORTS].sort());
+  } finally { await f.close(); }
+});
+
+test('Z16 review: a failed welcome (description or queue) is sent again by the hourly job, once', async () => {
+  const f = await fixture();
+  try {
+    await f.pg.query('update owner_channels set hint_sent_at=null');
+    const setDescription = f.provider.setGroupDescription!;
+    f.provider.setGroupDescription = async () => { throw new Error('waha down'); };
+    await sendPendingHints(f.db, () => f.provider);
+    await settleAllOutboundQueues();
+    assert.equal(f.sent.length, 0);
+    // The queue fails for «Нужен ответ».
+    f.provider.setGroupDescription = setDescription;
+    const settings = await loadOwnerSettings(f.db, f.tenantId);
+    await assert.rejects(sendHintOnce(f.db, f.provider, f.tenantId, 'session', settings, 'needs_answer', group, { send: async () => { throw new Error('queue'); } }));
+    await sendPendingHints(f.db, () => f.provider);
+    await settleAllOutboundQueues();
+    await sendPendingHints(f.db, () => f.provider);
+    await settleAllOutboundQueues();
+    assert.deepEqual(f.sent.map(m => [m.chatId, m.text]).sort(), [[group, HELP], [OWNER_GROUPS.reports, REPORTS]].sort());
+    // The description is set again on the retry (idempotent): both groups have it.
+    assert.deepEqual([...new Set(f.descriptions)].sort(), [HELP, REPORTS].sort());
+  } finally { await f.close(); }
+});
+
+test('Z16 review: the rule model forbids showing another business except for demo_tenant', async () => {
+  const f = await fixture();
+  try {
+    const prompts: string[] = [];
+    const taskAI = { async generateReply(input: { systemPrompt: string }) { prompts.push(input.systemPrompt); return { text: '{"kind":"other","answer":"Хорошо."}' }; } } as never;
+    const settings = await loadOwnerSettings(f.db, f.tenantId);
+    await understandOwnerMessage(f.db, f.tenantId, settings, 'показывай пример за другой бизнес', { taskAI });
+    await f.pg.query("insert into system_config(key,value,updated_at) values ('demo_tenant',$1,now()) on conflict (key) do update set value=excluded.value", [JSON.stringify(f.tenantId)]);
+    await understandOwnerMessage(f.db, f.tenantId, settings, 'показывай пример за другой бизнес', { taskAI });
+    assert.equal(prompts.length, 2);
+    assert.match(prompts[0]!, /отвечать за другой бизнес/);
+    assert.doesNotMatch(prompts[1]!, /другой бизнес/);
   } finally { await f.close(); }
 });
 

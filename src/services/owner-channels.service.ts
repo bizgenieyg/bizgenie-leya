@@ -68,7 +68,8 @@ export async function ownerChannel(db: DatabaseClient, provider: WhatsAppProvide
   tails.set(key, tail);
   let chat: string | null;
   try { chat = await run; } finally { if (tails.get(key) === tail) tails.delete(key); }
-  if (chat) await sendHintOnce(db, provider, tenantId, session, settings, topic, chat, deps);
+  // The welcome must not stop the message that asked for the group; a failed one is retried by the hourly job.
+  if (chat) await sendHintOnce(db, provider, tenantId, session, settings, topic, chat, deps).catch(() => console.warn('owner_channel_hint_failed', { tenantId }));
   return chat;
 }
 
@@ -78,7 +79,8 @@ export const welcomeTemplate = (topic: OwnerTopic) => topic === 'needs_answer' ?
 
 /**
  * Z15/Z16: the welcome — once per owner group of every topic (new ones and those created before): the group
- * description and the first message. Claimed by hint_sent_at, so it never goes twice.
+ * description and the first message. Claimed by hint_sent_at, so it never goes twice; a failure of either releases
+ * the claim and throws, so the hourly job tries again (the queue's dedupe key keeps the message single).
  */
 export async function sendHintOnce(db: DatabaseClient, provider: WhatsAppProvider, tenantId: string, session: string,
   settings: OwnerSettings, topic: OwnerTopic, chatId: string, deps: Pick<Deps, 'send'>): Promise<void> {
@@ -86,8 +88,14 @@ export async function sendHintOnce(db: DatabaseClient, provider: WhatsAppProvide
   if (claimed.error) throw new Error('Owner channel update failed');
   if (!claimed.data?.length) return;
   const hint = renderText(settings, welcomeTemplate(topic), channelLanguage(settings));
-  try { await provider.setGroupDescription?.(session, chatId, hint); } catch { console.warn('owner_channel_description_failed'); }
-  await deps.send(session, chatId, hint, `owner-channel:hint:${chatId}`);
+  try {
+    await provider.setGroupDescription?.(session, chatId, hint);
+    await deps.send(session, chatId, hint, `owner-channel:hint:${chatId}`);
+  } catch (error) {
+    const released = await db.from('owner_channels').update({ hint_sent_at: null }).eq('tenant_id', tenantId).eq('chat_id', chatId).eq('status', 'active');
+    if (released.error) console.error('owner_channel_hint_release_failed', { tenantId });
+    throw error;
+  }
 }
 
 /**

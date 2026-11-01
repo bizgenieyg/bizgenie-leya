@@ -375,6 +375,19 @@ export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
  * default applies. Checked at read time: no data migration, owner-edited texts stay untouched.
  */
 export const LEGACY_TEMPLATE_DEFAULTS: Record<string, string[]> = {
+  // Z16: the defaults before the «how to answer» line — a stored copy of them is not an owner's edit.
+  "owner.support_answer": ["Ответ BizGenie: «{text}»", "תשובת BizGenie: „{text}”", "BizGenie's answer: “{text}”"],
+  "owner.remind_request": [
+    "🔔 Напоминание — заявка ждёт ответа:\n{card}\n📱 {phone}\n\nОтветьте реплеем на это сообщение 🙏",
+    "🔔 תזכורת — בקשה מחכה לתשובה:\n{card}\n📱 {phone}\n\nנא להשיב בציטוט להודעה זו 🙏",
+    "🔔 Reminder — a request is waiting for your answer:\n{card}\n📱 {phone}\n\nReply to this message 🙏",
+  ],
+  "owner.remind": [
+    "🔔 Напоминание — жду ответа на вопрос от клиента {name} ({phone}):\n«{question}»\n\nОтветьте реплеем на это сообщение 🙏",
+    "🔔 Reminder — waiting for your answer to the question from {name} ({phone}):\n«{question}»\n\nReply to this message 🙏",
+    "🔔 תזכורת — מחכה לתשובה על השאלה של {name} ({phone}):\n«{question}»\n\nנא להשיב בציטוט להודעה זו 🙏",
+  ],
+  "owner.rules_full": ["Правил уже {max} — какое убрать?\n{list}", "יש כבר {max} כללים — איזה להסיר?\n{list}", "There are already {max} rules — which one should I remove?\n{list}"],
   "client.greeting": [
     "Здравствуйте! Это {assistant_name}, ассистент {owner_name}. Чем могу помочь?",
     "Hi! This is {assistant_name}, {owner_name}'s assistant. How can I help?",

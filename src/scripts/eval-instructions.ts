@@ -120,7 +120,7 @@ async function main() {
           const u = await understandOwnerMessage(db, tenantId, settings, c.text, { taskAI: createTaskAIProvider() });
           const step = u ? await stepFor(db, tenantId, settings, u, 'whatsapp') : null;
           const view = { kind: step?.kind ?? 'none', reply: step?.reply ?? '', action: step?.proposal?.action ?? null, status: step?.proposal?.status ?? null };
-          ruleRuns.push({ tenant: t, id: c.id, text: c.text, expect: c.expect, pass: !!step && c.check(view), reply: view.reply, kind: view.kind });
+          ruleRuns.push({ tenant: t, id: c.id, text: c.text, expect: c.expect, pass: !!step && c.check(view, !!tenantSpec.demo?.length), reply: view.reply, kind: view.kind });
           console.log(`owner-rules · ${t} · ${c.id}: ${ruleRuns.at(-1)!.pass ? 'PASS' : 'FAIL'}`);
         }
       }
