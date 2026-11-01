@@ -73,6 +73,19 @@ async function supportGroup(db: DatabaseClient, provider: WhatsAppProvider, p: {
   try { return await creating; } finally { creating = null; }
 }
 
+/** The request a queued message to the operator was sent for — its dedupe key is «support:<request id>…». */
+async function requestByQueue<T>(db: DatabaseClient, tenantId: string, outboundIds: string[], columns: string): Promise<T | undefined> {
+  if (!outboundIds.length) return undefined;
+  const rows = await db.from('outbound_messages').select('dedupe_key').eq('tenant_id', tenantId).in('id', outboundIds);check(rows.error, 'Outbound lookup failed');
+  for (const row of rows.data ?? []) {
+    const id = /^support:([0-9a-f-]{36})(?::|$)/.exec(String(row.dedupe_key ?? ''))?.[1];
+    if (!id) continue;
+    const r = await db.from('support_requests').select(columns).eq('id', id).maybeSingle();check(r.error, 'Support request lookup failed');
+    if (r.data) return r.data as T;
+  }
+  return undefined;
+}
+
 /** The request goes to the operator; false — no operator group (not configured or not created). */
 async function toOperator(db: DatabaseClient, provider: WhatsAppProvider, request: { id: string; tenant_id: string; text: string; quoted_text: string | null }, dedupe: string): Promise<boolean> {
   const p = await platform(db);
@@ -84,8 +97,8 @@ async function toOperator(db: DatabaseClient, provider: WhatsAppProvider, reques
   const context = request.quoted_text ? '\n' + renderText(settings, 'operator.support_context', 'ru', { quoted: request.quoted_text.slice(0, 300) }) : '';
   const text = renderText(settings, 'operator.support_request', 'ru', { business: String(tenant.data?.business_name || '—'), owner: String(tenant.data?.name || '—'), text: request.text, context });
   const sent = await enqueueMessage(db, p.tenant, provider, { session: p.session, chatId: group, text }, { kind: 'owner_notice', dedupeKey: dedupe });
-  // Z15 review: from here the message is in the queue — the request is sent whatever happens next. A failed binding
-  // (the operator's quote would not find the request) is logged; the request itself is never undone.
+  // Z15 review: from here the message is in the queue — the request is sent whatever happens next. A failed binding is
+  // logged only: the operator's quote still finds the request by the queue row's dedupe key (requestByQueue).
   try {
     const row = await db.from('support_requests').select('operator_message_ids').eq('id', request.id).single();check(row.error, 'Support request lookup failed');
     check((await db.from('support_requests').update({ operator_message_ids: [...(row.data!.operator_message_ids as string[]), sent.id], status: 'new' }).eq('id', request.id)).error, 'Support request update failed');
@@ -147,8 +160,10 @@ export async function handleSupportGroupMessage(db: DatabaseClient, provider: Wh
   const normalized = normalizeWebhookMessage(body);
   const quoted = normalized.kind === 'message' ? normalized.replyToId : null;
   if (!quoted) return true;
-  const keys = [replyId(quoted), quoted, ...await outboundIdsForProviderId(db, tenantId, quoted)];
-  const request = await requestBy<{ id: string; tenant_id: string; owner_message_ids: string[] }>(db, 'operator_message_ids', keys, 'id,tenant_id,owner_message_ids');
+  const outboundIds = await outboundIdsForProviderId(db, tenantId, quoted);
+  type Found = { id: string; tenant_id: string; owner_message_ids: string[] };
+  const request = await requestBy<Found>(db, 'operator_message_ids', [replyId(quoted), quoted, ...outboundIds], 'id,tenant_id,owner_message_ids')
+    ?? await requestByQueue<Found>(db, tenantId, outboundIds, 'id,tenant_id,owner_message_ids');
   if (!request) return true;
   const settings = await loadOwnerSettings(db, request.tenant_id);
   const instance = await db.from('whatsapp_instances').select('session_name').eq('tenant_id', request.tenant_id).maybeSingle();check(instance.error, 'Instance lookup failed');

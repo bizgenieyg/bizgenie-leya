@@ -233,5 +233,12 @@ test('Z15 review: a failed save keeps the setting waiting — the next «Да» 
     assert.equal(f.sent.filter(m => m.chatId === supportGroup).length, 2, 'the operator got it');
     assert.equal((await f.pg.query<{ n: number }>('select count(*)::int n from support_requests')).rows[0]!.n, 2, 'the sent request is kept');
     assert.equal((await f.pg.query<{ status: string }>("select status from owner_rule_proposals where action='support' order by created_at desc limit 1")).rows[0]!.status, 'applied');
+    // The operator's quote of the unbound message still reaches the owner and closes that request.
+    const unbound = f.sent.filter(m => m.chatId === supportGroup).at(-1)!;
+    await handleOwnerGroupMessage(f.db, f.platformId, { event: 'message', session: 'platform', payload: { id: `false_${supportGroup}_OP2_111111111@lid`, from: supportGroup,
+      participant: '111111111@lid', fromMe: false, body: 'Голосовых пока нет.', replyTo: { id: unbound.id.split('_')[2]! }, _data: { Info: { Chat: supportGroup, Sender: '111111111@lid', SenderAlt: `${operator}@s.whatsapp.net` } } } }, f.provider, null);
+    await settleAllOutboundQueues();
+    assert.deepEqual([f.sent.at(-1)!.chatId, f.sent.at(-1)!.text], [group, 'Ответ BizGenie: «Голосовых пока нет.»'], 'the answer is not lost');
+    assert.equal((await f.pg.query<{ status: string }>("select status from support_requests where text like 'пусть%'")).rows[0]!.status, 'answered');
   } finally { console.error = error; await f.close(); }
 });
