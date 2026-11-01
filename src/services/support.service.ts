@@ -6,11 +6,13 @@ import { extractMessageId } from '../providers/whatsapp/waha.provider.js';
 import { enqueueMessage, outboundIdsForProviderId } from '../workers/outbound-queue.js';
 import { replyId } from '../utils/assistant-text.js';
 import { insertProposal, type Proposal, type Step } from './owner-rules.service.js';
+import { reopen } from './owner-chat.service.js';
 import { loadOwnerSettings, type OwnerSettings } from './owner-settings.service.js';
 import { isOwnQueuedSend } from './outgoing-owner.service.js';
 import { behavior } from './runtime-settings.service.js';
 import { renderText } from './templates.service.js';
 import { logSystemEvent } from './logging.service.js';
+import { resolveClientPhone } from './client-phone.service.js';
 
 /**
  * Z15: owners' requests to BizGenie. «Передать в BizGenie? Да / Нет» → a row in support_requests and a message to the
@@ -95,10 +97,12 @@ export async function submitSupport(db: DatabaseClient, provider: WhatsAppProvid
   const payload = p.payload ?? {};
   const created = await db.from('support_requests').insert({ tenant_id: tenantId, text: String(payload.text ?? '').slice(0, 2000) || '—', quoted_text: typeof payload.quoted_text === 'string' ? payload.quoted_text : null,
     conversation_id: typeof payload.conversation_id === 'string' ? payload.conversation_id : null }).select('id,tenant_id,text,quoted_text').single();
-  check(created.error || !created.data, 'Support request save failed');
+  if (created.error || !created.data) { await reopen(db, p.id); throw new Error('Support request save failed'); }
   const request = created.data as { id: string; tenant_id: string; text: string; quoted_text: string | null };
   let ok = false;
-  try { ok = await toOperator(db, provider, request, `support:${request.id}`); } catch (e) { console.error('support_request_send_failed', { tenantId }); }
+  try { ok = await toOperator(db, provider, request, `support:${request.id}`); } catch { console.error('support_request_send_failed', { tenantId }); }
+  // Z15 review: not delivered to the operator — the request is not kept as sent; the proposal waits again for «Да».
+  if (!ok) { check((await db.from('support_requests').delete().eq('id', request.id)).error, 'Support request delete failed'); await reopen(db, p.id); }
   return renderText(settings, ok ? 'owner.support_sent' : 'owner.support_unavailable', lang(settings));
 }
 
@@ -129,6 +133,13 @@ export async function handleSupportGroupMessage(db: DatabaseClient, provider: Wh
   const id = extractMessageId(payload.id) || '';
   // The assistant's own sends (the requests themselves) are not answers.
   if (!text || (fromMe && (payload.source === 'api' || await isOwnQueuedSend(db, tenantId, id, [chat], text, new Date())))) return true;
+  // Z15 review: only the operator answers for BizGenie — the operator's number (a @lid sender resolved to its phone), or
+  // the platform account itself. Anyone else added to the group is ignored.
+  if (!fromMe) {
+    const sender = [payload.participant, info.Sender].find(value => typeof value === 'string' && /^\d+@(c\.us|s\.whatsapp\.net|lid)$/.test(value)) as string | undefined;
+    const phone = sender ? await resolveClientPhone(provider, p.session, sender.replace(/@s\.whatsapp\.net$/, '@c.us'), body, behavior(await loadOwnerSettings(db, p.tenant)).lid_lookup_timeout_seconds) : null;
+    if (phone !== p.number) { console.warn('support_answer_not_operator', { tenantId }); return true; }
+  }
   const normalized = normalizeWebhookMessage(body);
   const quoted = normalized.kind === 'message' ? normalized.replyToId : null;
   if (!quoted) return true;

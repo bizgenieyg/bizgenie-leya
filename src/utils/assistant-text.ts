@@ -21,9 +21,13 @@ export function waitingText(question:string,quiet?:{at:Date|null;ownerZone:strin
 export function ownerAnswerText(question:string,answer:string,settings?:OwnerSettings,replyLanguage?:string):string {
  return renderText(settings,'client.owner_answer',replyLanguage??languageOf(question),{answer:clientText(answer)});
 }
+/**
+ * Z14 review: only a whole message that is a word to the assistant and nothing for the client — «позже», «уточню
+ * завтра», «не сейчас». A time alone («завтра», «утром») or a plan («напишу ему завтра», «завтра на встрече обсудим»)
+ * may be the answer itself: the classifier decides, and when unsure it is an answer.
+ */
 export function isDeferredAnswer(text:string):boolean {
-  if (/(?:отвечу|скажу|уточню|напишу|проверю).{0,20}(?:позже|потом|завтра|утром)|(?:позже|потом|завтра|утром).{0,20}(?:отвечу|скажу|уточню|напишу|проверю)|^занят[а]?(?: сейчас)?[.!\s]*$/i.test(text.trim())) return true;
-  return /^(?:(?:отвечу|скажу|уточню|напишу|проверю)\s+)?(?:позже|потом|завтра|утром)(?:\s+(?:отвечу|скажу|напишу|проверю|уточню))?[.!\s]*$|^(?:занят[а]?|спокойной ночи|сейчас не могу|не сейчас|отвечу позже|later|tomorrow|i(?:'ll| will) (?:reply|answer) later|אענה אחר כך|מחר|אחר כך)[.!\s]*$/i.test(text.trim());
+  return /^(?:(?:отвечу|уточню|проверю)\s+)?(?:позже|потом)(?:\s+(?:отвечу|уточню|проверю))?[.!\s]*$|^(?:отвечу|уточню|проверю)\s+(?:завтра|утром)[.!\s]*$|^(?:завтра|утром)\s+(?:отвечу|уточню|проверю)[.!\s]*$|^(?:занят[а]?(?: сейчас)?|сейчас не могу|не сейчас|later|i(?:'ll| will) (?:reply|answer) later|אענה אחר כך|אחר כך)[.!\s]*$/i.test(text.trim());
 }
 // Normalize only a known serialized message-ID structure; never infer a chat identity.
 // Z14: a group message id ends with its sender (true_<group>@g.us_<id>_<sender>@c.us) while a quote carries the bare id.

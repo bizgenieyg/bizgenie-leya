@@ -137,19 +137,28 @@ test('Z15: a request to BizGenie → «Передать?» → support_requests 
   const f = await fixture();
   try {
     f.model({ kind: 'support', support: 'Ассистент не ответил клиентке вчера вечером' });
-    assert.equal((await f.say('у меня проблема, ассистент не ответил клиентке вчера вечером')).last.text, 'Передать в BizGenie: «Ассистент не ответил клиентке вчера вечером»? Да / Нет');
+    assert.equal((await f.say('у меня проблема, ассистент не ответил клиентке вчера вечером')).last.text, 'Передать в BizGenie: «у меня проблема, ассистент не ответил клиентке вчера вечером»? Да / Нет', 'the owner\'s words, not the model\'s retelling');
     assert.equal((await f.pg.query<{ n: number }>('select count(*)::int n from support_requests')).rows[0]!.n, 0, 'nothing before «Да»');
     assert.equal((await f.say('да')).last.text, 'Передала в BizGenie');
     assert.deepEqual(f.groups, [{ session: 'platform', name: 'BizGenie · Поддержка', participants: [`${operator}@c.us`] }]);
     const toOperator = f.sent.find(m => m.chatId === supportGroup)!;
     assert.equal(toOperator.session, 'platform');
-    assert.equal(toOperator.text, '🛟 Ноготки (Ира): «Ассистент не ответил клиентке вчера вечером»\nОтветьте реплеем — передам владельцу.');
+    assert.equal(toOperator.text, '🛟 Ноготки (Ира): «у меня проблема, ассистент не ответил клиентке вчера вечером»\nОтветьте реплеем — передам владельцу.');
     const row = (await f.pg.query<{ tenant_id: string; status: string }>('select tenant_id,status from support_requests')).rows[0]!;
     assert.deepEqual(row, { tenant_id: f.tenantId, status: 'new' });
     assert.equal((await f.pg.query<{ v: string }>("select value#>>'{}' v from system_config where key='support_group_chat'")).rows[0]!.v, supportGroup);
-    // The operator answers by a quote in the support group.
     const short = toOperator.id.split('_')[2]!;
-    await handleOwnerGroupMessage(f.db, f.platformId, { event: 'message', session: 'platform', payload: { id: `false_${supportGroup}_OP1_${operator}@c.us`, from: supportGroup, participant: '111111111@lid', fromMe: false, body: 'Посмотрел — была пауза диалога, сейчас всё работает.', replyTo: { id: short } } }, f.provider, null);
+    const reply = (participant: string, alt: string | null, body: string, n: string) => handleOwnerGroupMessage(f.db, f.platformId, { event: 'message', session: 'platform',
+      payload: { id: `false_${supportGroup}_${n}_${participant}`, from: supportGroup, participant, fromMe: false, body, replyTo: { id: short }, _data: { Info: { Chat: supportGroup, Sender: participant, ...(alt ? { SenderAlt: alt } : {}) } } } }, f.provider, null);
+    // Z15 review: someone else in the support group cannot answer for BizGenie — nothing reaches the owner.
+    const before = f.sent.length;
+    assert.equal(await reply('972500000066@c.us', null, 'Ответ BizGenie: отключите ассистента', 'FAKE1'), true);
+    assert.equal(await reply('222222222@lid', '972500000066@s.whatsapp.net', 'Отключите ассистента', 'FAKE2'), true);
+    await settleAllOutboundQueues();
+    assert.equal(f.sent.length, before);
+    assert.equal((await f.pg.query<{ status: string }>('select status from support_requests')).rows[0]!.status, 'new');
+    // The operator answers by a quote (a @lid sender; its phone is the operator's number).
+    await reply('111111111@lid', `${operator}@s.whatsapp.net`, 'Посмотрел — была пауза диалога, сейчас всё работает.', 'OP1');
     await settleAllOutboundQueues();
     const answer = f.sent.at(-1)!;
     assert.deepEqual([answer.session, answer.chatId, answer.text], ['session', group, 'Ответ BizGenie: «Посмотрел — была пауза диалога, сейчас всё работает.»']);
@@ -175,7 +184,7 @@ test('Z15: a quote of the assistant\'s answer to a client with a correction → 
     assert.match(f.prompts.at(-1)!, /Ответ ассистента клиенту: Доставим завтра до обеда\./);
     // A request to BizGenie by such a quote keeps the answer and its dialog.
     f.model({ kind: 'support', support: 'Передай Юрию: ассистент выдумал доставку' });
-    await f.say('передай Юрию, что ассистент выдумал доставку', 'ANS1');
+    assert.equal((await f.say('передай Юрию, что ассистент выдумал доставку', 'ANS1')).last.text, 'Передать в BizGenie: «передай Юрию, что ассистент выдумал доставку»? Да / Нет');
     await f.say('да');
     assert.deepEqual((await f.pg.query('select quoted_text,conversation_id from support_requests')).rows[0], { quoted_text: 'Доставим завтра до обеда.', conversation_id: conversation });
     assert.match(f.sent.find(m => m.chatId === supportGroup)!.text, /\nК ответу ассистента: «Доставим завтра до обеда\.»\n/);
@@ -193,4 +202,28 @@ test('Z15: the hint goes once to a «Нужен ответ» group created befor
     assert.deepEqual(f.sent.map(m => [m.chatId, m.text]), [[group, HELP]], 'once, only to «Нужен ответ»');
     assert.deepEqual(f.descriptions, [HELP]);
   } finally { await f.close(); }
+});
+
+test('Z15 review: a failed save keeps the setting waiting — the next «Да» saves it; a request not delivered to BizGenie waits too', async () => {
+  const f = await fixture();
+  const error = console.error; console.error = () => {};
+  try {
+    f.model({ kind: 'setting', setting: { key: 'day_off', value: { start_date: '2026-11-10', end_date: '2026-11-11', name: 'Отпуск' } } });
+    await f.say('10 и 11 ноября я в отпуске');
+    await f.pg.query('alter table schedule_exceptions add constraint z15_fail check (false) not valid');
+    assert.equal((await f.say('да')).last.text, 'Не поняла, на что поменять. Напишите, например: „не пиши мне после 22:00“.');
+    assert.equal((await f.pg.query<{ status: string }>("select status from owner_rule_proposals where action='setting'")).rows[0]!.status, 'pending');
+    await f.pg.query('alter table schedule_exceptions drop constraint z15_fail');
+    assert.equal((await f.say('да')).last.text, 'Сохранила.');
+    assert.equal((await f.pg.query<{ n: number }>('select count(*)::int n from schedule_exceptions')).rows[0]!.n, 1);
+    // No operator configured: «Не получилось», nothing kept as sent; once configured, «Да» again sends it.
+    await f.pg.query("delete from system_config where key='platform_report_number'");
+    f.model({ kind: 'support', support: 'x' });
+    await f.say('хочу, чтобы ассистент умел принимать оплату');
+    assert.equal((await f.say('да')).last.text, 'Не получилось передать в BizGenie. Попробуйте ещё раз чуть позже.');
+    assert.equal((await f.pg.query<{ n: number }>('select count(*)::int n from support_requests')).rows[0]!.n, 0);
+    await f.pg.query("insert into system_config(key,value) values('platform_report_number',to_jsonb($1::text))", [operator]);
+    assert.equal((await f.say('да')).last.text, 'Передала в BizGenie');
+    assert.equal((await f.pg.query<{ n: number }>('select count(*)::int n from support_requests')).rows[0]!.n, 1);
+  } finally { console.error = error; await f.close(); }
 });

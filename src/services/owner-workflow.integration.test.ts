@@ -337,6 +337,10 @@ test('assistant formatting strips placeholders and defer detection does not reje
   assert.equal(clientText('Передаю в SUPPORT / SALE для уточнения'), 'Передаю в для уточнения');
   assert.equal(isDeferredAnswer('Завтра доставка с 9 до 18'), false);
   assert.equal(isDeferredAnswer('позже'), true);
+  // Z14 review: a time or a plan is (or may be) the answer — never a postponement by the rule; the classifier decides.
+  for (const answer of ['Завтра', 'завтра', 'Утром', 'מחר', 'tomorrow', 'Напишу ему завтра', 'Скажу ему завтра на встрече', 'Завтра на встрече обсудим', 'Завтра отвечу на встрече, приходите к 10'])
+    assert.equal(isDeferredAnswer(answer), false, answer);
+  for (const word of ['позже', 'Потом', 'уточню завтра', 'Завтра отвечу', 'отвечу позже', 'Не сейчас', 'занята', 'later', 'אחר כך']) assert.equal(isDeferredAnswer(word), true, word);
 });
 
 test('owner can pause any dialogue without an escalation; foreign dialogue cannot be changed', async () => {

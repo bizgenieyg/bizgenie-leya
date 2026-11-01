@@ -44,7 +44,7 @@ export async function answerProposal(db: DatabaseClient, tenantId: string, setti
       let reply: string;
       try { reply = proposal.action === 'setting' ? await applySetting(db, tenantId, settings, proposal, deps.onRename) : deps.provider ? await submitSupport(db, deps.provider, tenantId, settings, proposal) : renderText(settings, 'owner.support_unavailable', lang(settings)); }
       catch { console.error('owner_chat_apply_failed', { tenantId, action: proposal.action }); reply = renderText(settings, proposal.action === 'setting' ? 'owner.setting_invalid' : 'owner.support_unavailable', lang(settings)); }
-      await send(reply, `rule:${proposal.id}:applied`);
+      await send(reply, `rule:${proposal.id}:applied:${inboundId ?? Date.now()}`); // a retry after a failure is a new reply
       return true;
     }
     if (isNo(text)) { await send(await declineSetting(db, settings, proposal), `rule:${proposal.id}:declined`); return true; }
@@ -110,7 +110,8 @@ export async function understandInChat(db: DatabaseClient, tenantId: string, set
   // No model (or over the limit): the old hint — answer a question by quoting it.
   if (!u) { await send(renderText(settings, 'owner.owner_reply_15', lang(settings)), `rules:${key}:unavailable`); return; }
   const step = u.kind === 'setting' ? await proposeSetting(db, tenantId, settings, u.setting)
-    : u.kind === 'support' ? await proposeSupport(db, tenantId, settings, { text: u.support ?? text, quotedText: correction?.quotedText ?? null, conversationId: correction?.conversationId ?? null })
+    : u.kind === 'support' ? await proposeSupport(db, tenantId, settings, { text, // Z15 review: the owner's words as written, not the model's retelling
+ quotedText: correction?.quotedText ?? null, conversationId: correction?.conversationId ?? null })
     : u.kind === 'help' ? { reply: helpText(settings), proposal: null }
     : u.kind === 'ambiguous' && u.options ? await proposeChoice(db, tenantId, settings, u)
     : await stepFor(db, tenantId, settings, u, 'whatsapp');

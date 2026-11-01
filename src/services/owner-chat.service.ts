@@ -102,6 +102,10 @@ export async function proposeSetting(db: DatabaseClient, tenantId: string, setti
   return { reply: renderText(settings, 'owner.setting_confirm', l, { setting: SETTING_LABELS[setting.key][l], from: shown(settings, setting.key, before), to: shown(settings, setting.key, setting.value) }), proposal: p, kind: 'setting' };
 }
 
+/** A claimed proposal whose change failed goes back to waiting for «Да». */
+export async function reopen(db: DatabaseClient, id: string): Promise<void> {
+  check((await db.from('owner_rule_proposals').update({ status: 'pending', decided_at: null }).eq('id', id).eq('status', 'applied')).error, 'Proposal update failed');
+}
 /** «Да» to a setting: claimed once (pending → applied), then applied through the same save as the cabinet. */
 export async function applySetting(db: DatabaseClient, tenantId: string, settings: OwnerSettings, p: Proposal,
   onRename?: () => Promise<void>): Promise<string> {
@@ -111,12 +115,19 @@ export async function applySetting(db: DatabaseClient, tenantId: string, setting
   check(claimed.error, 'Proposal update failed');
   if (!claimed.data?.length || !setting) return renderText(settings, 'owner.setting_invalid', l);
   const v = setting.value as Record<string, string> | null;
-  if (setting.key === 'quiet_hours') await saveRuntimeSettings(db, tenantId, { quiet_hours_start: v?.start ?? null, quiet_hours_end: v?.end ?? null });
-  else if (setting.key === 'day_off') {
-    await createException(db, tenantId, { start_date: v!.start_date, end_date: v!.end_date, kind: 'day_off', name: v!.name || SETTING_LABELS.day_off[l], recurs_annually: false });
+  try {
+    if (setting.key === 'quiet_hours') await saveRuntimeSettings(db, tenantId, { quiet_hours_start: v?.start ?? null, quiet_hours_end: v?.end ?? null });
+    else if (setting.key === 'day_off') await createException(db, tenantId, { start_date: v!.start_date, end_date: v!.end_date, kind: 'day_off', name: v!.name || SETTING_LABELS.day_off[l], recurs_annually: false });
+    else await saveRuntimeSettings(db, tenantId, { [setting.key]: setting.value });
+  } catch (error) {
+    // Z15 review: nothing was saved — the proposal waits again, so the next «Да» retries it.
+    await reopen(db, p.id);
+    throw error;
+  }
+  if (setting.key === 'day_off') {
     const { rescheduleTenantEscalationTimeouts } = await import('./owner-workflow.service.js');
     await rescheduleTenantEscalationTimeouts(db, tenantId, await loadOwnerSettings(db, tenantId));
-  } else await saveRuntimeSettings(db, tenantId, { [setting.key]: setting.value });
+  }
   invalidateOwnerSettings(db, tenantId);
   // The owner groups carry the assistant name and are named in the owner's language.
   if ((setting.key === 'assistant_name' || setting.key === 'owner_language') && onRename) { try { await onRename(); } catch { console.warn('owner_channel_rename_failed', { tenantId }); } }
