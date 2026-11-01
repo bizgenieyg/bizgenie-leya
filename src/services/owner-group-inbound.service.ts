@@ -17,6 +17,9 @@ import { recordUsageEvent } from './usage.service.js';
  */
 export async function handleOwnerGroupMessage(db: DatabaseClient, tenantId: string, body: Record<string, unknown>,
   whatsapp?: WhatsAppProvider, ai?: import('../providers/ai/ai-provider.interface.js').AIProvider | null): Promise<boolean> {
+  // Z15: the operator's answer in the support group «BizGenie · Поддержка» (the platform tenant's session).
+  const { handleSupportGroupMessage } = await import('./support.service.js');
+  if (await handleSupportGroupMessage(db, whatsapp ?? createWhatsAppProvider(), tenantId, body)) return true;
   const message = await ownerGroupMessage(db, tenantId, body, (id, chat, text) => isOwnQueuedSend(db, tenantId, id, [chat], text, new Date()));
   if (!message) return false;
   const routing = await getTenantRouting(db, tenantId);

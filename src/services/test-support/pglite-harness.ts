@@ -85,6 +85,7 @@ const MIGRATIONS_IN_APPLICATION_ORDER = [
   '20261026090000_068_owner_rules.sql',
   '20261028090000_069_owner_cycle_daily_report.sql',
   '20261031090000_070_reset_old_remind_default.sql',
+  '20261101090000_071_owner_chat_support.sql',
 ];
 
 /** PGlite has no real `auth` schema/GoTrue; stub just enough for RLS-authoring
@@ -235,7 +236,8 @@ class PgliteQueryBuilder {
       if (this.mode === 'upsert') {
         const row = this.payload as Record<string, unknown>;
         const keys = Object.keys(row);
-        const params = keys.map(key => row[key]);
+        // PostgREST sends JSON, so a string into the jsonb system_config.value is a JSON string; pg needs it encoded.
+        const params = keys.map(key => this.table === 'system_config' && key === 'value' ? JSON.stringify(row[key]) : row[key]);
         const placeholders = keys.map((_, i) => `$${i + 1}`).join(',');
         const conflict = this.conflictColumn.split(',').map(column => column.trim());
         const updateSet = keys.filter(key => !conflict.includes(key)).map(key => `${quoteIdent(key)} = excluded.${quoteIdent(key)}`).join(',');

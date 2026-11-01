@@ -144,6 +144,26 @@ test('demo mode: DEMO_START … numbers from the demo text with "для прим
   } finally { await f.pg.close(); }
 });
 
+test('Z15: [[DEMO_START: client]] — the demo on the client\'s own business: no demo text, not an unknown label, DEMO_END leaves the role', async () => {
+  const f = await fixture();
+  const warnings: unknown[][] = [], warn = console.warn;
+  console.warn = (...a: unknown[]) => { warnings.push(a); };
+  try {
+    f.reply('Записала бы вас на консультацию в четверг в 18:00 — цены и даты здесь для примера. Удобно?\n[[DEMO_START: client]]');
+    const first = await f.say('здравствуйте, сколько стоит курс по личным финансам?');
+    assert.equal(f.prompts.length, 1, 'no second call: there is no demo text to rewrite with');
+    assert.equal(first.reply, 'Записала бы вас на консультацию в четверг в 18:00 — цены и даты здесь для примера. Удобно?');
+    assert.equal((await f.pg.query<{ demo_key: string | null }>('select demo_key from simulator_sessions')).rows[0]!.demo_key, 'client');
+    f.reply('Курс — 4 занятия по 90 минут.');
+    await f.say('а сколько занятий?');
+    assert.match(f.prompts.at(-1)!.system, /=== РЕЖИМ ПОКАЗА \(client\) ===\nТы показываешь пример на бизнесе самого клиента/);
+    f.reply('Лея стоит по тарифу из фактов. Подключить?\n[[DEMO_END]]');
+    await f.say('а сколько стоит Лея?');
+    assert.equal((await f.pg.query<{ demo_key: string | null }>('select demo_key from simulator_sessions')).rows[0]!.demo_key, null);
+    assert.ok(!warnings.some(w => w[0] === 'instruction_demo_unknown_key' || w[0] === 'instruction_unknown_labels'), 'client is a known demo');
+  } finally { console.warn = warn; await f.pg.close(); }
+});
+
 test('HUMAN and ASK_OWNER become escalations with the model text; without an active instruction the legacy path answers', async () => {
   const f = await fixture();
   try {

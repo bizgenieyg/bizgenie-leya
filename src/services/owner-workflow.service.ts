@@ -244,6 +244,13 @@ export function escalationWaitingMessage(question:string,settings:OwnerSettings,
     ...(quiet&&at?{quietHours:{active:true as const,until:at.toISOString()}}:{}),
   };
 }
+/** The assistant's message to a client that the owner quoted (by its WhatsApp id), with its dialog. */
+async function assistantAnswer(db:DatabaseClient,tenantId:string,quoted:string):Promise<{quotedText:string;conversationId:string|null}|null>{
+  const short=replyId(quoted);if(!short)return null;
+  const r=await db.from('messages').select('body,conversation_id,waha_msg_id').eq('tenant_id',tenantId).eq('from_me',true).like('waha_msg_id',`%${short}%`).limit(5);check(r.error);
+  const row=(r.data??[]).find(m=>typeof m.waha_msg_id==='string'&&(m.waha_msg_id===quoted||replyId(m.waha_msg_id)===short)&&typeof m.body==='string'&&m.body.trim());
+  return row?{quotedText:String(row.body).slice(0,2000),conversationId:row.conversation_id?String(row.conversation_id):null}:null;
+}
 /** `replyChat` (Z10): where the owner's commands are answered — the owner group the message came from; the sender's chat otherwise. */
 export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProvider,tenantId:string,session:string,from:string,text:string,quoted:string|null,settings:OwnerSettings,ai?:AIProvider|null,inboundMessageId?:string|null,replyChat?:string,options:{ruleAI?:AIProvider|null}={}):Promise<boolean> {
   const reply=replyChat??from;
@@ -251,6 +258,12 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
   const sendReply=(message:string,dedupe:string)=>send(db,tenantId,provider,session,reply,message,'owner_notice',dedupe);
   if(await pairOwner(db,tenantId,from,text,settings)) return true;
   if(!isBusinessOwner(from,settings)) return false;
+  // Z15: «стоп» / «включи» / «что ты умеешь?» — the whole message, at once, without the model.
+  const {instantCommand,helpText,setAllPaused}=await import('./owner-chat.service.js');
+  const instant=instantCommand(text);
+  if(instant==='help'){await sendReply(helpText(settings),`help:${inboundMessageId??Date.now()}`);return true;}
+  if(instant){await sendReply(await setAllPaused(db,tenantId,instant==='stop'),`pause-all:${inboundMessageId??Date.now()}`);return true;}
+  const chatDeps={provider,onRename:async()=>{const {renameOwnerChannels}=await import('./owner-channels.service.js');await renameOwnerChannels(db,provider,tenantId,session);}};
   const command=text.trim().toLowerCase().replace(/[.!]+$/,'');
   if(['пауза всё','пауза все','продолжить всё','продолжить все'].includes(command)) {
     const paused=command.startsWith('пауза');
@@ -277,7 +290,7 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
   }
   // Z11: «Да / Нет» (or the details) to «Сохранить?», then to «Запомнить на будущее?» — before anything else is matched.
   const {answerProposal,answerRemember,understandInChat}=await import('./owner-rules-chat.service.js');
-  if(await answerProposal(db,tenantId,settings,text,quoted,inboundMessageId??null,sendReply,options.ruleAI))return true;
+  if(await answerProposal(db,tenantId,settings,text,quoted,inboundMessageId??null,sendReply,options.ruleAI,chatDeps))return true;
   if(await answerRemember(db,tenantId,settings,text,quoted,sendReply,options.ruleAI))return true;
   // Task Z: an answer to an owner-interview question (by quote, or the only question out when no client waits).
   const {handleInterviewReply}=await import('./owner-interview.service.js');
@@ -302,7 +315,16 @@ export async function handleOwnerMessage(db:DatabaseClient,provider:WhatsAppProv
     return true;
   }
   const e=await byIds('owner_message_ids');
-  if(!e) return true;
+  if(!e){
+    // Z15: a quote of «Ответ BizGenie: …» — to the same request and to the operator again.
+    const {ownerSupportFollowUp}=await import('./support.service.js');
+    const followUp=await ownerSupportFollowUp(db,provider,tenantId,settings,keys,text,inboundMessageId??null);
+    if(followUp){await sendReply(followUp,`support:follow-up:${inboundMessageId??Date.now()}`);return true;}
+    // Z15: a quote of the assistant's answer to a client — a correction: a rule first (BizGenie only if a rule cannot fix it).
+    const answered=await assistantAnswer(db,tenantId,quoted);
+    if(answered)await understandInChat(db,tenantId,settings,text,inboundMessageId??null,sendReply,options.ruleAI,answered);
+    return true;
+  }
   if(['беру на себя','пауза','продолжить'].includes(command)) {
     const paused=command!=='продолжить';
     const {error}=await db.from('conversations').update({bot_paused:paused}).eq('tenant_id',tenantId).eq('id',e.conversation_id);check(error);

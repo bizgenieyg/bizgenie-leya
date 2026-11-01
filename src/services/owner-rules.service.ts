@@ -12,6 +12,7 @@ import { behavior } from './runtime-settings.service.js';
 import { renderText } from './templates.service.js';
 import type { OwnerSettings } from './owner-settings.service.js';
 import { HttpError } from '../utils/http-error.js';
+import { DEFAULT_TIME_ZONE, intlTimeZone } from '../config/time-zones.js';
 
 /**
  * Z11: the owner's rules. The owner writes in ordinary words (WhatsApp «Нужен ответ» or the cabinet); the task model
@@ -22,14 +23,16 @@ import { HttpError } from '../utils/http-error.js';
 const check = (error: unknown, message: string) => { if (error) throw new Error(message); };
 export type Rule = { id: string; number: number; text: string };
 export type Source = 'cabinet' | 'whatsapp';
-export type Proposal = { id: string; action: 'add' | 'edit' | 'remove' | 'fact' | 'fact_rule'; rule_number: number | null; rule_text: string | null; fact_text: string | null;
-  fact_topic: string | null; status: string; details_question: string | null; source: Source; message_ids: string[]; created_at: string };
+export type Proposal = { id: string; action: 'add' | 'edit' | 'remove' | 'fact' | 'fact_rule' | 'setting' | 'support' | 'choice'; rule_number: number | null; rule_text: string | null; fact_text: string | null;
+  fact_topic: string | null; status: string; details_question: string | null; source: Source; message_ids: string[]; created_at: string; payload?: Record<string, unknown> | null };
 export type Understanding = { kind: OwnerMessageKind; number: number | null; rule: string | null; fact: string | null; factTopic: string | null;
-  conflict: { reason: string; alternative: string } | null; needsDetails: string | null; answer: string | null };
+  conflict: { reason: string; alternative: string } | null; needsDetails: string | null; answer: string | null;
+  /** Z15: a setting change (key + value, applied by the code only from its list), a request to BizGenie, the 1/2/3 options. */
+  setting?: { key: string; value: unknown } | null; support?: string | null; options?: Array<{ label: string; kind: 'add_rule' | 'setting'; rule: string | null; setting: { key: string; value: unknown } | null }> | null };
 /** What the owner sees next: the text of the reply and, when something waits for «Да», the proposal. */
 export type Step = { reply: string; proposal: Proposal | null; kind: OwnerMessageKind | 'confirmed' | 'declined' | 'details' };
 
-const PROPOSAL_COLUMNS = 'id,action,rule_number,rule_text,fact_text,fact_topic,status,details_question,source,message_ids,created_at';
+const PROPOSAL_COLUMNS = 'id,action,rule_number,rule_text,fact_text,fact_topic,status,details_question,source,message_ids,created_at,payload';
 const normalize = (text: string) => text.trim().toLowerCase().replace(/[.!…]+$/g, '').replace(/ё/g, 'е');
 export const isYes = (text: string) => RULE_YES_WORDS.includes(normalize(text));
 export const isNo = (text: string) => RULE_NO_WORDS.includes(normalize(text));
@@ -54,10 +57,17 @@ function parseUnderstanding(raw: string): Understanding | null {
   const kind = (OWNER_MESSAGE_KINDS as readonly string[]).includes(String(value.kind)) ? value.kind as OwnerMessageKind : null;
   if (!kind) return null;
   const conflict = value.conflict && typeof value.conflict === 'object' ? value.conflict as Record<string, unknown> : null;
+  const setting = (v: unknown) => { const o = v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : null; return o && typeof o.key === 'string' ? { key: o.key, value: o.value ?? null } : null; };
+  const options = Array.isArray(value.options) ? value.options.slice(0, 3).flatMap(raw => {
+    const o = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+    const label = text(o.label, 200), k = o.kind === 'setting' ? 'setting' as const : o.kind === 'add_rule' ? 'add_rule' as const : null;
+    return label && k ? [{ label, kind: k, rule: text(o.rule, 1000), setting: setting(o.setting) }] : [];
+  }) : [];
   return { kind, number: Number.isSafeInteger(value.number) && Number(value.number) > 0 ? Number(value.number) : null,
     rule: text(value.rule, 1000), fact: text(value.fact, 1000), factTopic: isKnowledgeTopic(value.fact_topic) ? value.fact_topic : null,
     conflict: conflict && text(conflict.reason, 300) && text(conflict.alternative, 1000) ? { reason: text(conflict.reason, 300)!, alternative: text(conflict.alternative, 1000)! } : null,
-    needsDetails: text(value.needs_details, 300), answer: text(value.answer, 1500) };
+    needsDetails: text(value.needs_details, 300), answer: text(value.answer, 1500),
+    setting: setting(value.setting), support: text(value.support, 2000), options: options.length >= 2 ? options : null };
 }
 
 /**
@@ -73,7 +83,8 @@ export async function understandOwnerMessage(db: DatabaseClient, tenantId: strin
   if (!reservation.allowed) return null;
   const rules = await activeRules(db, tenantId);
   const facts = (await activeFacts(db, tenantId)).map(f => `- [${f.topic}] ${f.text}`).join('\n').slice(0, 8000);
-  const message = [`Язык владельца: ${lang(settings)}.`, `Правила сейчас:\n${numbered(rules) || '(нет)'}`, `Факты:\n${facts || '(нет)'}`,
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: intlTimeZone(settings.time_zone ?? DEFAULT_TIME_ZONE) }).format(now);
+  const message = [`Язык владельца: ${lang(settings)}.`, `Сегодня: ${today}.`, `Правила сейчас:\n${numbered(rules) || '(нет)'}`, `Факты:\n${facts || '(нет)'}`,
     ...(options.context ? [`Контекст:\n${options.context.slice(0, 3000)}`] : []), `Сообщение владельца:\n${text.slice(0, 3000)}`].join('\n\n');
   try {
     const model = meterAI(db, tenantId, base, { purpose: 'owner_rules', billable_message: false })!;
@@ -81,7 +92,7 @@ export async function understandOwnerMessage(db: DatabaseClient, tenantId: strin
   } catch { console.warn('owner_rules_understand_failed', { tenantId }); return null; }
 }
 
-async function insertProposal(db: DatabaseClient, tenantId: string, values: Partial<Proposal> & { action: Proposal['action']; source: Source }): Promise<Proposal> {
+export async function insertProposal(db: DatabaseClient, tenantId: string, values: Partial<Proposal> & { action: Proposal['action']; source: Source }): Promise<Proposal> {
   // A new proposal replaces the one still waiting: «Да» always answers the last question.
   check((await db.from('owner_rule_proposals').update({ status: 'superseded', decided_at: new Date().toISOString() }).eq('tenant_id', tenantId).in('status', ['details', 'pending'])).error, 'Proposal update failed');
   const r = await db.from('owner_rule_proposals').insert({ tenant_id: tenantId, ...values }).select(PROPOSAL_COLUMNS).single();
@@ -135,7 +146,7 @@ export async function stepFor(db: DatabaseClient, tenantId: string, settings: Ow
   const number = forceEdit ?? u.number;
   if (kind === 'list_rules') return { reply: rules.length ? renderText(settings, 'owner.rules_list', l, { list: numbered(rules) }) : renderText(settings, 'owner.rules_empty', l), proposal: null, kind };
   if (kind === 'undo') return { reply: await undoLast(db, tenantId, settings), proposal: null, kind };
-  if (kind === 'question' || kind === 'other') return { reply: u.answer ?? renderText(settings, 'owner.owner_reply_15', l), proposal: null, kind };
+  if (['question', 'other', 'setting', 'support', 'help', 'ambiguous'].includes(kind)) return { reply: u.answer ?? renderText(settings, 'owner.owner_reply_15', l), proposal: null, kind };
   if (kind === 'fact' || ((kind === 'add_rule' || kind === 'edit_rule') && u.rule && FACT_LIKE_RULE.test(u.rule) && !u.conflict)) {
     // A rule with a price, date, hours or a time is a fact (the model said so, or the code sees it).
     const fact = (u.fact ?? u.rule ?? '').slice(0, 500);

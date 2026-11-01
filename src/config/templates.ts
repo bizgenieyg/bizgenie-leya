@@ -1,4 +1,23 @@
 export const TEMPLATE_DEFAULTS: Record<string,Record<string,string>> = {
+  // Z15: «Нужен ответ» — hints, «стоп» / «включи», settings from WhatsApp, BizGenie support.
+  "owner.help": {"ru": "Сюда приходят вопросы клиентов и заявки — отвечайте реплеем.\nМожно писать обычными словами:\n• правило: „не спрашивай город“\n• настройка: „не пиши мне после 22:00“\n• „стоп“ — остановить все ответы, „включи“ — вернуть\n• проблема или пожелание — передам в BizGenie\n• „что ты умеешь?“ — покажу всё", "he": "לכאן מגיעות שאלות של לקוחות ובקשות — עונים בציטוט (Reply).\nאפשר לכתוב במילים רגילות:\n• כלל: „אל תשאלי באיזו עיר“\n• הגדרה: „אל תכתבי לי אחרי 22:00“\n• „עצור“ — לעצור את כל התשובות, „הפעל“ — להחזיר\n• בעיה או בקשה — אעביר ל-BizGenie\n• „עזרה“ — אראה הכול", "en": "Client questions and requests come here — answer with a reply (quote).\nYou can write in plain words:\n• a rule: “don't ask for the city”\n• a setting: “don't message me after 22:00”\n• “stop” — stop all replies, “start” — turn them back on\n• a problem or a wish — I'll pass it to BizGenie\n• “help” — I'll show everything"},
+  "owner.paused_all": {"ru": "Остановила все ответы клиентам. Чтобы включить — напишите „включи“", "he": "עצרתי את כל התשובות ללקוחות. כדי להפעיל שוב — כתבו „הפעל“", "en": "I've stopped all replies to clients. To turn them back on, write “start”"},
+  "owner.resumed_all": {"ru": "Включила ответы клиентам.", "he": "הפעלתי שוב את התשובות ללקוחות.", "en": "Replies to clients are back on."},
+  "owner.paused_line": {"ru": "⏸ Ответы клиентам остановлены. Чтобы включить — напишите „включи“ в группе «Нужен ответ».", "he": "⏸ התשובות ללקוחות עצורות. כדי להפעיל — כתבו „הפעל“ בקבוצה „צריך תשובה“.", "en": "⏸ Replies to clients are stopped. To turn them on, write “start” in the “Needs answer” group."},
+  "owner.setting_confirm": {"ru": "{setting}: было {from} → станет {to}. Сохранить? Да / Нет", "he": "{setting}: היה {from} ← יהיה {to}. לשמור? כן / לא", "en": "{setting}: was {from} → will be {to}. Save? Yes / No"},
+  "owner.setting_saved": {"ru": "Сохранила.", "he": "שמרתי.", "en": "Saved."},
+  "owner.setting_declined": {"ru": "Хорошо, не меняю.", "he": "בסדר, לא משנה.", "en": "OK, nothing changed."},
+  "owner.setting_invalid": {"ru": "Не поняла, на что поменять. Напишите, например: „не пиши мне после 22:00“.", "he": "לא הבנתי למה לשנות. כתבו למשל: „אל תכתבי לי אחרי 22:00“.", "en": "I didn't get what to change it to. Write, for example: “don't message me after 22:00”."},
+  "owner.setting_cabinet": {"ru": "Это меняется в кабинете: {link}", "he": "את זה משנים בממשק: {link}", "en": "This is changed in the dashboard: {link}"},
+  "owner.choice": {"ru": "{question}\n{options}\nОтветьте цифрой.", "he": "{question}\n{options}\nענו במספר.", "en": "{question}\n{options}\nAnswer with a number."},
+  "owner.support_offer": {"ru": "Передать в BizGenie: «{text}»? Да / Нет", "he": "להעביר ל-BizGenie: „{text}”? כן / לא", "en": "Pass to BizGenie: “{text}”? Yes / No"},
+  "owner.support_sent": {"ru": "Передала в BizGenie", "he": "העברתי ל-BizGenie", "en": "Passed to BizGenie"},
+  "owner.support_declined": {"ru": "Хорошо, не передаю.", "he": "בסדר, לא מעבירה.", "en": "OK, not passed on."},
+  "owner.support_unavailable": {"ru": "Не получилось передать в BizGenie. Попробуйте ещё раз чуть позже.", "he": "לא הצלחתי להעביר ל-BizGenie. נסו שוב מעט מאוחר יותר.", "en": "I couldn't pass it to BizGenie. Please try again a bit later."},
+  "owner.support_answer": {"ru": "Ответ BizGenie: «{text}»", "he": "תשובת BizGenie: „{text}”", "en": "BizGenie's answer: “{text}”"},
+  "operator.support_group": {"ru": "BizGenie · Поддержка", "he": "BizGenie · תמיכה", "en": "BizGenie · Support"},
+  "operator.support_request": {"ru": "🛟 {business} ({owner}): «{text}»{context}\nОтветьте реплеем — передам владельцу.", "he": "🛟 {business} ({owner}): „{text}”{context}\nהשיבו בציטוט — אעביר לבעל העסק.", "en": "🛟 {business} ({owner}): “{text}”{context}\nReply with a quote — I'll pass it to the owner."},
+  "operator.support_context": {"ru": "К ответу ассистента: «{quoted}»", "he": "בתגובה לתשובת העוזרת: „{quoted}”", "en": "About the assistant's answer: “{quoted}”"},
   // Z12: the owner cycle as in chef-bot; the daily report; the operator's quality review.
   "owner.request_card": {"ru": "📩 Заявка\n{card}\n📱 {phone}\n\nОтветьте реплеем — передам клиенту.", "he": "📩 בקשה\n{card}\n📱 {phone}\n\nהשיבו בציטוט — אעביר ללקוח.", "en": "📩 Request\n{card}\n📱 {phone}\n\nReply to this message — I'll pass it to the client."},
   // Z14: the card built by the code when the model wrote none; the reminder of a request repeats the card.

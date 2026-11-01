@@ -41,7 +41,7 @@ async function pgHarness({ withGroups = true }: { withGroups?: boolean } = {}) {
   await pg.query("insert into plans(code,display_name,messages_per_month,voice_minutes_per_month,warning_percent,unlimited) values('basic','Базовый',500,60,80,false) on conflict(code) do nothing");
   await pg.query('insert into tenant_usage_limits(tenant_id,plan,messages_per_month,voice_minutes_per_month,warning_percent,messages_overridden,voice_overridden,warning_overridden) values($1,\'basic\',500,60,80,false,false,false)', [tenantId]);
   // Z10: an owner who already has both groups (most tests); the Z10 tests below start without them.
-  if (withGroups) await pg.query("insert into owner_channels(tenant_id,topic,chat_id,owner_chat) values($1,'needs_answer',$2,$4),($1,'reports',$3,$4)", [tenantId, needsAnswer, reports, owner]);
+  if (withGroups) await pg.query("insert into owner_channels(tenant_id,topic,chat_id,owner_chat,hint_sent_at) values($1,'needs_answer',$2,$4,now()),($1,'reports',$3,$4,now())", [tenantId, needsAnswer, reports, owner]);
   const clientRow = (await db.from('clients').insert({ tenant_id: tenantId, phone: customer, whatsapp_jid: customer, name: 'Клиент' }).select('id').single()).data as { id: string };
   const conversation = (await db.from('conversations').insert({ tenant_id: tenantId, client_id: clientRow.id, status: 'active', bot_paused: false }).select('id').single()).data as { id: string };
 
@@ -802,8 +802,9 @@ test('Z10: separate numbers — the «Нужен ответ» group is created a
   assert.equal(h.groups.length, 1, 'only the topic that has a message');
   assert.deepEqual([h.groups[0]!.name, h.groups[0]!.participants], ['Мира · Нужен ответ', [owner]]);
   assert.deepEqual((await channels(h)).map(c => [c.topic, c.status]), [['needs_answer', 'active']]);
-  const notice = h.sent.find(m => m.chatId === h.groups[0]!.id);
-  assert.match(notice!.text, /Можно завтра\?/, 'the question is in the group');
+  const inGroup = h.sent.filter(m => m.chatId === h.groups[0]!.id);
+  assert.match(inGroup[0]!.text, /^Сюда приходят вопросы клиентов и заявки/, 'Z15: the hint is the first message of a new group');
+  assert.match(inGroup[1]!.text, /Можно завтра\?/, 'the question is in the group');
   const moved = h.sent.filter(m => m.chatId === owner);
   assert.equal(moved.length, 1); assert.match(moved[0]!.text, /«Мира · Нужен ответ» и «Мира · Отчёты»/);
   await escalate(h, 'А в субботу?');
@@ -848,7 +849,8 @@ test('Z10: a group that is gone (or the assistant was removed) is created again,
   assert.deepEqual(rows.filter(r => r.topic === 'needs_answer').map(r => r.status).sort(), ['active', 'lost']);
   const fresh = rows.find(r => r.topic === 'needs_answer' && r.status === 'active')!.chat_id;
   const inFresh = h.sent.filter(m => m.chatId === fresh);
-  assert.equal(inFresh.length, 2); assert.match(inFresh[0]!.text, /Previous group is unavailable|Прежняя группа|previous group/i);
+  assert.equal(inFresh.length, 3); assert.match(inFresh[0]!.text, /Previous group is unavailable|Прежняя группа|previous group/i);
+  assert.match(inFresh[1]!.text, /^(Client questions and requests come here|Сюда приходят вопросы)/, 'Z15: the new group gets the hint once');
   assert.ok(!h.sent.some(m => m.chatId === needsAnswer), 'nothing to the lost group');
   assert.ok(!h.sent.some(m => m.chatId === owner), 'no private-chat line for a recreated group');
 });

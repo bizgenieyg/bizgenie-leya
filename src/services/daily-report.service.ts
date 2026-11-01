@@ -118,7 +118,17 @@ export async function runTenantDailyReport(db: DatabaseClient, tenantId: string,
   }
   // A dialog is a client's: at least one message from the client that day.
   const ids = [...dialogs.entries()].filter(([, list]) => list.some(m => !m.fromMe)).map(([id]) => id).slice(0, config.daily_report_max_dialogs);
-  if (!ids.length) { check((await done({ conversations: 0, sent_at: now.toISOString() })).error); return 'empty'; }
+  // Z15: replies stopped («стоп») — a line in the report; without dialogs the line alone still goes.
+  const pausedLine = settings.auto_replies_paused ? renderText(settings, 'owner.paused_line', config.owner_language) : '';
+  if (!ids.length) {
+    if (pausedLine) {
+      const { ownerChat, ownerChatAllowed } = await import('./owner-channels.service.js');
+      const to = await ownerChat(db, provider, tenantId, session, settings, 'reports');
+      if (!ownerChatAllowed(to)) { console.warn('daily_report_channel_unavailable', { tenantId }); return 'retry'; }
+      await enqueueMessage(db, tenantId, provider, { session, chatId: to, text: pausedLine }, { kind: 'summary', dedupeKey: `daily-report:${tenantId}:${due.reportDate}` });
+    }
+    check((await done({ conversations: 0, sent_at: now.toISOString() })).error); return 'empty';
+  }
   const facts = factsMarkdown(await activeFacts(db, tenantId), null);
   const transcript = ids.map(id => `--- id: ${id}\n${dialogs.get(id)!.slice(-config.daily_report_dialog_messages).map(m => `${m.fromMe ? 'Ассистент' : 'Клиент'}: ${m.text}`).join('\n')}`).join('\n\n');
   const model = ai === undefined ? meterAI(db, tenantId, createAIProvider(), { purpose: 'daily_review' }) : ai;
@@ -147,7 +157,7 @@ export async function runTenantDailyReport(db: DatabaseClient, tenantId: string,
   const { ownerChat, ownerChatAllowed } = await import('./owner-channels.service.js');
   const to = await ownerChat(db, provider, tenantId, session, settings, 'reports');
   if (!ownerChatAllowed(to)) { console.warn('daily_report_channel_unavailable', { tenantId }); return 'retry'; }
-  await enqueueMessage(db, tenantId, provider, { session, chatId: to, text }, { kind: 'summary', dedupeKey: `daily-report:${tenantId}:${due.reportDate}` });
+  await enqueueMessage(db, tenantId, provider, { session, chatId: to, text: pausedLine ? `${pausedLine}\n\n${text}` : text }, { kind: 'summary', dedupeKey: `daily-report:${tenantId}:${due.reportDate}` });
   // The operator's findings without client data: phones, e-mails, links and the names of that dialog's client are cut.
   const namesOf = (id: string) => { const c = clientOf.get(id); return [c?.preferred_name, c?.name].filter((n): n is string => typeof n === 'string' && !!n.trim()); };
   if (review.findings.length) check((await db.from('quality_findings').insert(review.findings.map(f => ({ tenant_id: tenantId, conversation_id: f.id, report_date: due.reportDate, kind: f.kind,
@@ -208,4 +218,6 @@ export async function runDailyReports(db: DatabaseClient, providerFor: () => Wha
     catch { console.error('daily_report_failed', { tenantId: row.tenant_id }); }
   }
   try { await runPlatformQualityReport(db, providerFor(), now); } catch { console.error('quality_report_failed'); }
+  // Z15: «Нужен ответ» groups created before the hint get it once.
+  try { const { sendPendingHints } = await import('./owner-channels.service.js'); await sendPendingHints(db, providerFor); } catch { console.error('owner_channel_hints_failed'); }
 }

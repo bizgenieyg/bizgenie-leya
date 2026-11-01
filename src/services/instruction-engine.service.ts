@@ -7,7 +7,7 @@ import { behavior } from './runtime-settings.service.js';
 import { activeFacts, factsMarkdown } from './business-facts.service.js';
 import { activeInstructionFor, resolveTemplate, activeDemoInstruction, fillPlaceholders, loadCore } from './instructions.service.js';
 import { hasLabel, labelValue, labelValues, parseLabels, parseRequestValue, type ParsedReply } from './instruction-checks.js';
-import { ASSISTANT_NAME_DEFAULT, PROMPT_BLOCKS, WEEKDAYS_RU } from '../config/instructions.js';
+import { ASSISTANT_NAME_DEFAULT, CLIENT_DEMO_BLOCK, CLIENT_DEMO_KEY, PROMPT_BLOCKS, WEEKDAYS_RU } from '../config/instructions.js';
 import { CORE_LANGUAGE_DEFAULTS } from '../config/instruction-defaults.js';
 import { ROLE_HEADINGS, type ReplyRole } from '../config/roles.js';
 import { activeRules, rulesBlock } from './owner-rules.service.js';
@@ -104,7 +104,9 @@ export async function answerByInstruction(turn: InstructionTurn): Promise<Instru
   // Demo mode closes by itself after demo_max_turns client turns.
   let demo = turn.demo.key ? { key: turn.demo.key, turns: turn.demo.turns + 1 } : { key: null as string | null, turns: 0 };
   if (demo.key && demo.turns > config.demo_max_turns) demo = { key: null, turns: 0 };
-  let demoText = demo.key ? fillPlaceholders(await activeDemoInstruction(db, demo.key) ?? '', values).text : null;
+  // Z15: the demo on the client's own business has no demo text — the sector comes from the dialog; one line keeps the role.
+  const demoTextFor = async (key: string) => key === CLIENT_DEMO_KEY ? CLIENT_DEMO_BLOCK : fillPlaceholders(await activeDemoInstruction(db, key) ?? '', values).text;
+  let demoText = demo.key ? await demoTextFor(demo.key) : null;
   const facts = factsMarkdown(await activeFacts(db, tenantId), turn.business?.business_sector ?? null);
   const rules = rulesBlock(await activeRules(db, tenantId));
   const ownerName = turn.business?.owner_name?.trim() ?? '';
@@ -129,8 +131,8 @@ export async function answerByInstruction(turn: InstructionTurn): Promise<Instru
   // Z12 review (eval B9): the answer that starts a demo was written without the demo business (the mode was not on):
   // it is written once more with the demo text, so prices and terms come from it. Context, not a check of the answer.
   const starting = labelValue(parsed, 'DEMO_START');
-  if (!demo.key && starting && /^[a-z][a-z0-9_]{1,39}$/.test(starting) && !hasLabel(parsed, 'DEMO_END')) {
-    const text = fillPlaceholders(await activeDemoInstruction(db, starting) ?? '', values).text;
+  if (!demo.key && starting && starting !== CLIENT_DEMO_KEY && /^[a-z][a-z0-9_]{1,39}$/.test(starting) && !hasLabel(parsed, 'DEMO_END')) {
+    const text = await demoTextFor(starting);
     if (text) { demo = { key: starting, turns: 0 }; demoText = text; parsed = await ask(); if (!hasLabel(parsed, 'DEMO_START') && !hasLabel(parsed, 'DEMO_END')) parsed.labels.push({ name: 'DEMO_START', value: starting }); }
   }
   if (parsed.unknown.length) console.warn('instruction_unknown_labels', { tenantId, labels: parsed.unknown });
@@ -142,7 +144,7 @@ export async function answerByInstruction(turn: InstructionTurn): Promise<Instru
   const start = labelValue(parsed, 'DEMO_START');
   if (hasLabel(parsed, 'DEMO_START')) {
     // Without a valid demo key the mode is not switched on (Z2): only the label name and the key shape are logged.
-    const known = !!start && /^[a-z][a-z0-9_]{1,39}$/.test(start) && (await activeDemoInstruction(db, start)) !== null;
+    const known = !!start && /^[a-z][a-z0-9_]{1,39}$/.test(start) && (start === CLIENT_DEMO_KEY || (await activeDemoInstruction(db, start)) !== null);
     if (known) demo = { key: start, turns: 0 };
     else console.warn('instruction_demo_unknown_key', { tenantId, label: 'DEMO_START', key: start && /^[a-z0-9_]{1,40}$/.test(start) ? start : null });
   }
