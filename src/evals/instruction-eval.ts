@@ -11,6 +11,8 @@ import { callCost } from '../config/model-prices.js';
  * model with one binary answer per item (threshold 90 %).
  */
 export interface InstructionScenario { id: string; turns: string[]; checks: string[]; labels_expect?: string[] | Record<string, string[]>; labels_forbid?: string[]; request_fields?: Record<string, string>; note?: string;
+  /** Z17: the client's WhatsApp profile name (none — no name). */
+  whatsapp_name?: string;
   /** Z11: owner rules for this scenario only, and facts added for it (e.g. a second address); removed afterwards. */
   rules?: string[]; facts_add?: Array<{ topic: string; text: string }> }
 interface TenantSpec { instruction?: string; template?: string; demo?: string[]; facts_fixture?: string; trap_vars: Record<string, string>; scenarios: InstructionScenario[] }
@@ -128,7 +130,7 @@ export async function runScenario(db: DatabaseClient, tenantId: string, scenario
     for (const [index, client] of scenario.turns.entries()) {
       const started = Date.now();
       let r: SimulationResult;
-      try { r = await simulateCustomerMessage(db, tenantId, session, client, ai, { evaluation: {}, embedder: null, now: new Date(Date.now() + index * 60_000) }); }
+      try { r = await simulateCustomerMessage(db, tenantId, session, client, ai, { evaluation: scenario.whatsapp_name ? { whatsappName: scenario.whatsapp_name } : {}, embedder: null, now: new Date(Date.now() + index * 60_000) }); }
       catch (error) {
         // A failed model call is a result of this scenario (FAIL with the reason), not the end of the whole run.
         turns.push({ client, reply: null, labels: [], latencyMs: Date.now() - started, error: failureReason(error) });

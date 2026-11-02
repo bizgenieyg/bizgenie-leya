@@ -9,11 +9,21 @@ test('usableFirstName: real names only, first word capitalised', () => {
   const cases: Array<[string | null, string | null, string?]> = [
     ['Анна', 'Анна'], ['Anna K', 'Anna'], ['Юрий Иванов', 'Юрий'], ['марина', 'Марина'], ['Dana', 'Dana'], ['דנה', 'דנה'],
     ["O'Neil", "O'Neil"], ['Анна-Мария', 'Анна-Мария'], ['Мама', null], ['мама', null], ['Работа 💼', null], ['ИРИНА САЛОН', null],
-    ['אמא', null], ['Love', null], ['Boss', null], ['Салон Ирины', null], ['Anna 2', null], ['@anna', null], ['a.b', null],
-    ['Анна Мария Петровна', null], ['A', null], ['😊', null], ['', null], [null, null], ['ИРА', 'ИРА'], ['BizGenie', null, 'BizGenie'],
+    ['אמא', null], ['Love', null], ['Boss', null], ['Салон Ирины', null], ['Anna 2', 'Anna'], ['@anna', null], ['a.b', null],
+    ['Анна Мария Петровна', 'Анна'], ['A', null], ['😊', null], ['', null], [null, null], ['ИРА', 'ИРА'], ['BizGenie', null, 'BizGenie'],
     ['Leya Studio', null, 'Leya Studio'], ['Абвгдеёжзийклмнопрсту', null],
   ];
   for (const [input, expected, business] of cases) assert.equal(usableFirstName(input, business), expected, String(input));
+});
+
+test('Z17: a name at the start of a longer profile; Latin transliterated in a Russian reply; brands and nicknames — no name', () => {
+  const cases: Array<[string, string | null]> = [
+    ['Александр Коско тренинги, курсы, фестивали и путешествия', 'Александр'], ['Diana✨', 'Диана'], ['Yana Melman', 'Яна'],
+    ['Maxident Clinic', null], ['Мама', null], ['משה כהן', 'משה'], ['Работа 💼', null], ['Maria', 'Мария'], ['Sasha', 'Саша'],
+  ];
+  for (const [input, expected] of cases) assert.equal(usableFirstName(input, null, 'ru'), expected, input);
+  assert.equal(usableFirstName('Diana✨', null, 'en'), 'Diana');
+  assert.equal(usableFirstName('Diana✨', null, 'he'), 'Diana');
 });
 
 test('direct requests, negations, agreement and decline dictionaries', () => {

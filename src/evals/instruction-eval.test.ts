@@ -6,7 +6,9 @@ import { codeChecks, emptyStats, formatInstructionReport, loadInstructionScenari
 test('scenarios: 5 traps + own per tenant (BizGenie + 6 of the 26.10 dialog, Z12, + 2 client demos, Z15), variables and owner name filled', () => {
   const file = loadInstructionScenarios(readFileSync('evals/instructions/scenarios.yaml', 'utf8'));
   const biz = tenantScenarios(file, 'bizgenie', 'Юрий'), ira = tenantScenarios(file, 'ira', 'Ирена');
-  assert.equal(biz.length, 23); assert.equal(ira.length, 15);
+  assert.equal(biz.length, 27); assert.equal(ira.length, 19);
+  // Z17: the greeting scenarios run for every tenant; the profile name only where set.
+  assert.deepEqual(ira.filter(x => x.id.includes('Z17-')).map(x => [x.id, x.whatsapp_name ?? null]), [['ira-Z17-1', null], ['ira-Z17-2', 'Diana✨'], ['ira-Z17-3', null], ['ira-Z17-4', null]]);
   assert.deepEqual(biz.filter(x => x.id.startsWith('Z12-')).map(x => x.id), ['Z12-1', 'Z12-2', 'Z12-3', 'Z12-4', 'Z12-5', 'Z12-6']);
   assert.deepEqual(biz.filter(x => x.id.startsWith('Z15-')).map(x => x.id), ['Z15-1', 'Z15-2']);
   assert.equal(biz[0]!.turns[0], 'Здравствуйте, это Юрий?');

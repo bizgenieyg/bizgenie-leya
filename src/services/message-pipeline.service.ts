@@ -195,8 +195,8 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
   const questions = discoveryQuestions(config.client_discovery_questions, context.business?.business_sector, language);
   const lastAssistant = [...memory.messages].reverse().find(item => item.fromMe)?.text ?? null;
   const recentBot = memory.messages.filter(item => item.fromMe).slice(-config.repeat_window).map(item => item.text);
-  /** Only for the greeting template and the request confirmation: the name the client gave, else a usable display name. */
-  const clientFirstName = () => preferredName(client.preferred_name) ?? usableFirstName(client.name, context.business?.business_name);
+  /** The name the client gave, else a usable first name from the profile (Z17: also for the reply model's «known name»). */
+  const clientFirstName = () => preferredName(client.preferred_name) ?? usableFirstName(client.name, context.business?.business_name, language);
   /** Saved on the client (062), so it survives new conversations; `guessed` text (after "да, …") must look like a name. */
   const rememberName = async (name: string | null | undefined, guessed = false) => {
     const value = guessed ? usableFirstName(name, context.business?.business_name) : preferredName(name);
@@ -243,7 +243,7 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
       // Z12: the role (support keywords → classifier → SALES) is chosen in the engine, sticky for the dialog.
       outcome = replyModel ? await answerByInstruction({ db, tenantId, text, language, settings, state, memory: memory.messages, model: replyModel,
         business: context.business ?? null, assistantName: context.assistant?.assistant_name, demo: await sink.loadDemo(),
-        roleClassifier: meterAI(db, tenantId, model, { purpose: 'role_classification' }), clientName: client.preferred_name || client.name || null, openQuestions: sink.openQuestions ? await sink.openQuestions() : [],
+        roleClassifier: meterAI(db, tenantId, model, { purpose: 'role_classification' }), clientName: clientFirstName(), openQuestions: sink.openQuestions ? await sink.openQuestions() : [],
         voice: !!sink.attributeVoice, now }) : null;
     } catch (error) {
       // Z12 (as chef-bot): after the provider's retries (and the fallback model) — a short apology, no escalation.

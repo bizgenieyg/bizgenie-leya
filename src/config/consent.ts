@@ -7,6 +7,20 @@ export const NAME_STOP_WORDS: readonly string[] = [
   'mom', 'mum', 'dad', 'love', 'babe', 'work', 'office', 'shop', 'admin', 'boss',
 ];
 
+/** Z17: words of a brand or a business after a first word («Maxident Clinic») — the profile is not a person's name. */
+export const NAME_BRAND_WORDS: readonly string[] = [
+  'clinic', 'studio', 'salon', 'beauty', 'nails', 'spa', 'shop', 'store', 'group', 'center', 'centre', 'service', 'services', 'team', 'official', 'company', 'ltd', 'inc',
+  'клиника', 'студия', 'салон', 'центр', 'сервис', 'магазин', 'школа', 'бьюти', 'ооо', 'ип',
+  'קליניקה', 'סטודיו', 'מספרה', 'מרכז', 'חנות', 'שירותים', 'בע"מ',
+];
+
+/** Z17 (as chef-bot): a Latin first name in a Russian reply — transliterated («Diana» → «Диана»). Longest first. */
+export const LATIN_TO_CYRILLIC: ReadonlyArray<readonly [string, string]> = [
+  ['shch', 'щ'], ['sch', 'щ'], ['zh', 'ж'], ['kh', 'х'], ['ch', 'ч'], ['sh', 'ш'], ['ts', 'ц'], ['ya', 'я'], ['yu', 'ю'], ['yo', 'ё'], ['ye', 'е'], ['ia$', 'ия'], ['iy$', 'ий'], ['y$', 'й'],
+  ['a', 'а'], ['b', 'б'], ['c', 'к'], ['d', 'д'], ['e', 'е'], ['f', 'ф'], ['g', 'г'], ['h', 'х'], ['i', 'и'], ['j', 'дж'], ['k', 'к'], ['l', 'л'], ['m', 'м'],
+  ['n', 'н'], ['o', 'о'], ['p', 'п'], ['q', 'к'], ['r', 'р'], ['s', 'с'], ['t', 'т'], ['u', 'у'], ['v', 'в'], ['w', 'в'], ['x', 'кс'], ['y', 'и'], ['z', 'з'],
+];
+
 /**
  * Direct requests for something only the owner can do. Stems match at a word start; an explicit
  * negation earlier in the same clause ("не надо звонить") cancels the match.

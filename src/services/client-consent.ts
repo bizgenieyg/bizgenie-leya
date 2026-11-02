@@ -1,23 +1,38 @@
-import { AGREEMENT_WORDS, CALL_TO_ACTION_PATTERN, DECLINE_WORDS, NAME_STOP_WORDS, NEGATION_PATTERN, REQUEST_ACTION_PATTERNS } from '../config/consent.js';
+import { AGREEMENT_WORDS, CALL_TO_ACTION_PATTERN, DECLINE_WORDS, LATIN_TO_CYRILLIC, NAME_BRAND_WORDS, NAME_STOP_WORDS, NEGATION_PATTERN, REQUEST_ACTION_PATTERNS } from '../config/consent.js';
 
 const normalize = (text: string) => text.toLowerCase().replace(/[ё]/g, 'е').replace(/[^\p{L}\p{N}'👍👌\s]+/gu, ' ').replace(/\s+/g, ' ').trim();
 const WORD = /^[\p{L}][\p{L}'’-]*$/u;
 const upper = (w: string) => w === w.toUpperCase() && w !== w.toLowerCase();
 
 /**
- * First name suitable for addressing the client, or null: 1–2 words of letters (hyphen/apostrophe allowed),
- * each 2–20 characters (a surname may be an initial: "Anna K"), not a stop word ("Мама", "Работа", "Love"), not the business name, not SHOUTED
- * (all caps, longer than 3 letters). Digits, emoji, "@" and dots disqualify the whole name.
+ * First name suitable for addressing the client, or null. Z17: the profile may go on after the name — a surname, a
+ * description, emoji («Александр Коско тренинги, курсы…», «Diana✨»): the first word is taken when it looks like a name —
+ * letters (hyphen/apostrophe allowed), 2–20 characters, not a stop word («Мама», «Работа»), not the business name, not
+ * SHOUTED (all caps, longer than 3 letters) — and the next word is not a brand word («Maxident Clinic»). Digits, «@» and
+ * dots in the first word disqualify it. In a Russian reply a Latin name is transliterated («Yana» → «Яна»).
  */
-export function usableFirstName(name: string | null | undefined, businessName?: string | null): string | null {
-  const raw = (name ?? '').trim();
-  if (!raw || /[\d@.]/.test(raw) || /\p{Extended_Pictographic}/u.test(raw)) return null;
-  const words = raw.split(/\s+/);
-  if (words.length > 2 || words.some((w, i) => !WORD.test(w) || w.length < (i ? 1 : 2) || w.length > 20)) return null;
+export function usableFirstName(name: string | null | undefined, businessName?: string | null, language?: string | null): string | null {
+  const words = (name ?? '').trim().split(/[\s,;|/]+/).filter(Boolean);
+  const raw = words[0] ?? '';
+  if (/[\d@.]/.test(raw)) return null;
+  const first = raw.replace(/^[^\p{L}]+|[^\p{L}'’-]+$/gu, '').replace(/[-'’]+$/, '');
+  if (!WORD.test(first) || first.length < 2 || first.length > 20 || (upper(first) && first.length > 3)) return null;
   const business = new Set(normalize(businessName ?? '').split(' ').filter(Boolean));
-  if (words.some(w => NAME_STOP_WORDS.includes(w.toLowerCase()) || business.has(normalize(w)) || (upper(w) && w.length > 3))) return null;
-  const first = words[0]!;
-  return first.charAt(0).toLocaleUpperCase() + first.slice(1);
+  const word = (w: string) => w.toLowerCase().replace(/[^\p{L}"]+/gu, '');
+  if (NAME_STOP_WORDS.includes(first.toLowerCase()) || business.has(normalize(first))) return null;
+  const next = word(words[1] ?? '');
+  if (next && (NAME_BRAND_WORDS.includes(next) || NAME_STOP_WORDS.includes(next) || business.has(normalize(next)))) return null;
+  const value = first.charAt(0).toLocaleUpperCase() + first.slice(1);
+  return language === 'ru' && /^[a-z'’-]+$/i.test(value) ? transliterate(value) : value;
+}
+
+function transliterate(name: string): string {
+  let rest = name.toLowerCase(), out = '';
+  while (rest) {
+    const [latin, cyrillic] = LATIN_TO_CYRILLIC.find(([l]) => l.endsWith('$') ? rest === l.slice(0, -1) : rest.startsWith(l)) ?? [rest[0]!, rest[0]!];
+    out += cyrillic; rest = rest.slice(latin.replace('$', '').length);
+  }
+  return out.charAt(0).toLocaleUpperCase() + out.slice(1);
 }
 
 const clauses = (text: string) => text.split(/[.!?;,\n]+|(?<![\p{L}])(?:но|а|but|אבל)(?![\p{L}])/iu).map(c => c.trim()).filter(Boolean);

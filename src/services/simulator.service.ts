@@ -26,7 +26,7 @@ export type SimulationResult = PipelineResult & { trace?: SimulationTrace };
  * Evaluation-only options (never exposed through the HTTP route): skip the simulator rate limit,
  * seed a WhatsApp history and a client profile for a new session, return the dialogue trace.
  */
-export interface SimulationOptions { now?: Date; root?: string; evaluation?: { history?: ConversationMemory[]; profile?: string };
+export interface SimulationOptions { now?: Date; root?: string; evaluation?: { history?: ConversationMemory[]; profile?: string; /** Z17: the WhatsApp profile name of the eval client. */ whatsappName?: string };
   /** Embeddings for the semantic repeat check; default — the process-wide provider (null without a key). */
   embedder?: EmbeddingProvider | null }
 type SessionState = { introduced: boolean; routed_agent: string | null; route_selected_at: string | null;
@@ -74,7 +74,7 @@ export async function simulateCustomerMessage(db: DatabaseClient, tenantId: stri
   const conversation: ConversationRow = { id: sessionId, tenant_id: tenantId, client_id: sessionId, status: 'active',
     routed_agent: state.routed_agent, route_selected_at: state.route_selected_at, source_label: state.source_label,
     reception_message_count: state.reception_message_count, last_message_at: previous.at(-1)?.createdAt ?? null };
-  const client: ClientRow = { id: sessionId, tenant_id: tenantId, phone: '', name: null, preferred_name: state.preferred_name ?? null, time_zone: state.client_time_zone };
+  const client: ClientRow = { id: sessionId, tenant_id: tenantId, phone: '', name: limitOptions?.evaluation?.whatsappName ?? null, preferred_name: state.preferred_name ?? null, time_zone: state.client_time_zone };
   let sentReply: string | null = null;
   const saveReply = async (reply: string): Promise<void> => {
     const saved = await db.from('simulator_messages').insert({ tenant_id: tenantId, session_id: sessionId,
