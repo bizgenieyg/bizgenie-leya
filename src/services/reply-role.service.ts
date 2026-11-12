@@ -1,4 +1,4 @@
-import type { AIProvider } from '../providers/ai/ai-provider.interface.js';
+import { AIProviderError, type AIProvider } from '../providers/ai/ai-provider.interface.js';
 import type { ConversationMemory } from './context.service.js';
 import type { DialogState } from './dialog-state.js';
 import { ROLE_HISTORY_MESSAGES, SUPPORT_KEYWORDS, type ReplyRole } from '../config/roles.js';
@@ -22,7 +22,10 @@ export async function chooseRole(text: string, memory: ConversationMemory[], sta
         userMessage: `Контекст последних сообщений:\n${recent || '(истории нет, это начало диалога)'}\n\nПоследнее сообщение клиента: «${text.slice(0, 1000)}»`,
         generation });
       if (/SUPPORT/i.test(result.text)) role = 'SUPPORT';
-    } catch { console.warn('reply_role_classification_failed'); }
+    } catch (error) {
+      // Z18: the reason code is logged — a classifier failing on every call silently made every dialog a sale.
+      console.warn('reply_role_classification_failed', { reason: error instanceof AIProviderError ? error.failure.reason : 'error' });
+    }
   }
   return (state.role = role);
 }

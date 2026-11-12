@@ -509,8 +509,9 @@ test('Z12: roles — keywords pick SUPPORT, the classifier SALES/SUPPORT once, t
     f.reply('SALES', 'Здравствуйте! Чем помочь?');
     await f.say('привет');
     assert.match(f.prompts[0]!.system, /классификатор намерений/);
-    // Z18: the classifier runs before the reply — its own thinking level and cap, not the model's default 'medium'.
-    assert.deepEqual(f.prompts[0]!.generation, { maxOutputTokens: 256, thinkingLevels: { 'gemini-3.8-flash': 'minimal' } });
+    // Z18: the classifier runs before the reply — its own thinking level and cap, not the model's default 'medium'
+    // ('low': 3.8-flash rejects 'minimal').
+    assert.deepEqual(f.prompts[0]!.generation, { maxOutputTokens: 256, thinkingLevels: { 'gemini-3.8-flash': 'low' } });
     assert.match(f.prompts[1]!.system, /РАЗДЕЛ ПРОДАЖИ/); assert.doesNotMatch(f.prompts[1]!.system, /РАЗДЕЛ ПОДДЕРЖКИ/);
     f.reply('Расскажу.');
     await f.say('сколько стоит?');
