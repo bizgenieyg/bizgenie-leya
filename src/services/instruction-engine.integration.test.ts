@@ -206,6 +206,16 @@ test('Z17: «передала» without a label goes to the owner; a later reply
   } finally { await f.pg.close(); }
 });
 
+test('Z17: a plain later answer loses the repeated greeting (eval M1)', async () => {
+  const f = await fixture();
+  try {
+    f.reply('Здравствуйте! Я Лея, ИИ-ассистент BizGenie. Как к вам обращаться?', 'Здравствуйте! Я Лея, ИИ-ассистент BizGenie. Нет, я помощница Юрия. Как к вам обращаться?');
+    await f.say('привет');
+    const r = await f.say('это Юрий?');
+    assert.equal(r.reply, 'Нет, я помощница Юрия. Как к вам обращаться?');
+  } finally { await f.pg.close(); }
+});
+
 test('HUMAN and ASK_OWNER become escalations with the model text; without an active instruction the legacy path answers', async () => {
   const f = await fixture();
   try {
