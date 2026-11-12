@@ -59,6 +59,7 @@ import { entrySource, routeConversation } from './conversation-routing.service.j
 import { generateKnowledgeReplyResult, generateReceptionReply } from './ai-fallback.service.js';
 import { languageOf, renderGreeting, renderText, replyLanguage } from './templates.service.js';
 import { clientText, withoutRepeatedIntroduction, waitingText } from '../utils/assistant-text.js';
+import { claimsHandoff } from './instruction-checks.js';
 import { clientTimeZoneCommand } from '../utils/time-zone.js';
 import { isWithinQuietHours, nextQuietHoursEnd } from './escalation.service.js';
 import { limitClientText } from './usage-notifications.service.js';
@@ -295,6 +296,14 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
           await sink.recordUsage('escalation_created', { metadata: { reason: a.kind } });
           if (reply) memory.introduced = true;
           return finish(traced(result(reply, 'escalated')));
+        }
+        // Z17: «передала» without a label — the client is told the owner has it, so the owner gets the client's words.
+        if (claimsHandoff(a.text)) {
+          console.warn('instruction_handoff_without_label', { tenantId });
+          const reply = await sink.createEscalation(language, [text.slice(0, 500)], null, { clientText: clientReply(a.text), separate: true });
+          await sink.recordUsage('escalation_created', { metadata: { reason: 'handoff_without_label' } });
+          if (reply) memory.introduced = true;
+          return finish({ ...traced(result(reply, 'escalated')), labels: [...effective, 'ASK_OWNER'] });
         }
         if (done.offer) state.pending_offer = { summary: done.offer.slice(0, 200), time: null, topic: done.offer.slice(0, 80), turns_left: config.request_offer_turns };
         const reply = clientReply(a.text);

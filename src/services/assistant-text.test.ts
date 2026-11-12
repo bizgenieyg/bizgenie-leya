@@ -19,3 +19,23 @@ test('withoutRepeatedIntroduction drops a leading self-introduction only for a r
   assert.equal(withoutRepeatedIntroduction('Просто ответ', true), 'Просто ответ');
   assert.equal(withoutRepeatedIntroduction('Цена 100 шек, доставка завтра.', true), 'Цена 100 шек, доставка завтра.');
 });
+
+test('Z17: a later reply loses the repeated greeting and self-introduction; the first keeps them; nothing else changes', () => {
+  const cases: Array<[string, string]> = [
+    ['Здравствуйте! Я Лея, ИИ-ассистент Ноготки. Нет, я помогаю Ольге с записью.', 'Нет, я помогаю Ольге с записью.'],
+    ['Здравствуйте 🌷 Я Лея, ИИ-ассистент Ирены Прасолов.\nОтёк на второй день — это нормально.', 'Отёк на второй день — это нормально.'],
+    ['Здравствуйте 🌷 Отёк на второй день — это нормально.', 'Отёк на второй день — это нормально.'],
+    ['Привет, Диана! Чем могу помочь?', 'Чем могу помочь?'],
+    ['שלום! אני ליה, העוזרת של BizGenie. המחיר 200 ₪.', 'המחיר 200 ₪.'],
+    ["Hi! I'm Leya, BizGenie's AI assistant. We open at 9.", 'We open at 9.'],
+    ['Я Лея, ИИ-ассистент BizGenie. Передала Юрию.', 'Передала Юрию.'],
+    ['Здравствуйте! Я Лея, ИИ-ассистент BizGenie.', 'Здравствуйте! Я Лея, ИИ-ассистент BizGenie.'],
+    ['Я передала ваш вопрос Юрию.', 'Я передала ваш вопрос Юрию.'],
+    ['Привезём завтра.', 'Привезём завтра.'],
+    ['Hiking tours start at 9.', 'Hiking tours start at 9.'],
+    ['Здравствуйте, у нас открыто до 18.', 'У нас открыто до 18.'],
+    ['Приветствуем новых клиентов скидкой.', 'Приветствуем новых клиентов скидкой.'],
+  ];
+  for (const [input, expected] of cases) assert.equal(withoutRepeatedIntroduction(input, true), expected, input);
+  assert.equal(withoutRepeatedIntroduction(cases[0]![0], false), cases[0]![0]);
+});

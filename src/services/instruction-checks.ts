@@ -32,6 +32,12 @@ export const labelValue = (parsed: ParsedReply, name: LabelName) => parsed.label
 /** Z12: every value of a label that may repeat ([[ASK_OWNER]] — one owner message per question). */
 export const labelValues = (parsed: ParsedReply, name: LabelName) => parsed.labels.filter(l => l.name === name).flatMap(l => l.value ? [l.value] : []);
 
+/**
+ * Z17: the reply tells the client their message is already with the owner («Передала Юрию…», «העברתי», «I've passed»)
+ * — a promise only a label keeps. Without one the code passes it on itself. An offer («передать Юрию?») is not a claim.
+ */
+export const claimsHandoff = (text: string) => /(?<![\p{L}])(?:передала|передаю|העברתי|אני מעבירה|i'?ve passed|i have passed|i passed)(?![\p{L}])/iu.test(text);
+
 /** Leftovers that must never reach a client: brackets, placeholders, JS nulls. */
 export const unsafeClientText = (text: string) => !text.trim() || /\[\[|\]\]|[<>{}]|\bundefined\b|\bnull\b/.test(text);
 

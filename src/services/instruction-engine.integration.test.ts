@@ -194,6 +194,18 @@ test('Z16: only demo_tenant shows another business — others get the core line,
   } finally { await f.pg.close(); }
 });
 
+test('Z17: «передала» without a label goes to the owner; a later reply loses the repeated greeting', async () => {
+  const f = await fixture();
+  try {
+    f.reply('Здравствуйте! Я Лея, ИИ-ассистент BizGenie. Как к вам обращаться?', 'Здравствуйте! Я Лея, ИИ-ассистент BizGenie. Передала Юрию вашу просьбу перезвонить в среду в 14:00, он подтвердит время.');
+    await f.say('привет');
+    const r = await f.say('можете перезвонить мне в среду в 14 00?');
+    assert.equal(r.outcome, 'escalated');
+    assert.ok(r.labels?.includes('ASK_OWNER'));
+    assert.equal(r.reply, 'Передала Юрию вашу просьбу перезвонить в среду в 14:00, он подтвердит время.');
+  } finally { await f.pg.close(); }
+});
+
 test('HUMAN and ASK_OWNER become escalations with the model text; without an active instruction the legacy path answers', async () => {
   const f = await fixture();
   try {
