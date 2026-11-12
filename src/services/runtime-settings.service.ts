@@ -125,6 +125,7 @@ export function validateRuntimePatch(input:Record<string,unknown>) {
   else if(key==='reply_engine'){if(value!=='legacy'&&value!=='instruction')throw new HttpError(400,'Invalid reply engine');behaviorPatch[key]=value;}
   else if(key==='instruction_template'){if(value!==''&&!isTemplateKey(value))throw new HttpError(400,'Invalid instruction template');behaviorPatch[key]=value;}
   else if(key==='reply_fallback_model'){if(typeof value!=='string'||value.length>80||!/^[a-z0-9._-]*$/i.test(value))throw new HttpError(400,'Invalid fallback model');behaviorPatch[key]=value;}
+  else if(key==='role_classifier_model'){if(typeof value!=='string'||value.length>80||!/^[a-z0-9._-]*$/i.test(value))throw new HttpError(400,'Invalid reply model');behaviorPatch[key]=value;}
   else if(key==='reply_model'){if(typeof value!=='string'||value.length>80||!/^[a-z0-9._-]*$/i.test(value))throw new HttpError(400,'Invalid reply model');behaviorPatch[key]=value;}
   else if(key==='reply_max_output_tokens'||key==='reply_retry_max_output_tokens')behaviorPatch[key]=integer(key,value,256,65536);
   else if(key==='reply_timeout_ms')behaviorPatch[key]=integer(key,value,1000,300000);

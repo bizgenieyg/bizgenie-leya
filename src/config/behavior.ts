@@ -122,6 +122,9 @@ export const BEHAVIOR_DEFAULTS = {
   /** Z18: the role classifier (SALES / SUPPORT, first message of a dialog, before the reply): its own thinking per model
    *  and output cap. Without a level 3.8-flash thinks at its default 'medium' — 3.5 s before every first reply.
    *  'low', not 'minimal': 3.8-flash rejects 'minimal' with 400 INVALID_ARGUMENT (checked 12.11). */
+  /** Z18: the role classifier's model — a short SALES/SUPPORT label before the first reply. flash-lite: 8/8 right at
+   *  0.6–0.9 s against 1.9–3 s of 3.8-flash on 12.11. Empty — the reply model. */
+  role_classifier_model: 'gemini-3.5-flash-lite',
   role_classifier_thinking_levels: { 'gemini-3.8-flash': 'low' } as Record<string, string>,
   role_classifier_max_output_tokens: 256,
   /** Z4: the reply model call — whole call, one HTTP attempt, pause before the one retry on 429/5xx/network. */

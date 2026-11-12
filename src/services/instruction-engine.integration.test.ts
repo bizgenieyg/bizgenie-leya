@@ -503,9 +503,22 @@ test('Z11: the owner rules are a block after the instruction and before the fact
   } finally { await f.pg.close(); }
 });
 
+test('Z18: the role classifier is its own model by default — the reply model gets only the reply', async () => {
+  const f = await fixture({ instruction: 'Общее для {business_name}, {owner_name}.\n### Продажа\nРАЗДЕЛ ПРОДАЖИ\n### Поддержка\nРАЗДЕЛ ПОДДЕРЖКИ' });
+  try {
+    // role_classifier_model = gemini-3.5-flash-lite; the test has no model key — the classification fails, the dialog is a sale.
+    f.reply('Здравствуйте!');
+    await f.say('привет');
+    assert.equal(f.prompts.length, 1); assert.match(f.prompts[0]!.system, /РАЗДЕЛ ПРОДАЖИ/); assert.doesNotMatch(f.prompts[0]!.system, /классификатор намерений/);
+    await assert.rejects(saveRuntimeSettings(f.db, f.tenantId, { role_classifier_model: 'bad model!' }), /Invalid reply model/);
+  } finally { await f.pg.close(); }
+});
+
 test('Z12: roles — keywords pick SUPPORT, the classifier SALES/SUPPORT once, the role sticks; a request resets it', async () => {
   const f = await fixture({ instruction: 'Общее для {business_name}, {owner_name}.\n### Продажа\nРАЗДЕЛ ПРОДАЖИ\n### Поддержка\nРАЗДЕЛ ПОДДЕРЖКИ' });
   try {
+    // The reply model classifies here (role_classifier_model empty), so its prompts are captured.
+    await saveRuntimeSettings(f.db, f.tenantId, { role_classifier_model: '' });
     f.reply('SALES', 'Здравствуйте! Чем помочь?');
     await f.say('привет');
     assert.match(f.prompts[0]!.system, /классификатор намерений/);

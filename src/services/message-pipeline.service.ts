@@ -244,7 +244,7 @@ export async function processCustomerMessage(input: PipelineInput): Promise<Pipe
       // Z12: the role (support keywords → classifier → SALES) is chosen in the engine, sticky for the dialog.
       outcome = replyModel ? await answerByInstruction({ db, tenantId, text, language, settings, state, memory: memory.messages, model: replyModel,
         business: context.business ?? null, assistantName: context.assistant?.assistant_name, demo: await sink.loadDemo(),
-        roleClassifier: meterAI(db, tenantId, model, { purpose: 'role_classification' }), clientName: clientFirstName(), openQuestions: sink.openQuestions ? await sink.openQuestions() : [],
+        roleClassifier: meterAI(db, tenantId, config.role_classifier_model ? createModelProvider(config.role_classifier_model) : model, { purpose: 'role_classification' }), clientName: clientFirstName(), openQuestions: sink.openQuestions ? await sink.openQuestions() : [],
         voice: !!sink.attributeVoice, now }) : null;
     } catch (error) {
       // Z12 (as chef-bot): after the provider's retries (and the fallback model) — a short apology, no escalation.
