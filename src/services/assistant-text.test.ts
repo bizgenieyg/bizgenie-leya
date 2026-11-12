@@ -35,6 +35,10 @@ test('Z17: a later reply loses the repeated greeting and self-introduction; the 
     ['Hiking tours start at 9.', 'Hiking tours start at 9.'],
     ['Здравствуйте, у нас открыто до 18.', 'У нас открыто до 18.'],
     ['Приветствуем новых клиентов скидкой.', 'Приветствуем новых клиентов скидкой.'],
+    // Z17 review: a capitalised word not closed by punctuation is the reply, not a name.
+    ['Hello, No appointments are available tomorrow.', 'No appointments are available tomorrow.'],
+    ['Здравствуйте, Завтра мы закрыты.', 'Завтра мы закрыты.'],
+    ['Hello, Anna! We open at 9.', 'We open at 9.'],
   ];
   for (const [input, expected] of cases) assert.equal(withoutRepeatedIntroduction(input, true), expected, input);
   assert.equal(withoutRepeatedIntroduction(cases[0]![0], false), cases[0]![0]);

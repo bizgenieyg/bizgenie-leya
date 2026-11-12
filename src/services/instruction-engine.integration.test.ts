@@ -469,7 +469,8 @@ test('Z8: the core names the assistant by assistant_profiles.assistant_name; emp
 });
 
 test('Z17: the reply model gets the first name parsed from the WhatsApp profile, not the raw profile; a brand — no name', async () => {
-  for (const [profile, expected] of [['Александр Коско тренинги, курсы, фестивали и путешествия', 'Александр'], ['Diana✨', 'Диана'], ['Maxident Clinic', null]] as const) {
+  for (const [profile, expected] of [['Александр Коско тренинги, курсы, фестивали и путешествия', 'Александр'], ['Diana✨', 'Диана'], ['Maxident Clinic', null],
+    ['Анна Студия маникюра', 'Анна'], ['Александр школа танцев', 'Александр']] as const) {
     const f = await fixture();
     try {
       f.reply('Здравствуйте!');
@@ -477,7 +478,7 @@ test('Z17: the reply model gets the first name parsed from the WhatsApp profile,
       const p = f.prompts.at(-1)!;
       if (expected) assert.match(p.system, new RegExp(`ИЗВЕСТНОЕ ИМЯ КЛИЕНТА \\(из WhatsApp\\): ${expected}\\.`), profile);
       else assert.doesNotMatch(p.system, /ИЗВЕСТНОЕ ИМЯ КЛИЕНТА/, profile);
-      assert.doesNotMatch(p.system, /Коско|Maxident|✨/, profile);
+      assert.doesNotMatch(p.system, /Коско|Maxident|✨|Студия|школа/, profile);
     } finally { await f.pg.close(); }
   }
 });

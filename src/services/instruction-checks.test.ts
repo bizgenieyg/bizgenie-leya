@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { checkedNumbers, missingFields, normalizeNumber, parseLabels, parseRequestValue, unbackedNumbers, unsafeClientText } from './instruction-checks.js';
+import { checkedNumbers, claimsHandoff, missingFields, normalizeNumber, parseLabels, parseRequestValue, unbackedNumbers, unsafeClientText } from './instruction-checks.js';
 import { fillPlaceholders } from './instructions.service.js';
 import { CORE_INSTRUCTION_DEFAULT, CORE_LANGUAGE_DEFAULTS, DEMO_INSTRUCTION_DEFAULTS } from '../config/instruction-defaults.js';
 
@@ -103,4 +103,12 @@ test('Z12: the daily review — every dialog once, unknown values safe; the repo
   assert.equal(reportDue(settings, new Date('2026-10-28T05:30:00Z')), null, '07:30 local — not yet');
   assert.deepEqual(reportDue(settings, new Date('2026-10-28T07:05:00Z')), { reportDate: '2026-10-27' });
   assert.deepEqual(reportDue(settings, new Date('2026-11-01T07:05:00Z')), { reportDate: '2026-10-31' });
+});
+
+test('Z17 review: «передала» counts only as a handoff to the owner — not negated, not something given to the client', () => {
+  for (const text of ['Передала Юрию, он ответит.', 'Я передала вашу просьбу владельцу.', 'העברתי את השאלה לבעל העסק.', "I've passed your question to the owner."])
+    assert.equal(claimsHandoff(text), true, text);
+  for (const text of ['Я не передала вашу просьбу владельцу.', 'Я ещё не передала вопрос.', 'Я передала вам ссылку на прайс.', 'לא העברתי את הבקשה.',
+    'העברתי לך את הקישור.', "I haven't passed it yet.", "I've passed you the link.", 'Передать Юрию?', 'Я передам Юрию.'])
+    assert.equal(claimsHandoff(text), false, text);
 });

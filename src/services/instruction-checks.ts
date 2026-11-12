@@ -36,7 +36,13 @@ export const labelValues = (parsed: ParsedReply, name: LabelName) => parsed.labe
  * Z17: the reply tells the client their message is already with the owner («Передала Юрию…», «העברתי», «I've passed»)
  * — a promise only a label keeps. Without one the code passes it on itself. An offer («передать Юрию?») is not a claim.
  */
-export const claimsHandoff = (text: string) => /(?<![\p{L}])(?:передала|передаю|העברתי|אני מעבירה|i'?ve passed|i have passed|i passed)(?![\p{L}])/iu.test(text);
+const HANDOFF = /(?<![\p{L}])(?:передала|передаю|העברתי|אני מעבירה|i'?ve passed|i have passed|i passed)(?![\p{L}])/giu;
+/** Z17 review: «не передала», «לא העברתי», «haven't passed» — not a claim. */
+const HANDOFF_NEGATION = /(?<![\p{L}])(?:не|ещё не|еще не|לא|not|haven'?t|never)[ \t]+(?:\p{L}+[ \t]+)?$/iu;
+/** Z17 review: «передала вам ссылку», «I've passed you the link» — something handed to the client, not to the owner. */
+const HANDOFF_TO_CLIENT = /^[ \t]+(?:вам|тебе|לך|לכם|לכן|you|on to you)(?![\p{L}])/iu;
+export const claimsHandoff = (text: string) => [...text.matchAll(HANDOFF)].some(m =>
+  !HANDOFF_NEGATION.test(text.slice(Math.max(0, m.index - 30), m.index)) && !HANDOFF_TO_CLIENT.test(text.slice(m.index + m[0].length)));
 
 /** Leftovers that must never reach a client: brackets, placeholders, JS nulls. */
 export const unsafeClientText = (text: string) => !text.trim() || /\[\[|\]\]|[<>{}]|\bundefined\b|\bnull\b/.test(text);

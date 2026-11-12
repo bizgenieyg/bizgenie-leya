@@ -6,8 +6,9 @@ export const containsInternalAgentCode=(text:string)=>/\b(?:SALE|SUPPORT|RECEPTI
 /** Z11: a message to the owner — markup and internal codes out, but «Да / Нет» keeps its slash. */
 export const ownerText = (text:string) => text.replace(/<[^>]*>/g, "").replace(/[<>]/g, "").replace(INTERNAL_AGENT_CODE,'').trim();
 export const clientText = (text:string) => text.replace(/<[^>]*>/g, "").replace(/[<>]/g, "").replace(INTERNAL_AGENT_CODE,'').replace(/\s+\/\s+/g,' ').replace(/\s*\/\s*(?=[?!.,]|$)/g,'').replace(/[ \t]+([?!.,])/g,'$1').replace(/[ \t]{2,}/g,' ').replace(/[ \t]*\n[ \t]*/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
-/** Z17: a greeting at the start of a reply («Здравствуйте 🌷», «Привет, Диана!», «שלום!», «Hi!»), with the name after it. */
-const GREETING=/^(?:[Зз]дравствуйте|[Пп]ривет|[Дд]обрый (?:день|вечер)|[Дд]оброе утро|שלום|היי|[Hh]i|[Hh]ello)(?![\p{L}])(?:,?[ \t]+\p{Lu}[\p{L}'’-]*(?=[^\p{L}]|$))?[^\p{L}\p{N}\n]*/u;
+/** Z17: a greeting at the start of a reply («Здравствуйте 🌷», «Привет, Диана!», «שלום!», «Hi!»), with the name after it — only
+ * a name closed by punctuation («Hello, No appointments…» keeps «No»). */
+const GREETING=/^(?:[Зз]дравствуйте|[Пп]ривет|[Дд]обрый (?:день|вечер)|[Дд]оброе утро|שלום|היי|[Hh]i|[Hh]ello)(?![\p{L}])(?:,?[ \t]+\p{Lu}[\p{L}'’-]*(?=[ \t]*(?:[!,.?…]|$)))?[^\p{L}\p{N}\n]*/u;
 /** Z17: «Я Лея, ИИ-ассистент Ноготки.» / «אני ליה, העוזרת של …» / «I'm Leya, … assistant» — one sentence. */
 const SELF_INTRODUCTION=/^(?:я|i'm|i am|אני)[ \t][^.!?\n]{0,120}?(?:ассистент|assistant|עוזר)[^.!?\n]{0,80}[.!]?[ \t]*\n?/iu;
 /**

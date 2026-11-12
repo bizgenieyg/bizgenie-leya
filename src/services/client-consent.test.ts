@@ -20,6 +20,8 @@ test('Z17: a name at the start of a longer profile; Latin transliterated in a Ru
   const cases: Array<[string, string | null]> = [
     ['Александр Коско тренинги, курсы, фестивали и путешествия', 'Александр'], ['Diana✨', 'Диана'], ['Yana Melman', 'Яна'],
     ['Maxident Clinic', null], ['Мама', null], ['משה כהן', 'משה'], ['Работа 💼', null], ['Maria', 'Мария'], ['Sasha', 'Саша'],
+    // Z17 review: a real name before a description or brand stays.
+    ['Анна Студия маникюра', 'Анна'], ['Anna Studio', 'Анна'], ['Александр школа танцев', 'Александр'], ['Maxident Studio', null],
   ];
   for (const [input, expected] of cases) assert.equal(usableFirstName(input, null, 'ru'), expected, input);
   assert.equal(usableFirstName('Diana✨', null, 'en'), 'Diana');

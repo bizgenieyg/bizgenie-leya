@@ -14,6 +14,25 @@ export const NAME_BRAND_WORDS: readonly string[] = [
   'קליניקה', 'סטודיו', 'מספרה', 'מרכז', 'חנות', 'שירותים', 'בע"מ',
 ];
 
+/** Z17 review: common first names — such a first word stays a name before a brand word («Anna Studio», «Анна Студия маникюра»). */
+export const COMMON_FIRST_NAMES: ReadonlySet<string> = new Set([
+  'анна', 'александр', 'александра', 'алексей', 'андрей', 'анастасия', 'антон', 'аня', 'артём', 'артем', 'борис', 'вадим',
+  'валентина', 'валерия', 'василий', 'вера', 'виктор', 'виктория', 'владимир', 'владислав', 'галина', 'даниил', 'данил', 'денис',
+  'диана', 'дмитрий', 'дарья', 'ева', 'евгений', 'евгения', 'екатерина', 'елена', 'жанна', 'игорь', 'илья', 'инна',
+  'ирина', 'катя', 'кирилл', 'константин', 'ксения', 'лариса', 'леонид', 'лилия', 'любовь', 'людмила', 'маргарита', 'марина',
+  'мария', 'михаил', 'надежда', 'наталья', 'наталия', 'никита', 'николай', 'нина', 'оксана', 'олег', 'ольга', 'павел',
+  'полина', 'роман', 'светлана', 'сергей', 'софия', 'софья', 'станислав', 'степан', 'таисия', 'тамара', 'татьяна', 'юлия',
+  'юрий', 'яна', 'ярослав', 'саша', 'маша', 'даша', 'женя', 'лена', 'оля', 'таня', 'юля', 'ира',
+  'света', 'anna', 'alex', 'alexander', 'alexandra', 'alexey', 'andrew', 'andrey', 'anastasia', 'anton', 'ben', 'boris',
+  'daniel', 'daria', 'david', 'diana', 'dima', 'dmitry', 'elena', 'emma', 'eva', 'eugene', 'igor', 'ilya',
+  'irina', 'julia', 'kate', 'katya', 'kirill', 'ksenia', 'lena', 'leo', 'liza', 'maria', 'marina', 'mark',
+  'max', 'maxim', 'michael', 'mike', 'nadia', 'natalia', 'natasha', 'nick', 'nikita', 'nina', 'olga', 'oleg',
+  'pavel', 'polina', 'roman', 'sarah', 'sasha', 'sergey', 'sofia', 'tanya', 'tatiana', 'victor', 'victoria', 'vlad',
+  'yana', 'yulia', 'yuri', 'משה', 'דוד', 'יוסי', 'יוסף', 'אבי', 'דני', 'רון', 'נועה', 'נועם',
+  'מיכל', 'שרה', 'רחל', 'לאה', 'רונית', 'אורית', 'יעל', 'תמר', 'שירה', 'אליעזר', 'אברהם', 'יצחק',
+  'יעקב', 'חנה', 'מאיה', 'דנה', 'עדי', 'איתי', 'אלון',
+]);
+
 /** Z17 (as chef-bot): a Latin first name in a Russian reply — transliterated («Diana» → «Диана»). Longest first. */
 export const LATIN_TO_CYRILLIC: ReadonlyArray<readonly [string, string]> = [
   ['shch', 'щ'], ['sch', 'щ'], ['zh', 'ж'], ['kh', 'х'], ['ch', 'ч'], ['sh', 'ш'], ['ts', 'ц'], ['ya', 'я'], ['yu', 'ю'], ['yo', 'ё'], ['ye', 'е'], ['ia$', 'ия'], ['iy$', 'ий'], ['y$', 'й'],

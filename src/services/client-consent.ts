@@ -1,4 +1,4 @@
-import { AGREEMENT_WORDS, CALL_TO_ACTION_PATTERN, DECLINE_WORDS, LATIN_TO_CYRILLIC, NAME_BRAND_WORDS, NAME_STOP_WORDS, NEGATION_PATTERN, REQUEST_ACTION_PATTERNS } from '../config/consent.js';
+import { AGREEMENT_WORDS, CALL_TO_ACTION_PATTERN, COMMON_FIRST_NAMES, DECLINE_WORDS, LATIN_TO_CYRILLIC, NAME_BRAND_WORDS, NAME_STOP_WORDS, NEGATION_PATTERN, REQUEST_ACTION_PATTERNS } from '../config/consent.js';
 
 const normalize = (text: string) => text.toLowerCase().replace(/[ё]/g, 'е').replace(/[^\p{L}\p{N}'👍👌\s]+/gu, ' ').replace(/\s+/g, ' ').trim();
 const WORD = /^[\p{L}][\p{L}'’-]*$/u;
@@ -8,7 +8,8 @@ const upper = (w: string) => w === w.toUpperCase() && w !== w.toLowerCase();
  * First name suitable for addressing the client, or null. Z17: the profile may go on after the name — a surname, a
  * description, emoji («Александр Коско тренинги, курсы…», «Diana✨»): the first word is taken when it looks like a name —
  * letters (hyphen/apostrophe allowed), 2–20 characters, not a stop word («Мама», «Работа»), not the business name, not
- * SHOUTED (all caps, longer than 3 letters) — and the next word is not a brand word («Maxident Clinic»). Digits, «@» and
+ * SHOUTED (all caps, longer than 3 letters) — and, unless it is a common first name, the next word is not a brand word
+ * («Maxident Clinic» → null, «Anna Studio» → Anna). Digits, «@» and
  * dots in the first word disqualify it. In a Russian reply a Latin name is transliterated («Yana» → «Яна»).
  */
 export function usableFirstName(name: string | null | undefined, businessName?: string | null, language?: string | null): string | null {
@@ -21,7 +22,9 @@ export function usableFirstName(name: string | null | undefined, businessName?: 
   const word = (w: string) => w.toLowerCase().replace(/[^\p{L}"]+/gu, '');
   if (NAME_STOP_WORDS.includes(first.toLowerCase()) || business.has(normalize(first))) return null;
   const next = word(words[1] ?? '');
-  if (next && (NAME_BRAND_WORDS.includes(next) || NAME_STOP_WORDS.includes(next) || business.has(normalize(next)))) return null;
+  // Z17 review: a known first name stays before a brand or description word («Anna Studio»); an unknown word followed
+  // by one is taken for a brand («Maxident Clinic»).
+  if (next && !COMMON_FIRST_NAMES.has(first.toLowerCase().replace(/ё/g, 'е')) && (NAME_BRAND_WORDS.includes(next) || NAME_STOP_WORDS.includes(next) || business.has(normalize(next)))) return null;
   const value = first.charAt(0).toLocaleUpperCase() + first.slice(1);
   return language === 'ru' && /^[a-z'’-]+$/i.test(value) ? transliterate(value) : value;
 }
