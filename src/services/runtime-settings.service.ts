@@ -129,8 +129,10 @@ export function validateRuntimePatch(input:Record<string,unknown>) {
   else if(key==='reply_max_output_tokens'||key==='reply_retry_max_output_tokens')behaviorPatch[key]=integer(key,value,256,65536);
   else if(key==='reply_timeout_ms')behaviorPatch[key]=integer(key,value,1000,300000);
   else if(key==='reply_attempt_timeout_ms')behaviorPatch[key]=integer(key,value,1000,300000);
+  else if(key==='reply_hedge_ms')behaviorPatch[key]=integer(key,value,0,60000);
   else if(key==='reply_retry_delay_ms')behaviorPatch[key]=integer(key,value,0,30000);
-  else if(key==='reply_thinking_levels'){
+  else if(key==='role_classifier_max_output_tokens')behaviorPatch[key]=integer(key,value,64,4096);
+  else if(key==='reply_thinking_levels'||key==='role_classifier_thinking_levels'){
    if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).length>10||Object.entries(value).some(([m,l])=>m.length>80||!/^[a-z0-9._-]+$/i.test(m)||!(THINKING_LEVELS as readonly unknown[]).includes(l)))throw new HttpError(400,'Invalid thinking levels');
    behaviorPatch[key]=value;
   }

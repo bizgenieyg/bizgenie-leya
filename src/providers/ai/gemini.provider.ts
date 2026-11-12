@@ -12,7 +12,30 @@ export const DEFAULT_GEMINI_TASK_MODEL = "gemini-3.8-flash";
  * ('minimal'|'low'|'medium'|'high', generationConfig.thinkingConfig); a model not listed gets no thinkingConfig
  * (its own default). retryMaxOutputTokens: one more attempt with this cap after 'incomplete_max_tokens'.
  */
-export interface GeminiOptions { maxOutputTokens?: number; retryMaxOutputTokens?: number; thinkingLevels?: Record<string, string>; timeoutMs?: number; attemptTimeoutMs?: number; retryDelayMs?: number }
+export interface GeminiOptions { maxOutputTokens?: number; retryMaxOutputTokens?: number; thinkingLevels?: Record<string, string>; timeoutMs?: number; attemptTimeoutMs?: number; retryDelayMs?: number; hedgeMs?: number }
+
+/**
+ * Z18: a hedged first attempt. A call that has not answered within `hedgeMs` gets a second identical request; the
+ * first response wins and the other request is aborted. Only the slow tail (p95 13 s against a 3.9 s mean in Z18)
+ * pays for a second request. 0 — off.
+ */
+export async function hedgedFetch(start: (signal: AbortSignal) => Promise<Response>, hedgeMs: number, onHedge: () => void = () => {}): Promise<Response> {
+  if (!hedgeMs) return start(new AbortController().signal);
+  const a = new AbortController(), b = new AbortController();
+  const first = start(a.signal);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<'late'>(resolve => { timer = setTimeout(() => resolve('late'), hedgeMs); });
+  const early = await Promise.race([first.then(response => ({ response }), (error: unknown) => ({ error })), late]);
+  clearTimeout(timer);
+  if (early !== 'late') { if ('error' in early) throw early.error; return early.response; }
+  onHedge();
+  const second = start(b.signal);
+  try {
+    const winner = await Promise.any([first.then(response => ({ response, loser: b })), second.then(response => ({ response, loser: a }))]);
+    winner.loser.abort();
+    return winner.response;
+  } catch (error) { throw error instanceof AggregateError ? error.errors[error.errors.length - 1] : error; }
+}
 
 export class GeminiProvider implements AIProvider {
   constructor(private readonly apiKey: string, private readonly model = DEFAULT_GEMINI_MODEL, private readonly options: GeminiOptions = {}) {}
@@ -21,7 +44,7 @@ export class GeminiProvider implements AIProvider {
     const limits = { ...definedOnly(this.options), ...definedOnly(input.generation ?? {}) };
     const cap = limits.maxOutputTokens ?? 1024, retry = limits.retryMaxOutputTokens;
     const thinkingLevel = limits.thinkingLevels?.[this.model];
-    const t = { ...MODEL_CALL_DEFAULTS, ...definedOnly({ timeoutMs: limits.timeoutMs, attemptTimeoutMs: limits.attemptTimeoutMs, retryDelayMs: limits.retryDelayMs }) };
+    const t = { ...MODEL_CALL_DEFAULTS, ...definedOnly({ timeoutMs: limits.timeoutMs, attemptTimeoutMs: limits.attemptTimeoutMs, retryDelayMs: limits.retryDelayMs, hedgeMs: limits.hedgeMs }) };
     if (!retry || retry <= cap) return this.request(input, cap, thinkingLevel, true, t);
     try { return await this.request(input, cap, thinkingLevel, false, t); }
     catch (error) {
@@ -51,11 +74,11 @@ export class GeminiProvider implements AIProvider {
       let response: Response | undefined;
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.model)}:generateContent`, {
+          const send = (own: AbortSignal) => fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.model)}:generateContent`, {
             method: "POST",
             headers: { "Content-Type": "application/json", "x-goog-api-key": this.apiKey },
             redirect: "error",
-            signal: AbortSignal.any([overall, AbortSignal.timeout(t.attemptTimeoutMs)]),
+            signal: AbortSignal.any([overall, AbortSignal.timeout(t.attemptTimeoutMs), own]),
             body: JSON.stringify({
               systemInstruction: { parts: [{ text: input.systemPrompt }] },
               contents: [
@@ -65,8 +88,11 @@ export class GeminiProvider implements AIProvider {
               generationConfig: { maxOutputTokens, ...(thinkingLevel ? { thinkingConfig: { thinkingLevel } } : {}) },
             }),
           });
-        } catch {
-          if (attempt || overall.aborted) { failure = { reason: overall.aborted ? 'timeout' : 'network' }; throw new Error('Gemini network unavailable'); }
+          response = attempt ? await send(new AbortController().signal) : await hedgedFetch(send, t.hedgeMs, () => console.warn('model_call_hedged', { model: this.model }));
+        } catch (error) {
+          // Z18: an attempt cut by its own timeout is a timeout, not a network failure.
+          const timedOut = overall.aborted || (error instanceof Error && error.name === 'TimeoutError');
+          if (attempt || overall.aborted) { failure = { reason: timedOut ? 'timeout' : 'network' }; throw new Error('Gemini network unavailable'); }
           await new Promise(resolve => setTimeout(resolve, t.retryDelayMs));
           continue;
         }

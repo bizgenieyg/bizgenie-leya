@@ -5,7 +5,7 @@ import { simulateCustomerMessage } from './simulator.service.js';
 import { readRuntimeSettings, saveRuntimeSettings } from './runtime-settings.service.js';
 import { BEHAVIOR_DEFAULTS } from '../config/behavior.js';
 import { activateInstruction, uploadInstruction } from './instructions.service.js';
-import { AIProviderError } from '../providers/ai/ai-provider.interface.js';
+import { AIProviderError, type AIReplyInput } from '../providers/ai/ai-provider.interface.js';
 
 process.env.GEMINI_API_KEY = '';
 process.env.SUPABASE_URL = 'https://database.invalid';
@@ -26,10 +26,10 @@ async function fixture(options: { owner?: string; engine?: 'instruction' | 'lega
   // Z16: this fixture is BizGenie — the demo tenant (showing another business is its right only).
   await pg.query("insert into system_config(key,value) values('demo_tenant',to_jsonb($1::text))", [tenantId]);
   if (options.instruction !== null) { await uploadInstruction(db, { kind: 'business', tenantId }, options.instruction ?? INSTRUCTION); await activateInstruction(db, { kind: 'business', tenantId }, 1); }
-  const prompts: Array<{ system: string; user: string; history: number }> = [];
+  const prompts: Array<{ system: string; user: string; history: number; generation?: AIReplyInput['generation'] }> = [];
   let replies: string[] = [];
-  const ai = { async generateReply(input: { systemPrompt: string; userMessage: string; history?: unknown[] }) {
-    prompts.push({ system: input.systemPrompt, user: input.userMessage, history: input.history?.length ?? -1 });
+  const ai = { async generateReply(input: { systemPrompt: string; userMessage: string; history?: unknown[]; generation?: AIReplyInput['generation'] }) {
+    prompts.push({ system: input.systemPrompt, user: input.userMessage, history: input.history?.length ?? -1, generation: input.generation });
     const text = replies.shift() ?? 'Хорошо.';
     if (text.startsWith('THROW:')) throw new AIProviderError('Gemini reply unavailable', undefined, { reason: text.slice(6) });
     return { text };
@@ -328,10 +328,14 @@ test('Z2: reply model limits reach the model call; the new settings are validate
     const calls: unknown[] = [];
     const ai = { async generateReply(input: { generation?: unknown }) { calls.push(input.generation); return { text: 'Хорошо.' }; } };
     await simulateCustomerMessage(f.db, f.tenantId, crypto.randomUUID(), 'привет', ai as never, { evaluation: {}, embedder: null });
-    assert.deepEqual(calls[0], { maxOutputTokens: 2048, retryMaxOutputTokens: 4096, thinkingLevels: { 'gemini-3.8-flash': 'low' }, timeoutMs: 20000, attemptTimeoutMs: 9000, retryDelayMs: 1500 });
-    await saveRuntimeSettings(f.db, f.tenantId, { reply_max_output_tokens: 3000, reply_thinking_levels: { 'gemini-3.8-flash': 'minimal' }, reply_timeout_ms: 30000, reply_attempt_timeout_ms: 12000, reply_retry_delay_ms: 500 });
+    assert.deepEqual(calls[0], { maxOutputTokens: 2048, retryMaxOutputTokens: 4096, thinkingLevels: { 'gemini-3.8-flash': 'low' }, timeoutMs: 20000, attemptTimeoutMs: 9000, retryDelayMs: 1500, hedgeMs: 5000 });
+    await saveRuntimeSettings(f.db, f.tenantId, { reply_max_output_tokens: 3000, reply_thinking_levels: { 'gemini-3.8-flash': 'minimal' }, reply_timeout_ms: 30000, reply_attempt_timeout_ms: 12000, reply_retry_delay_ms: 500, reply_hedge_ms: 0 });
     await simulateCustomerMessage(f.db, f.tenantId, crypto.randomUUID(), 'привет', ai as never, { evaluation: {}, embedder: null });
-    assert.deepEqual(calls[1], { maxOutputTokens: 3000, retryMaxOutputTokens: 4096, thinkingLevels: { 'gemini-3.8-flash': 'minimal' }, timeoutMs: 30000, attemptTimeoutMs: 12000, retryDelayMs: 500 });
+    assert.deepEqual(calls[1], { maxOutputTokens: 3000, retryMaxOutputTokens: 4096, thinkingLevels: { 'gemini-3.8-flash': 'minimal' }, timeoutMs: 30000, attemptTimeoutMs: 12000, retryDelayMs: 500, hedgeMs: 0 });
+    // Z18: the role classifier settings are operator settings, validated like the reply ones.
+    await assert.rejects(saveRuntimeSettings(f.db, f.tenantId, { reply_hedge_ms: -1 }), /Invalid setting/);
+    await assert.rejects(saveRuntimeSettings(f.db, f.tenantId, { role_classifier_thinking_levels: { 'gemini-3.8-flash': 'max' } }), /Invalid thinking levels/);
+    await assert.rejects(saveRuntimeSettings(f.db, f.tenantId, { role_classifier_max_output_tokens: 10 }), /Invalid setting/);
     await assert.rejects(saveRuntimeSettings(f.db, f.tenantId, { reply_timeout_ms: 10 }), /Invalid setting/);
     await assert.rejects(saveRuntimeSettings(f.db, f.tenantId, { reply_thinking_levels: { 'gemini-3.8-flash': 'max' } }), /Invalid thinking levels/);
     await assert.rejects(saveRuntimeSettings(f.db, f.tenantId, { reply_max_output_tokens: 10 }), /Invalid setting/);
@@ -505,6 +509,8 @@ test('Z12: roles — keywords pick SUPPORT, the classifier SALES/SUPPORT once, t
     f.reply('SALES', 'Здравствуйте! Чем помочь?');
     await f.say('привет');
     assert.match(f.prompts[0]!.system, /классификатор намерений/);
+    // Z18: the classifier runs before the reply — its own thinking level and cap, not the model's default 'medium'.
+    assert.deepEqual(f.prompts[0]!.generation, { maxOutputTokens: 256, thinkingLevels: { 'gemini-3.8-flash': 'minimal' } });
     assert.match(f.prompts[1]!.system, /РАЗДЕЛ ПРОДАЖИ/); assert.doesNotMatch(f.prompts[1]!.system, /РАЗДЕЛ ПОДДЕРЖКИ/);
     f.reply('Расскажу.');
     await f.say('сколько стоит?');

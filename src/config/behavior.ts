@@ -119,10 +119,16 @@ export const BEHAVIOR_DEFAULTS = {
   /** Thinking level per reply model (Gemini generationConfig.thinkingConfig.thinkingLevel); a model not listed gets
    *  none — its own default (gemini-3.5-flash-lite: minimal). 3.8-flash defaults to 'medium': 'low' for latency. */
   reply_thinking_levels: { 'gemini-3.8-flash': 'low' } as Record<string, string>,
+  /** Z18: the role classifier (SALES / SUPPORT, first message of a dialog, before the reply): its own thinking per model
+   *  and output cap. Without a level 3.8-flash thinks at its default 'medium' — 3.5 s before every first reply. */
+  role_classifier_thinking_levels: { 'gemini-3.8-flash': 'minimal' } as Record<string, string>,
+  role_classifier_max_output_tokens: 256,
   /** Z4: the reply model call — whole call, one HTTP attempt, pause before the one retry on 429/5xx/network. */
   reply_timeout_ms: 20_000,
   reply_attempt_timeout_ms: 9_000,
   reply_retry_delay_ms: 1_500,
+  /** Z18: a reply call silent this long gets a second identical request, the first answer wins (0 — off). */
+  reply_hedge_ms: 5_000,
   /** Fields a request of each type must carry before it is created. */
   request_required_fields: { meeting: ['topic'], consultation: ['city', 'when'], procedure: ['service', 'city', 'when', 'allergy'],
     booking: ['service', 'when'], reschedule: ['when'], cancel: [], order: ['items', 'date'], estimate: ['task'], request: ['what'] } as Record<string, string[]>,
@@ -145,7 +151,7 @@ export const MESSAGE_RETENTION_SWEEP_MS = 24 * 60 * 60 * 1000;
 export const TASK_MODEL_LIMITS = { maxOutputTokens: 16_384, retryMaxOutputTokens: 32_768, thinkingLevels: { 'gemini-3.8-flash': 'low' } as Record<string, string> };
 /** System defaults of one model call (any provider) when the caller sets nothing: replies take the tenant's
  *  reply_* settings above, the task model its own options. */
-export const MODEL_CALL_DEFAULTS = { timeoutMs: 20_000, attemptTimeoutMs: 9_000, retryDelayMs: 1_500 };
+export const MODEL_CALL_DEFAULTS = { timeoutMs: 20_000, attemptTimeoutMs: 9_000, retryDelayMs: 1_500, hedgeMs: 0 };
 /** Z4: the judge of eval:instructions, pinned so that comparisons do not follow GEMINI_TASK_MODEL. */
 export const EVAL_JUDGE_MODEL = 'gemini-3.8-flash';
 export const THINKING_LEVELS = ['minimal', 'low', 'medium', 'high'] as const;

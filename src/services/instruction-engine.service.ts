@@ -103,7 +103,8 @@ export async function answerByInstruction(turn: InstructionTurn): Promise<Instru
   const active = await activeInstructionFor(db, tenantId, resolveTemplate(config.instruction_template, turn.business?.business_sector));
   if (!active) return null; // nothing published: the tenant keeps the legacy path
   const values = { business_name: turn.business?.business_name, owner_name: turn.business?.owner_name, assistant_name: turn.assistantName?.trim() || ASSISTANT_NAME_DEFAULT };
-  const role = turn.role ?? (hasRoleSections(active.text) ? await chooseRole(text, turn.memory, turn.state, turn.roleClassifier ?? null) : 'SALES');
+  const role = turn.role ?? (hasRoleSections(active.text) ? await chooseRole(text, turn.memory, turn.state, turn.roleClassifier ?? null,
+    { maxOutputTokens: config.role_classifier_max_output_tokens, thinkingLevels: config.role_classifier_thinking_levels }) : 'SALES');
   const core = fillPlaceholders(await loadCore(db), values), instruction = fillPlaceholders(instructionForRole(active.text, role), values);
   if (!core.text || !instruction.text) {
     console.error('instruction_placeholder_missing', { tenantId, placeholders: [...core.missing, ...instruction.missing] });
@@ -135,7 +136,7 @@ export async function answerByInstruction(turn: InstructionTurn): Promise<Instru
   const history = turn.memory.slice(0, -1).map(m => ({ role: m.fromMe ? 'assistant' as const : 'user' as const, text: m.text }));
   const ask = async () => parseLabels((await turn.model.generateReply({ systemPrompt: systemPrompt(), userMessage: text, history,
     generation: { maxOutputTokens: config.reply_max_output_tokens, retryMaxOutputTokens: config.reply_retry_max_output_tokens, thinkingLevels: config.reply_thinking_levels,
-      timeoutMs: config.reply_timeout_ms, attemptTimeoutMs: config.reply_attempt_timeout_ms, retryDelayMs: config.reply_retry_delay_ms } })).text);
+      timeoutMs: config.reply_timeout_ms, attemptTimeoutMs: config.reply_attempt_timeout_ms, retryDelayMs: config.reply_retry_delay_ms, hedgeMs: config.reply_hedge_ms } })).text);
   let parsed = await ask();
   // Z12 review (eval B9): the answer that starts a demo was written without the demo business (the mode was not on):
   // it is written once more with the demo text, so prices and terms come from it. Context, not a check of the answer.
