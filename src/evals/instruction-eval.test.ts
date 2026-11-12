@@ -3,10 +3,14 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { codeChecks, emptyStats, formatInstructionReport, loadInstructionScenarios, tenantScenarios } from './instruction-eval.js';
 
-test('scenarios: 5 traps + own per tenant (BizGenie + 6 of the 26.10 dialog, Z12, + 2 client demos, Z15), variables and owner name filled', () => {
+test('scenarios: 5 traps + own per tenant (BizGenie + 6 of the 26.10 dialog, Z12, + 2 client demos, Z15, + 3 price traps for ira/manicure, Z18), variables and owner name filled', () => {
   const file = loadInstructionScenarios(readFileSync('evals/instructions/scenarios.yaml', 'utf8'));
   const biz = tenantScenarios(file, 'bizgenie', 'Юрий'), ira = tenantScenarios(file, 'ira', 'Ирена');
-  assert.equal(biz.length, 27); assert.equal(ira.length, 19);
+  assert.equal(biz.length, 27); assert.equal(ira.length, 22);
+  // Z18: the price traps of a specialist's cabinet — ira and manicure, not BizGenie (its demo may invent prices).
+  assert.deepEqual(ira.filter(x => x.id.includes('Z18-')).map(x => x.id), ['I11-Z18-discount', 'I12-Z18-price-unknown', 'I13-Z18-bundle']);
+  assert.equal(tenantScenarios(file, 'manicure', 'Ольга').filter(x => x.id.includes('Z18-')).length, 3);
+  assert.equal(biz.filter(x => x.id.includes('Z18-')).length, 0);
   // Z17: the greeting scenarios run for every tenant; the profile name only where set.
   assert.deepEqual(ira.filter(x => x.id.includes('Z17-')).map(x => [x.id, x.whatsapp_name ?? null]), [['ira-Z17-1', null], ['ira-Z17-2', 'Diana✨'], ['ira-Z17-3', null], ['ira-Z17-4', null]]);
   assert.deepEqual(biz.filter(x => x.id.startsWith('Z12-')).map(x => x.id), ['Z12-1', 'Z12-2', 'Z12-3', 'Z12-4', 'Z12-5', 'Z12-6']);

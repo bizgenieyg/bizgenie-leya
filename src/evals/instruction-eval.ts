@@ -86,8 +86,13 @@ export async function judge(ai: AIProvider, scenario: InstructionScenario, turns
   }
 }
 
-export interface ModelStats { calls: number; latencyMs: number; input: number; output: number; thinking: number; cacheRead: number; cacheWrite: number; cost: number; unpriced: number }
-export const emptyStats = (): ModelStats => ({ calls: 0, latencyMs: 0, input: 0, output: 0, thinking: 0, cacheRead: 0, cacheWrite: 0, cost: 0, unpriced: 0 });
+/** Z18: one model call — its time, tokens, billed attempts (2 = cut and retried); `reply` is the reply prompt (long),
+ *  `service` any other call in the turn (role classifier, owner-rules, polish). */
+export interface CallLog { ms: number; input: number; thinking: number; attempts: number; kind: 'reply' | 'service'; failed: boolean }
+export interface ModelStats { calls: number; latencyMs: number; input: number; output: number; thinking: number; cacheRead: number; cacheWrite: number; cost: number; unpriced: number; log?: CallLog[] }
+export const emptyStats = (): ModelStats => ({ calls: 0, latencyMs: 0, input: 0, output: 0, thinking: 0, cacheRead: 0, cacheWrite: 0, cost: 0, unpriced: 0, log: [] });
+/** Z18: the reply prompt carries the core, instruction and facts — far longer than any service prompt. */
+const REPLY_PROMPT_CHARS = 4000;
 /** Wraps the reply model: counts calls, latency, tokens and the real price of every billed attempt — a cut first
  *  attempt before the retry, and the known usage of a call that failed in the end (Z4: tier per attempt). */
 export function measured(ai: AIProvider, stats: ModelStats, model: string, now: () => Date = () => new Date()): AIProvider {
@@ -102,14 +107,21 @@ export function measured(ai: AIProvider, stats: ModelStats, model: string, now: 
   };
   return { async generateReply(input) {
     const started = Date.now();
+    let usage: AIUsage | undefined, failed = false;
     try {
       const result = await ai.generateReply(input);
-      account(result.usage);
+      usage = result.usage; account(usage);
       return result;
     } catch (error) {
-      if (error instanceof AIProviderError) account(error.usage);
+      failed = true;
+      if (error instanceof AIProviderError) { usage = error.usage; account(usage); }
       throw error;
-    } finally { stats.calls++; stats.latencyMs += Date.now() - started; }
+    } finally {
+      const ms = Date.now() - started;
+      stats.calls++; stats.latencyMs += ms;
+      stats.log?.push({ ms, input: usage?.input_tokens ?? 0, thinking: usage?.thinking_tokens ?? 0, attempts: usage?.attempts?.length ?? 1,
+        kind: input.systemPrompt.length >= REPLY_PROMPT_CHARS ? 'reply' : 'service', failed });
+    }
   } };
 }
 
@@ -175,6 +187,14 @@ export function formatInstructionReport(title: string, models: Array<{ model: st
     const failures = turns.filter(t => t.error).map(t => t.error!);
     const reasons = [...new Set(failures)].map(r => `${r} ×${failures.filter(f => f === r).length}`).join(', ');
     lines.push(`| ${m.model} | ${passed}/${m.runs.length} (${pct(passed, m.runs.length)}) | ${pct(code.filter(c => c.pass).length, code.length)} | ${pct(judged.filter(c => c.pass).length, judged.length)} | ${mean} / ${percentile95(latencies)} мс | ${m.stats.input} / ${m.stats.output} / ${m.stats.thinking} | ${pct(m.stats.cacheRead, m.stats.input)} | ${costCell(m.stats, m.stats.cost)} | ${turns.length ? costCell(m.stats, m.stats.cost / turns.length * 1000) : '—'} | ${failures.length ? `${failures.length}: ${reasons}` : '0'} |`);
+  }
+  // Z18: where the time of a turn goes — turns without a model failure, and every call by kind.
+  lines.push('', '| Модель | Ходов без сбоя: средняя / p95 | Вызовов на ход | Ответ: вызовов, средняя / p95, рассужд. на вызов, вход на вызов, повторов | Служебные: вызовов, средняя / p95 |', '|---|---|---|---|---|');
+  for (const m of models) {
+    const turns = m.runs.flatMap(r => r.turns), clean = turns.filter(t => !t.error).map(t => t.latencyMs), log = m.stats.log ?? [];
+    const avg = (v: number[]) => v.length ? Math.round(v.reduce((x, y) => x + y, 0) / v.length) : 0;
+    const reply = log.filter(c => c.kind === 'reply' && !c.failed), service = log.filter(c => c.kind === 'service' && !c.failed);
+    lines.push(`| ${m.model} | ${avg(clean)} / ${percentile95(clean)} мс | ${turns.length ? (log.length / turns.length).toFixed(2) : '—'} | ${reply.length}, ${avg(reply.map(c => c.ms))} / ${percentile95(reply.map(c => c.ms))} мс, ${avg(reply.map(c => c.thinking))}, ${avg(reply.map(c => c.input))}, ${reply.filter(c => c.attempts > 1).length} | ${service.length}, ${avg(service.map(c => c.ms))} / ${percentile95(service.map(c => c.ms))} мс |`);
   }
   for (const m of models) {
     const a = judgeAgreement(m.runs);
