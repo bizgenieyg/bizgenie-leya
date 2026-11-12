@@ -30,11 +30,19 @@ export async function hedgedFetch(start: (signal: AbortSignal) => Promise<Respon
   if (early !== 'late') { if ('error' in early) throw early.error; return early.response; }
   onHedge();
   const second = start(b.signal);
+  // Review Z18: only a successful response wins. An HTTP error (a quick 429) or a network error from one request
+  // must not abort the other, which may still answer 200; when both fail, the later failure is returned as is.
+  const settle = (p: Promise<Response>) => p.then(response => response.ok ? response : Promise.reject({ response }));
   try {
-    const winner = await Promise.any([first.then(response => ({ response, loser: b })), second.then(response => ({ response, loser: a }))]);
+    const winner = await Promise.any([settle(first).then(response => ({ response, loser: b })), settle(second).then(response => ({ response, loser: a }))]);
     winner.loser.abort();
     return winner.response;
-  } catch (error) { throw error instanceof AggregateError ? error.errors[error.errors.length - 1] : error; }
+  } catch (error) {
+    const last = error instanceof AggregateError ? error.errors[error.errors.length - 1] : error;
+    const failed = error instanceof AggregateError ? error.errors.find(e => e && typeof e === 'object' && 'response' in e) : undefined;
+    if (failed) return (failed as { response: Response }).response;
+    throw last;
+  }
 }
 
 export class GeminiProvider implements AIProvider {

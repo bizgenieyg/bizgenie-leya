@@ -33,3 +33,26 @@ test('Z18: both requests fail — the error is thrown; 0 turns hedging off', asy
   await assert.rejects(hedgedFetch(async signal => { calls++; await wait(40, signal, ''); throw new Error(`down ${calls}`); }, 10), /down/);
   assert.equal(calls, 2);
 });
+
+const status = (ms: number, signal: AbortSignal, code: number, body: string) => new Promise<Response>((resolve, reject) => {
+  const timer = setTimeout(() => resolve(new Response(body, { status: code })), ms);
+  signal.addEventListener('abort', () => { clearTimeout(timer); reject(Object.assign(new Error('aborted'), { name: 'AbortError' })); });
+});
+
+test('Z18 review: a quick 429 from the hedge does not abort the first request that answers 200', async () => {
+  const aborted: boolean[] = [];
+  const response = await hedgedFetch(signal => { const i = aborted.push(false) - 1; signal.addEventListener('abort', () => { aborted[i] = true; });
+    return i === 0 ? status(80, signal, 200, 'ok') : status(5, signal, 429, 'busy'); }, 20);
+  assert.equal(response.status, 200); assert.equal(await response.text(), 'ok'); assert.equal(aborted[0], false);
+});
+
+test('Z18 review: a quick 500 from the first request after the hedge waits for the second', async () => {
+  const response = await hedgedFetch(signal => { const i = calls2++; return i === 0 ? status(30, signal, 500, 'err') : status(60, signal, 200, 'ok'); }, 20);
+  assert.equal(response.status, 200);
+});
+let calls2 = 0;
+
+test('Z18 review: both requests answer with errors — the HTTP response is returned for the caller to classify', async () => {
+  const response = await hedgedFetch(signal => status(30, signal, 429, 'busy'), 10);
+  assert.equal(response.status, 429);
+});
